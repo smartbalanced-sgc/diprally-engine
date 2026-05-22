@@ -53,6 +53,18 @@ days. Refuses negative-EV setups.
 14. Trend filter — refuse dip if 30d momentum < -25% AND no fundamental catalyst
 15. Insider signal dropped (Form 4 lag + noise)
 16. Method-disagreement refusal — MC vs PDE diverge >5pp on marginal = no recommendation
+17. **All configurable values live in `config/diprally.yaml`. `src/` holds code only.**
+    Tickers, σ-class table, peer mappings, blend weights, vol schedule
+    multipliers, AI pricing, conviction thresholds, method tolerance formula
+    coefficients, Bayesian parameters, panic floor, friction bps, signal-level
+    thresholds (analyst spread brackets, sector regime caps, macro drift
+    levels, insider scaling, short-interest brackets, peer RS caps, regime
+    detection triggers, catalyst magnitude map), data-fetch thresholds (VIX
+    macro brackets, options liquidity cutoff), PDE grid resolution, GARCH
+    fit parameters, sensitivity scenario list — none of these belong as
+    Python constants. `src/config.py` is a YAML loader with schema validation
+    that exposes typed constants for import convenience. Changing a threshold
+    must NEVER require a code edit, a PR, or a deploy.
 
 ## Ticker universe (17, fixed)
 - **EXTREME (4)**: LWLG, MRAM, ENGN, VELO3D

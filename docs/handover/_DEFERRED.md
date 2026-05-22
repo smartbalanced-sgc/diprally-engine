@@ -6,19 +6,145 @@ first and clear its items as part of that wave's scope.
 
 ---
 
-## To W2 (multi-ticker generalisation + ticker registry)
+## To W2 (config-driven multi-ticker engine — Path A "big bang" lift)
+
+W2 lifts EVERY configurable value out of `src/` and into a single source of
+truth `config/diprally.yaml`. Sacred decision #17. The catalog below is the
+full punch list, audited at the close of W1. Researcher must be able to
+sweep any threshold without a code edit.
 
 ### D-W2-1. SNDK peer-fallback shim
 - **File**: `src/engine.py` lines ~675–682
 - **Current**: `if --peers omitted AND ticker == "SNDK": peer_tickers = ["MU", "WDC"]`
-- **Why temp**: preserved W0 byte-for-byte SNDK acceptance test without baking a
-  SNDK hardcode into peer logic permanently.
+- **Why temp**: preserved W0 byte-for-byte SNDK acceptance test without baking
+  a SNDK hardcode into peer logic permanently.
 - **Fix in W2**: replace with `peer_tickers = REGISTRY[ticker].peers`.
-  Registry holds the canonical peer mapping per the seed context (LWLG/MRAM/
-  ENGN/VELO3D → ETF fallback; ASTS → RKLB, IRDM; RKLB → ASTS, LMT; etc.).
-- **Acceptance**: `python tools/run.py LWLG` (no `--peers`) auto-resolves
-  LWLG's peers from the registry; SNDK still resolves to MU+WDC; the
-  `elif ticker == "SNDK"` branch is gone.
+  Registry sourced from YAML.
+
+### D-W2-2. EV reporting in dollar capital units
+- **Files**: `src/engine.py` (run_pipeline + scan_dip_rally_grid),
+  `src/reporter.py` (format_report)
+- **Current**: `capital_usd` parameter; reports `Net expected $/trade` and
+  `~N.N shares`.
+- **Fix in W2**: drop the `--capital` flag + parameter throughout. Switch
+  reporter to EV/share + EV% of dip entry price. Sacred decision #6 (no
+  capital concept).
+
+### D-W2-3. SNDK-shaped Pass 1 prompt
+- **File**: `src/ai_layer.py` (build_ai_pass1_prompt)
+- **Current**: "Analyse {ticker} for a 60-day round-trip swing trade" hardcoded.
+- **Fix in W2**: parameterize horizon from config; remove any other
+  ticker-class assumptions in the prompt.
+
+### D-W2-4. Top-level config.py constants → YAML
+- **File**: `src/config.py` (entire file)
+- **Migration target**: `config/diprally.yaml` (single source of truth) loaded
+  by a refactored `src/config.py` that validates schema and exposes typed
+  constants for backward-compatible imports.
+- **Full inventory** (~40 keys across these groups):
+  - **Data sources**: FMP_BASE, DEFAULT_LOOKBACK_DAYS
+  - **AI pricing**: OPUS/SONNET/HAIKU input+output per token, WEB_SEARCH_PER_USE
+  - **Model IDs**: MODEL_OPUS, MODEL_SONNET, MODEL_HAIKU
+  - **v1 BLEND_WEIGHTS** (9 keys), v2 BLEND_WEIGHTS_V2 (11 keys)
+  - **CONFIDENCE_TO_SE** (3 keys)
+  - **Conviction**: DEFAULT_CONVICTION_DIP, DEFAULT_CONVICTION_RALLY_COND, DEFAULT_HORIZON_DAYS
+  - **MC paths**: DEFAULT_MC_PATHS, DEEP_DIP_AUTOSCALE_THRESHOLD, DEEP_DIP_AUTOSCALE_PATHS
+  - **Grid**: DIP_GRID_STEP, RALLY_GRID_STEP, DIP_GRID_MAX_DEPTH_PCT, RALLY_GRID_MAX_REACH_PCT
+  - **Risk**: PANIC_FLOOR_PCT
+  - **AI**: AI_VOL_REGIME_MULTIPLIERS (3 keys), NARRATIVE_DRIFT_ADJUSTMENT (3 keys)
+  - **Factor arithmetic**: FACTOR_WEIGHTS (3 keys), FACTOR_NET_THRESHOLD, FACTOR_TAIL_BIAS
+  - **Catalysts**: CATALYST_Z_THRESHOLD
+  - **Vol schedule**: VOL_SCHEDULE_MULTIPLIERS (7 keys)
+  - **Method tolerance**: METHOD_AGREEMENT_FLOOR_PP / MULTIPLIER,
+    METHOD_AGREEMENT_FIRST_PASSAGE_FLOOR_PP / MULTIPLIER, METHOD_REFUSAL_MULTIPLIER
+  - **Bag-hold + backtest**: BAG_HOLD_TERMINAL_ASSUMPTION, BACKTEST_MIN_SAMPLES
+  - **v3 review**: V3_REVIEW_CRITERIA (6 keys)
+
+### D-W2-5. Scattered named constants outside config.py
+- `src/ai_cache.py` — `SPOT_MOVE_INVALIDATION_PCT = 0.01`
+- `src/signals.py` — `PHANTOM_SIGNAL_SE = 0.20`, `_AI_DERIVED_SIGNAL_NAMES`
+- `src/engine.py:670` — `DRIFT_CAP = 1.0` (function-local!)
+- `src/engine.py:229, 1061` — `spread_per_share_round_trip=2.0` default
+
+### D-W2-6. Embedded signal thresholds in src/signals.py
+Each of these is a tunable buried inside a function. Lift to YAML under a
+`signals:` namespace keyed by signal name.
+- **analyst_targets**: confidence spread brackets (0.10, 0.25); staleness
+  trigger 0.25
+- **sector**: regime-conditional cap tuples (POST_PARABOLA 0.60/-0.50,
+  MOMENTUM 1.00/-0.50, default 1.50/-0.50)
+- **macro**: drift levels (risk_on 0.10, neutral 0.05, risk_off -0.05)
+- **insider**: mcap-relative multiplier 5.0, abs fallback 100M, noise
+  threshold 0.001, drift cap ±0.10
+- **historical**: cap-binding 1.0, medium 0.5
+- **short_interest**: full 4-bracket table (0.03 / 0.10 / 0.20 with drifts
+  0 / -0.03 / -0.05 / +0.05) — entire payload, not just thresholds
+- **peer_rs**: drift cap ±0.30, dispersion confidence brackets (0.05, 0.15)
+- **sector_decoupling**: drift cap ±0.20, decoupling-magnitude brackets
+  (0.02, 0.10)
+- **detect_swing_regime**: σ-high 0.50, mom_5d ±0.02, mom_30d_pct ±5,
+  RSI 70/30, YTD parabola 200
+- **signal_from_catalyst_proximity**: magnitude map (high 0.10, med 0.05,
+  low 0.02), drift cap ±0.15, in-window confidence buckets (>=3, >=1)
+- **bayesian_update**: prior age inflation coefficient 0.2, default
+  prior_std fallback 0.15
+
+### D-W2-7. Scattered tunables in src/engine.py workflow
+- Sensitivity scenarios: 6 hardcoded rows (Drift ±15pp, σ ±20%, Hostile).
+  Move to YAML `sensitivity_scenarios:` list. Lets researchers add/edit
+  without code touch.
+- Bayesian fallback `today_std = 0.25` when blend fails
+- Bayesian std floor `max(0.05, ...)`
+- `today_std_safe = max(0.05, float(today_std))`
+- Default `prior_std` fallback `0.15` (also at line 446 / 932)
+- Mean reversion anchor offset `* 0.95`
+- Pass 2 prompt closed-form bracket `±10%` (lines 800-801)
+- Grid pre-filter looseness `0.08` (lines 266, 268)
+- GARCH fallback `0.30` (line 633)
+- Lookback `60` (peer RS, unusual move Z) and `30` (sector decoupling) —
+  callers should pass from YAML, not duplicate literals
+- Realized vol windows `(30, 60, 90)` — also in math_utils.compute_realized_vol
+
+### D-W2-8. src/data_fetch.py macro + liquidity thresholds
+- VIX brackets: risk_off >25, risk_on <15, default fallback 18.0
+- SPY trend: risk_on >0.02, risk_off <-0.03
+- Options liquidity threshold: bid-ask spread <0.10
+- Sector perf default window `days=30`
+- Options DTE window `7 <= dte <= target*2`
+
+### D-W2-9. src/math_utils.py — borderline structural, but tunable
+- PDE grid: `n_space=400, n_time=2000` (performance/accuracy knobs)
+- GARCH min-data `50`, fallback `n=90` bars
+- GARCH optimizer initial values `[0.01, 0.05, 0.90]` and `[0.0001, 0.05, 0.90]`
+- compute_realized_vol windows `(30, 60, 90)` (duplicated in engine.py)
+
+### D-W2-10. Remove W1's --debug-spot-override flag
+- **File**: `tools/run.py` + `src/engine.py:573-578`
+- **Reason**: W1-only debug for cache testing; YAGNI in W2+. W4's broker
+  will need different debug knobs; build the right one when needed.
+
+### D-W2-11. Sensitivity table label widening bug
+- **File**: `src/reporter.py` (sensitivity row)
+- **Symptom** (visible in W1 SNDK full-AI smoke): some catalyst names get
+  truncated awkwardly: `"Q4 guidance bar very high (rev $7.7 (-16pp)"` —
+  the `[:35]` truncation in compute_sensitivity_table chops mid-parenthesis.
+- **Fix in W2**: track the human label separately from the math row;
+  truncate sanely (end at word boundary, append ellipsis), or widen the
+  column to accommodate.
+
+### Acceptance for W2
+- `python tools/run.py SNDK` (no `--peers`, no `--capital`) auto-resolves
+  peers from registry; report shows EV/share + EV% of dip; no SNDK
+  hardcodes anywhere; `--debug-spot-override` flag gone.
+- `python tools/run.py LWLG` runs end-to-end (D-W3-1 grid bug stays, dies
+  in W3); peers auto-resolve to LWLG's registry entry.
+- `python tools/run.py INTC` runs end-to-end (MID-class smoke; catches any
+  signal-threshold bug that EXTREME-only smokes missed).
+- Touching `config/diprally.yaml` and re-running changes behavior with
+  ZERO code edits — verify by perturbing DEFAULT_CONVICTION_DIP from 0.65
+  to 0.60 and confirming the report reflects the new threshold.
+- The unit test from W1 (`tests/test_refusal_gate.py`) still passes — no
+  regression in the σ-scaled tolerance + refusal gate.
 
 ---
 
