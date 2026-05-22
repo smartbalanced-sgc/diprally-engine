@@ -1,6 +1,13 @@
-"""FMP + yfinance wrappers. W0: byte-equivalent ports from seed v1."""
+"""FMP + yfinance wrappers. W0: byte-equivalent ports from seed v1.
+
+W2 critical-fixes additions:
+  - URL apikey redaction in all error logs (security: prevent key leak)
+  - FetchError typed exception (resilience: graceful caller handling)
+  - HTTP errors wrapped, not raised raw (resilience: don't crash pipeline)
+"""
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -9,22 +16,86 @@ import requests
 from src.config import FMP_BASE
 
 
+_APIKEY_RE = re.compile(r"apikey=[^&\s'\"]*", re.IGNORECASE)
+
+
+def _redact(text) -> str:
+    """Scrub apikey=... query params from any string. Used in every error
+    log path that could include a URL — prevents API key leakage when error
+    messages are pasted into chat / GitHub issues / log aggregators.
+    """
+    return _APIKEY_RE.sub("apikey=***REDACTED***", str(text))
+
+
+class FetchError(Exception):
+    """Typed exception for data-fetch failures.
+
+    Carries (ticker, source, status, reason) so the caller can decide:
+      - single-ticker CLI: exit non-zero with a clean message
+      - batch orchestrator (W5): skip ticker with WARNING, continue with the
+        remaining 16
+
+    All `reason` strings are pre-redacted via _redact() so apikey never leaks.
+    """
+    def __init__(self, ticker: str, source: str, status, reason: str):
+        self.ticker = ticker
+        self.source = source
+        self.status = status
+        self.reason = _redact(reason)
+        status_part = f" [{status}]" if status is not None else ""
+        super().__init__(f"{source} fetch failed for {ticker}{status_part}: {self.reason}")
+
+
 def fetch_history(ticker, api_key, lookback_days):
+    """Fetch OHLC history for a ticker. Raises FetchError on any failure.
+
+    Wrap-with-typed-error pattern: never let raw requests exceptions leak to
+    the caller, never let URL strings (which contain the apikey) appear in
+    propagated error messages. W5 batch mode catches FetchError to skip a
+    ticker; single-ticker mode catches it for a clean exit with informative
+    output.
+    """
     end = datetime.now().strftime("%Y-%m-%d")
     start = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
     url = f"{FMP_BASE}/historical-price-eod/full"
     params = {"symbol": ticker, "from": start, "to": end, "apikey": api_key}
-    r = requests.get(url, params=params, timeout=15)
-    r.raise_for_status()
-    data = r.json()
+    try:
+        r = requests.get(url, params=params, timeout=15)
+        r.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else None
+        # 402 = ticker not in plan tier; 404 = ticker not found; 429 = rate limit
+        hint = ""
+        if status == 402:
+            hint = " (ticker not in FMP plan tier — try yfinance fallback when D-W2-14 ships)"
+        elif status == 429:
+            hint = " (FMP rate limit — back off)"
+        raise FetchError(ticker, "fmp", status, f"HTTP error{hint}") from None
+    except requests.exceptions.Timeout:
+        raise FetchError(ticker, "fmp", None, "request timeout") from None
+    except requests.exceptions.RequestException as e:
+        raise FetchError(ticker, "fmp", None, f"network error: {e}") from None
+
+    try:
+        data = r.json()
+    except ValueError as e:
+        raise FetchError(ticker, "fmp", r.status_code, f"non-JSON response: {e}") from None
+
     if not isinstance(data, list) or not data:
-        raise RuntimeError(f"No FMP history for {ticker}")
+        raise FetchError(ticker, "fmp", r.status_code, "empty response — ticker may not exist")
     df = pd.DataFrame(data).rename(columns={"date": "Date", "close": "Close"})
     df["Date"] = pd.to_datetime(df["Date"])
     return df.sort_values("Date").reset_index(drop=True)
 
 
 def _fmp_get(endpoint, api_key, params=None):
+    """Best-effort FMP fetch for SUPPLEMENTARY endpoints (analyst targets, sector
+    perf, news, etc.). Returns None on failure with a redacted-URL warning log.
+
+    Use fetch_history (which raises FetchError) for endpoints where missing
+    data should abort the whole pipeline. Use _fmp_get for endpoints where
+    a missing fetch should degrade-gracefully (signal becomes _none_signal).
+    """
     p = {"apikey": api_key}
     if params:
         p.update(params)
@@ -33,7 +104,7 @@ def _fmp_get(endpoint, api_key, params=None):
         r.raise_for_status()
         return r.json()
     except Exception as e:
-        print(f"   WARNING: FMP {endpoint} failed: {e}")
+        print(f"   WARNING: FMP {endpoint} failed: {_redact(e)}")
         return None
 
 
@@ -316,7 +387,7 @@ def fetch_options_iv(ticker, target_dte_days=60):
             "put_iv": put_iv,
         }
     except Exception as e:
-        print(f"   WARNING: yfinance options IV fetch failed: {e}")
+        print(f"   WARNING: yfinance options IV fetch failed: {_redact(e)}")
         return None
 
 
@@ -334,7 +405,7 @@ def fetch_short_interest(ticker, api_key):
                 "source": "yfinance",
             }
     except Exception as e:
-        print(f"   WARNING: yfinance short-interest fetch failed: {e}")
+        print(f"   WARNING: yfinance short-interest fetch failed: {_redact(e)}")
     return None
 
 
@@ -346,6 +417,9 @@ def fetch_peer_history(peers, api_key, lookback_days=60):
             df = fetch_history(p, api_key, lookback_days=lookback_days)
             if df is not None and not df.empty:
                 out[p] = df
-        except Exception as e:
+        except FetchError as e:
+            # FetchError already has _redact applied to its reason field
             print(f"   WARNING: peer {p} fetch failed: {e}")
+        except Exception as e:
+            print(f"   WARNING: peer {p} fetch failed: {_redact(e)}")
     return out

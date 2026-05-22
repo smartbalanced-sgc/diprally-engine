@@ -42,6 +42,7 @@ from src.config import (
     RALLY_GRID_STEP,
 )
 from src.data_fetch import (
+    FetchError,
     fetch_analyst_summary,
     fetch_analyst_targets,
     fetch_company_profile,
@@ -589,9 +590,15 @@ def run_pipeline(args) -> int:
 
     # --- 1. Fetch data ---
     print(f"Fetching data for {ticker}...")
-    history_df = fetch_history(ticker, api_key, DEFAULT_LOOKBACK_DAYS)
+    try:
+        history_df = fetch_history(ticker, api_key, DEFAULT_LOOKBACK_DAYS)
+    except FetchError as e:
+        # Graceful exit instead of Python stack trace. W5 batch orchestrator
+        # will catch the same FetchError to skip the ticker and continue.
+        print(f"ERROR: {e}")
+        return 1
     if history_df is None or history_df.empty:
-        print(f"ERROR: failed to fetch history for {ticker}")
+        print(f"ERROR: empty history returned for {ticker}")
         return 1
     spot = float(history_df["Close"].iloc[-1])
     # Debug spot override (W1) — lets the cache-invalidation smoke test
