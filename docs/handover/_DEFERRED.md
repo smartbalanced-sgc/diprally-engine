@@ -204,6 +204,81 @@ Each of these is a tunable buried inside a function. Lift to YAML under a
 
 ---
 
+## To W5 / W6 (AI quality — catalyst verification)
+
+### D-W5-1. AI catalyst-detail hallucination layer
+- **Discovered**: RKLB W1 full-AI smoke (2026-05-22 15:47)
+- **Symptom**: Pass 1 produced "Convertible note conversion window
+  (2026-04-01/2026-06-30, bearish, magnitude med)" and Pass 2 carried the
+  same framing forward. RKLB's convertibles (2029 maturity, ~$11 conversion
+  price, deep in-the-money) do NOT operate on a calendar conversion window —
+  voluntary exchange at holder's option whenever the 20-of-30-day premium
+  trigger fires, or under specific issuer-call mandatory-conversion clauses.
+  Pass 1's "window" framing is fabricated structure around a real
+  underlying risk (the dilution overhang). Pass 2's adversarial layer
+  caught Pass 1's REASONING errors but did not verify factual details.
+  Same run also surfaced "Motiv Space Systems acquisition close (Q2/Q3)"
+  which couldn't be independently verified by the human reviewer.
+- **Root cause**: Pass 1 + web_search produces high-fluency catalyst
+  summaries that can fabricate specifics (dates, deal counterparties,
+  structure mechanics) around real underlying themes. The 5-min Pass 2
+  Sonnet critique focuses on internal consistency and reasoning, not on
+  primary-source verification of factual claims.
+- **Fix in W5 or W6**: add a "catalyst verification" pass after Pass 2.
+  For top-3 catalysts by magnitude weight, run a Haiku call constrained to
+  one-question-per-catalyst lookups:
+    - Earnings dates → verify via FMP earnings-calendar (already in code)
+    - Convertible note terms → 10-Q footnote search (web_search constrained
+      to SEC.gov + the company's IR site)
+    - M&A close dates → 8-K / press release search (web_search constrained
+      to wsj.com / reuters.com / company-IR)
+    - Government contract awards → SAM.gov / DoD comptroller release search
+  Each verification returns a confidence rating (verified / unverified /
+  refuted). Catalysts that come back UNVERIFIED get magnitude downgraded
+  to "low" before they hit signal_from_catalyst_proximity. Catalysts that
+  come back REFUTED are dropped entirely.
+- **Acceptance**: re-run RKLB; the convertible-note "window" gets flagged
+  UNVERIFIED (no SEC footnote supports a Q2 window) and the catalyst
+  contribution shrinks. If the Motiv deal is real, it stays VERIFIED;
+  if not, it drops.
+- **Cost estimate**: 3 catalysts × 1 Haiku call × ~$0.005 = ~$0.015/run.
+  Negligible vs Pass 1's $0.50-0.60, and saves the entire run from
+  publishing a hallucinated catalyst signal to a real trader.
+
+---
+
+## To W10 (calibration)
+
+### D-W10-1. Pass 1 catalyst-detail accuracy tracking
+- **Discovered**: RKLB W1 full-AI smoke (2026-05-22 15:47) — same root
+  hallucination event as D-W5-1.
+- **Symptom**: Pass 1 catalyst details can be fabricated even when the
+  underlying theme is real. Without a verification layer (D-W5-1) or
+  calibration tracking, the engine has no feedback loop to know when
+  Pass 1 is producing reliable vs unreliable catalyst lists.
+- **Fix in W10**: alongside the Brier-score calibration on dip/rally
+  hit rates, add a catalyst-accuracy track:
+    - For each catalyst emitted by Pass 1, store the date / type /
+      magnitude / direction in CSV (extend the round_trip_history schema).
+    - At calibration time (N ≥ 30 days), for each catalyst whose date
+      has now passed, check via primary sources whether it actually
+      occurred as Pass 1 described.
+    - Compute a per-ticker and per-catalyst-type hallucination rate.
+    - If hallucination rate > 20%, automatically downweight
+      signal_from_catalyst_proximity for that ticker/type.
+    - If overall hallucination rate > 30% across the universe, raise
+      a banner-level warning in the daily report ("Pass 1 catalyst
+      accuracy degraded — apply skepticism").
+- **Acceptance**: after 30+ days of runtime, the dashboard shows
+  per-ticker catalyst accuracy. Tickers with high hallucination rates
+  trigger automatic downweighting without code edits.
+- **Interaction with D-W5-1**: D-W5-1 (W5/W6) is preventative — block
+  hallucinated catalysts from entering the blend in the first place.
+  D-W10-1 is calibrative — measure how well preventative + Pass 2 are
+  working, adjust weights accordingly. Both are needed.
+
+---
+
 ## Capture protocol
 
 When you discover a bug or sharp edge that doesn't belong in the current
