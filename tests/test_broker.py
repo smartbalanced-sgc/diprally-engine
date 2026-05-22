@@ -155,3 +155,40 @@ def test_t2_plus_disqualified_doesnt_block_t1():
     snaps = [_snap("EDGE", 0.45, qualifies=False)]
     alloc = allocate(snaps)
     assert alloc.assignments["EDGE"] == "T1"
+
+
+def test_realistic_17_ticker_universe_under_budget():
+    """End-to-end sanity at full ticker count. Mix of σ-classes and
+    ambiguities mirroring what the orchestrator would actually feed
+    in; total spend must stay ≤ $2.00 and at least some T3 slots
+    should be allocated (the broker isn't being needlessly stingy)."""
+    universe = [
+        ("LWLG",  0.78, True,  "EXTREME"),
+        ("MRAM",  0.72, True,  "EXTREME"),
+        ("ENGN",  0.66, True,  "EXTREME"),
+        ("VELO3D",0.60, True,  "EXTREME"),
+        ("ASTS",  0.55, True,  "HIGH"),
+        ("RKLB",  0.48, True,  "HIGH"),
+        ("PL",    0.41, False, "HIGH"),
+        ("SATS",  0.38, True,  "HIGH"),
+        ("GHM",   0.32, True,  "HIGH"),
+        ("INTC",  0.28, True,  "MID"),
+        ("IPGP",  0.24, True,  "MID"),
+        ("LITE",  0.22, False, "MID"),
+        ("MU",    0.18, True,  "MID"),
+        ("STX",   0.15, True,  "MID"),
+        ("AMAT",  0.12, True,  "MID"),
+        ("MOG-A", 0.08, True,  "MID"),
+        ("GLW",   0.05, True,  "MID"),
+    ]
+    snaps = [_snap(t, a, q, c) for (t, a, q, c) in universe]
+    alloc = allocate(snaps)
+    assert alloc.spent_usd <= 2.00
+    # At least one T3 slot (we have 5 EXTREME-class qualifiers above t3_min).
+    tier_counts = {"T3": 0, "T2": 0, "T1": 0, "T0": 0}
+    for t in alloc.assignments.values():
+        tier_counts[t] += 1
+    assert tier_counts["T3"] >= 1
+    # Low-ambiguity tickers (below ai_min) must stay T0.
+    assert alloc.assignments["GLW"] == "T0"
+    assert alloc.assignments["MOG-A"] == "T0"

@@ -384,6 +384,28 @@ Each of these is a tunable buried inside a function. Lift to YAML under a
 
 ---
 
+## W4 (budget broker + ambiguity)  [WAVE CLOSED — PRs #27-#30]
+
+PR #27 — AI tier ladder (T0/T1/T2/T3) parametric in YAML; engine
+        reads three dispatch sites from tier spec
+PR #28 — Per-ticker AmbiguityScore (5-component weighted [0,1] sort
+        key for broker)
+PR #29 — Budget broker greedy-allocator (T3→T2→T1 within $2/day);
+        broker_preview.py CLI for dry-runs
+PR #30 — Engine emits qualifies_for_t2_plus (sacred T2+ gate);
+        --emit-snapshot prints BrokerSnapshot JSON for orchestrator
+        consumption (this PR)
+
+W5 prerequisites (unblocked by W4):
+  - Orchestrator can call `python tools/run.py <ticker> --tier T0 --emit-snapshot`
+    for each configured ticker, parse the BROKER_SNAPSHOT_JSON= lines, hand
+    them to `src.broker.allocate()`, then re-run each ticker at its assigned
+    tier (with same-day cache hits making the second pass cheap on T0 cost
+    but enabling the AI calls at the broker-chosen tier).
+  - Or simpler / colder: run each ticker once at the broker-assigned tier
+    after a separate snapshot-collection pass. Either is workable; the
+    orchestrator authors pick.
+
 ## To W5 / W6 (AI quality — catalyst verification)
 
 ### D-W5-1. AI catalyst-detail hallucination layer

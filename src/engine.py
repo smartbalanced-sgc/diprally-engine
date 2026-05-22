@@ -1306,6 +1306,20 @@ def run_pipeline(args) -> int:
     )
     print(f"Ambiguity score: {ambiguity.overall:.2f}  (broker sort key)")
 
+    # --- 14b. Sacred T2+ gate (W4 PR #30) — pre-AI net EV positive AND
+    # conviction met. Broker (PR #29) reads this from the snapshot to
+    # decide whether a ticker is eligible for T2/T3 tiers.
+    qualifies_for_t2_plus = bool(
+        best is not None
+        and met_threshold_strict
+        and best.net_ev_per_share > 0
+    )
+    print(
+        f"Pre-AI T2+ gate: {'PASS' if qualifies_for_t2_plus else 'FAIL'} "
+        f"(conviction_met={met_threshold_strict}, "
+        f"ev_positive={best is not None and best.net_ev_per_share > 0})"
+    )
+
     # --- 14b. Sensitivity table ---
     sensitivity = None
     if best is not None:
@@ -1397,5 +1411,16 @@ def run_pipeline(args) -> int:
         pass1, pass2, method_check, backtest, history_rows_for_chart,
         conviction_dip, conviction_rally_cond, horizon_days,
     )
+
+    # --- 19. Optional W4 broker snapshot (W5 orchestrator collects these) ---
+    if getattr(args, "emit_snapshot", False):
+        import json
+        snap_payload = {
+            "ticker": ticker,
+            "ambiguity": ambiguity.overall,
+            "qualifies_for_t2_plus": qualifies_for_t2_plus,
+            "sigma_class": sigma_class,
+        }
+        print("BROKER_SNAPSHOT_JSON=" + json.dumps(snap_payload))
 
     return 0

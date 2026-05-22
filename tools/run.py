@@ -52,6 +52,11 @@ def main():
                         "overrides the registry entirely.")
     p.add_argument("--show-rationale", action="store_true",
                    help="Verbose mode (currently default)")
+    p.add_argument("--emit-snapshot", action="store_true",
+                   help="After the report, print one JSON line containing the "
+                        "ticker's BrokerSnapshot (ticker / ambiguity / "
+                        "qualifies_for_t2_plus / sigma_class). W5 orchestrator "
+                        "collects these to drive the broker.")
     args = p.parse_args()
     return run_pipeline(args)
 
