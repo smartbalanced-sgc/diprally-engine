@@ -147,11 +147,21 @@ def format_report(
     elif 0.95 < vol_profile.garch_alpha_plus_beta <= 0.98:
         lines.append(f"  ⚠ GARCH α+β > 0.95 — high vol persistence, multi-step forecasts unreliable")
 
-    # 11-SIGNAL DRIFT BLEND
-    lines.append(hr(f"DRIFT INTELLIGENCE ({len(base_signals)} signals)"))
-    lines.append(f"  {'Signal':<35} {'mu (ann)':>10} {'Conf':>8} {'Weight':>8}")
+    # 11-SIGNAL DRIFT BLEND. Two weight columns:
+    #   Nominal: design weight from BLEND_WEIGHTS_V2 (target allocation).
+    #   Effective: post-LOW-halve, post-NONE_FOUND-zero, renormalized to
+    #              sum-to-1.0. The weights actually driving the blend point
+    #              estimate. Surfaces the difference for institution-grade
+    #              transparency (D-W2-12).
+    # Absent signals (source_quality=NONE_FOUND or drift=None) print "n/a" in
+    # the mu column rather than "+0.0%" — prevents silent-failure masking.
+    n_active = sum(1 for s in base_signals if not s.is_absent)
+    lines.append(hr(f"DRIFT INTELLIGENCE ({n_active}/{len(base_signals)} signals active)"))
+    lines.append(f"  {'Signal':<37} {'mu (ann)':>10} {'Conf':>8} {'Nominal':>8} {'Effective':>10}")
     for s in base_signals:
-        lines.append(f"  {s.name:<35} {s.mu_annual:>+9.1%} {s.confidence:>8} {s.weight:>7.0%}")
+        mu_str = "       n/a" if s.is_absent else f"{s.mu_annual:>+9.1%}"
+        eff_str = "        —" if s.is_absent else f"{s.effective_weight:>9.1%}"
+        lines.append(f"  {s.name:<37} {mu_str} {s.confidence:>8} {s.weight:>7.0%} {eff_str}")
 
     # BAYESIAN POSTERIOR
     lines.append(hr("BAYESIAN BELIEF UPDATE"))
@@ -338,7 +348,11 @@ def generate_html_dashboard(
 """
 
     signal_rows = "\n".join(
-        f"      <tr><td>{s.name}</td><td>{s.mu_annual:+.1%}</td><td>{s.confidence}</td><td>{s.weight:.0%}</td></tr>"
+        f"      <tr><td>{s.name}</td>"
+        f"<td>{'n/a' if s.is_absent else f'{s.mu_annual:+.1%}'}</td>"
+        f"<td>{s.confidence}</td>"
+        f"<td>{s.weight:.0%}</td>"
+        f"<td>{'—' if s.is_absent else f'{s.effective_weight:.1%}'}</td></tr>"
         for s in base_signals
     )
     method_rows = "\n".join(
@@ -408,7 +422,7 @@ def generate_html_dashboard(
   <h2>Drift Signal Contributions</h2>
   <div class="chart"><img src="data:image/png;base64,{chart_signals_png}"></div>
   <table>
-    <thead><tr><th>Signal</th><th>μ (ann)</th><th>Confidence</th><th>Weight</th></tr></thead>
+    <thead><tr><th>Signal</th><th>μ (ann)</th><th>Confidence</th><th>Nominal</th><th>Effective</th></tr></thead>
     <tbody>
 {signal_rows}
     </tbody>

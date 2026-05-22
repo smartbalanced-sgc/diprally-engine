@@ -134,6 +134,8 @@ class DriftSignal:
     source_quality: str
     weight: float
     rationale: str
+    is_absent: bool = False  # NONE_FOUND / None-drift signal — reporter prints "n/a"
+    effective_weight: float = 0.0  # post LOW-halve, post normalization (see D-W2-12)
 
 
 @dataclass
@@ -174,8 +176,19 @@ class JointConditionalResult:
 # Signal dict → display list adapter
 # =============================================================================
 
-def _signals_dict_to_display_list(signals_dict, weights):
-    """Convert v1 signal dict format → list[DriftSignal] for display."""
+def _signals_dict_to_display_list(signals_dict, weights, blend=None):
+    """Convert v1 signal dict format → list[DriftSignal] for display.
+
+    is_absent=True when source_quality == NONE_FOUND OR drift is None.
+    Reporter prints "n/a" instead of "+0.0%" for absent signals — this
+    prevents the W0/W1 silent-failure pattern where a broken signal looked
+    like a legitimate zero-drift signal.
+
+    effective_weight computed from the live blend's `weights` field (after
+    LOW-halving, NONE_FOUND-zeroing) renormalized to sum-to-1.0 across the
+    surviving set. Surfaces what's ACTUALLY driving the blend point estimate,
+    not the nominal design weight (D-W2-12).
+    """
     pretty_names = {
         "historical": "Historical (GARCH + enrichment)",
         "analyst": "Analyst (price-target-summary)",
@@ -189,9 +202,19 @@ def _signals_dict_to_display_list(signals_dict, weights):
         "catalyst_proximity": "Catalyst proximity (AI-generated)",
         "narrative": "Structural narrative score",
     }
+
+    # Compute effective normalized weights from the live blend, if provided.
+    effective_weights: dict[str, float] = {}
+    if blend and isinstance(blend.get("weights"), dict):
+        post_gate = blend["weights"]  # already has LOW-halve / NONE_FOUND-zero applied
+        total = sum(post_gate.values()) or 1.0
+        effective_weights = {n: w / total for n, w in post_gate.items()}
+
     out: list[DriftSignal] = []
     for name, info in signals_dict.items():
         drift = info.get("drift")
+        source_quality = str(info.get("source_quality", "PRIMARY"))
+        is_absent = (drift is None) or (source_quality == "NONE_FOUND")
         if drift is None:
             drift = 0.0
         display_name = pretty_names.get(name, name)
@@ -207,9 +230,11 @@ def _signals_dict_to_display_list(signals_dict, weights):
             name=display_name,
             mu_annual=float(drift),
             confidence=str(info.get("confidence", "LOW")),
-            source_quality=str(info.get("source_quality", "PRIMARY")),
+            source_quality=source_quality,
             weight=float(weights.get(name, 0.0)),
             rationale=str(info.get("notes", "")),
+            is_absent=is_absent,
+            effective_weight=float(effective_weights.get(name, 0.0)),
         ))
     return out
 
@@ -948,7 +973,7 @@ def run_pipeline(args) -> int:
         "today_weight": 1 - prior_weight,
     }
 
-    base_signals = _signals_dict_to_display_list(signals_dict, BLEND_WEIGHTS_V2)
+    base_signals = _signals_dict_to_display_list(signals_dict, BLEND_WEIGHTS_V2, blend=blend)
 
     # --- 8. Vol schedule (catalyst-aware) ---
     # peer_earnings_dts populated at fetch time (step 3.5). macro_event_dates
