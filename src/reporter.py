@@ -134,6 +134,16 @@ def format_report(
 
     # THREE-METHOD CROSS-CHECK
     lines.append(hr("THREE-METHOD MATH CROSS-CHECK (MC / PDE / closed-form)"))
+    if method_check.get("is_anchor"):
+        # PR #25: verification anchor — no qualified pair, but sacred #8
+        # says cross-check runs every time. Tag clearly so the user
+        # doesn't read these as a recommendation.
+        lines.append(
+            f"  ⓘ VERIFICATION ANCHOR — no qualified pair; checking math layer "
+            f"against class-anchor dip ${method_check['anchor_dip']:,.2f} × "
+            f"rally ${method_check['anchor_rally']:,.2f}."
+        )
+        lines.append(f"     (This pair is NOT a recommendation — sacred #16 refusal does not gate here.)")
     lines.append(f"  {method_check['agreement_status']}")
     lines.append(f"  {'Quantity':<25} {'MC':>10} {'PDE':>10} {'Δ pp':>8}")
     for q, mc, pde, delta in method_check["table"]:

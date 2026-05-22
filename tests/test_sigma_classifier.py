@@ -220,6 +220,49 @@ def test_per_class_vol_regime_ordering():
         assert mults["LOW"] < 1.0
 
 
+# =============================================================================
+# W3 PR #25 — D-W3-3: three-method anchor pair (no-pair runs)
+# =============================================================================
+
+def test_anchor_pair_within_class_grid_range():
+    """Anchor used for the verification-only three-method check on
+    no-pair runs is mid-depth dip × mid-reach rally. It must lie
+    strictly inside the class's scan range so MC + PDE both have
+    something legitimate to compute on (i.e. it's not a degenerate
+    point at spot or beyond the boundaries)."""
+    spot = 100.0
+    for cls in ("EXTREME", "HIGH", "MID"):
+        g = SIGMA_CLASSES[cls].grid
+        anchor_dip = spot * (1.0 - g.dip_max_depth_pct / 2.0)
+        anchor_rally = spot * (1.0 + g.rally_max_reach_pct / 2.0)
+        # Strictly below spot, strictly above spot.
+        assert anchor_dip < spot
+        assert anchor_rally > spot
+        # Within the scan boundaries (not at the edges where MC has
+        # near-zero touch probability).
+        dip_floor = spot * (1.0 - g.dip_max_depth_pct)
+        rally_ceiling = spot * (1.0 + g.rally_max_reach_pct)
+        assert dip_floor < anchor_dip < spot
+        assert spot < anchor_rally < rally_ceiling
+
+
+def test_anchor_pair_differs_meaningfully_by_class():
+    """Different classes have different scan ranges → different anchors,
+    so the verification check on a MID name doesn't use the same
+    anchor that would suit an EXTREME name."""
+    spot = 100.0
+    anchors = {}
+    for cls in ("EXTREME", "HIGH", "MID"):
+        g = SIGMA_CLASSES[cls].grid
+        anchors[cls] = (
+            spot * (1.0 - g.dip_max_depth_pct / 2.0),
+            spot * (1.0 + g.rally_max_reach_pct / 2.0),
+        )
+    # EXTREME anchors deeper + further out than MID.
+    assert anchors["EXTREME"][0] < anchors["MID"][0]
+    assert anchors["EXTREME"][1] > anchors["MID"][1]
+
+
 def test_per_class_grid_yields_tractable_point_count():
     """Step + depth combination yields a tractable candidate-pair count.
     Lower bound (≥30 cells per dimension) ensures a fine-enough EV

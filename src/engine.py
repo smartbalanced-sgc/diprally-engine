@@ -1235,33 +1235,41 @@ def run_pipeline(args) -> int:
             print(f"   WARNING: ai_cache.save failed (run still succeeds): {e}")
 
     # --- 14. Three-method math cross-check + hard refusal gate (sacred #16) ---
+    # Sacred #8: math cross-check runs on EVERY run, not just qualified pairs.
+    # PR #25 (D-W3-3 closed): when no pair qualifies, the check runs against
+    # a deterministic class-anchor pair (mid-depth dip × mid-reach rally) so
+    # the math layer's health is observable on WAIT-verdict tickers too.
+    # Verification-anchor runs never trigger the sacred #16 refusal — that
+    # gate only applies to recommendations, and we're not recommending.
     print("Three-method math cross-check...")
-    if best:
-        bridge_best_result = analyze_joint_conditional(
-            paths, spot, best.dip_price, best.rally_price, horizon_days,
-            sigma=effective_sigma, vol_schedule=vol_schedule,
-        )
-        method_check = three_method_cross_check(
-            spot, effective_sigma, post_mu, horizon_days,
-            best.dip_price, best.rally_price, bridge_best_result,
-        )
-        # Sacred decision #16 — hard refusal when MC and PDE/closed-form
-        # diverge beyond the σ-scaled refusal threshold. Publishing a
-        # recommendation under method disagreement = publishing a number
-        # we can't ourselves verify. Suppress the dip/rally pair; keep
-        # the table so the user sees WHY we refused.
-        if method_check.get("refused"):
-            print(f"⛔ Method-disagreement refusal triggered: {'; '.join(method_check['refusals'])}")
-            best = None  # blocks recommendation; report prints refusal headline
-            met_threshold_strict = False
+    method_check_is_anchor = best is None
+    if method_check_is_anchor:
+        class_grid = SIGMA_CLASSES[sigma_class].grid
+        anchor_dip = float(spot * (1.0 - class_grid.dip_max_depth_pct / 2.0))
+        anchor_rally = float(spot * (1.0 + class_grid.rally_max_reach_pct / 2.0))
+        check_dip, check_rally = anchor_dip, anchor_rally
     else:
-        # No qualifying pair — no PDE run. Use None for pde_mass_conservation
-        # so the reporter prints "n/a" instead of a misleading 1.00000 default.
-        # (D-W3-2 in the deferred log; cheap to fix here while we're in this
-        # neighborhood. The full three-method-on-no-pair fix is still W3.)
-        method_check = {"table": [], "flags": [], "refusals": [], "refused": False,
-                        "agreement_status": "n/a — no pair found",
-                        "pde_mass_conservation": None, "pde_p_neither": None}
+        check_dip, check_rally = best.dip_price, best.rally_price
+
+    bridge_check_result = analyze_joint_conditional(
+        paths, spot, check_dip, check_rally, horizon_days,
+        sigma=effective_sigma, vol_schedule=vol_schedule,
+    )
+    method_check = three_method_cross_check(
+        spot, effective_sigma, post_mu, horizon_days,
+        check_dip, check_rally, bridge_check_result,
+    )
+    method_check["is_anchor"] = method_check_is_anchor
+    method_check["anchor_dip"] = check_dip if method_check_is_anchor else None
+    method_check["anchor_rally"] = check_rally if method_check_is_anchor else None
+
+    # Sacred decision #16 — hard refusal when MC and PDE/closed-form
+    # diverge beyond the σ-scaled refusal threshold. Only applied to
+    # actual recommendations; anchor-pair verification never blocks.
+    if not method_check_is_anchor and method_check.get("refused"):
+        print(f"⛔ Method-disagreement refusal triggered: {'; '.join(method_check['refusals'])}")
+        best = None  # blocks recommendation; report prints refusal headline
+        met_threshold_strict = False
 
     # --- 14b. Sensitivity table ---
     sensitivity = None

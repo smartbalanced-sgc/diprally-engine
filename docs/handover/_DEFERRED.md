@@ -330,7 +330,7 @@ Each of these is a tunable buried inside a function. Lift to YAML under a
 
 ## To W3 (σ-class auto-detection + class-specific defaults)
 
-### D-W3-1. Grid step must be percent-based, not absolute dollars
+### D-W3-1. Grid step must be percent-based, not absolute dollars  [CLOSED in W3 PR #22]
 - **Discovered**: LWLG W0 smoke run, 2026-05-22 12:31
 - **Symptom**: `Precomputing bridge-corrected first-touch days for 1 dip × 1
   rally barriers...` — the dip × rally search grid collapsed to a single
@@ -355,7 +355,7 @@ Each of these is a tunable buried inside a function. Lift to YAML under a
   yields similar cardinality; per-ticker dashboard's recommendation pair no
   longer snaps to a single-cell artifact.
 
-### D-W3-2. Fake `pde_mass_conservation: 1.0` default
+### D-W3-2. Fake `pde_mass_conservation: 1.0` default  [CLOSED — earlier patch handled None; PR #25 anchor now runs real PDE]
 - **File**: `src/engine.py` ~line 770 (the `else:` branch where `best is None`)
 - **Symptom** (LWLG run): report prints
   `PDE mass conservation: 1.00000 (should be ~1.0)` — even though no PDE
@@ -367,7 +367,7 @@ Each of these is a tunable buried inside a function. Lift to YAML under a
   In `src/reporter.py`, when `pde_mass_conservation is None`, print "n/a"
   instead of the formatted float.
 
-### D-W3-3. Three-method check skipped when no qualifying pair
+### D-W3-3. Three-method check skipped when no qualifying pair  [CLOSED in W3 PR #25]
 - **Sacred decision violated (sort of)**: #8 (three-method math cross-check
   on every run). Currently only triggers if `best is not None`. For tickers
   where the grid finds nothing, MC vs PDE vs closed-form agreement is never
