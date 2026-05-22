@@ -569,6 +569,13 @@ def run_pipeline(args) -> int:
         print(f"ERROR: failed to fetch history for {ticker}")
         return 1
     spot = float(history_df["Close"].iloc[-1])
+    # Debug spot override (W1) — lets the cache-invalidation smoke test
+    # simulate a spot move without waiting for the live price to change.
+    # Removed/refactored in W2.
+    override = getattr(args, "debug_spot_override", None)
+    if override is not None and override > 0:
+        print(f"   ⚠ DEBUG spot override: ${spot:.2f} → ${override:.2f}")
+        spot = float(override)
     closes_series = history_df["Close"]
     closes = closes_series.values
     returns = np.log(closes_series / closes_series.shift(1)).dropna()
