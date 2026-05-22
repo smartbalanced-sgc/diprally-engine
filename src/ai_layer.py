@@ -92,7 +92,7 @@ def build_ai_pass1_prompt(
         if self_earnings_date else "unknown"
     )
 
-    return f"""Analyse {ticker} for a 60-day round-trip swing trade.
+    return f"""Analyse {ticker} for a {horizon_days}-trading-day round-trip swing trade.
 Today: {today}. Spot: ${snapshot.spot:.2f}. Sector: {snapshot.sector}.
 σ blended: {vol_profile.blended_sigma:.1%}. RSI: {snapshot.rsi:.1f}. 30d mom: {snapshot.mom_30d:+.1%}. YTD: {snapshot.ytd_return:+.1%}.
 Next own earnings: {earnings_str}. Peers: {', '.join(peer_tickers)}.
@@ -300,7 +300,7 @@ def call_ai_catalyst_stress_test(ticker, spot, dip_price, rally_price,
     if not top:
         return [], 0.0
     prompt = f"""For {ticker} at spot ${spot:.2f}, dip target ${dip_price:.0f}, rally target ${rally_price:.0f},
-60-day horizon. For each catalyst below, estimate the directional drift impact
+{horizon_days}-trading-day horizon. For each catalyst below, estimate the directional drift impact
 (annualised pp) if the catalyst disappoints by 20% on its key metric.
 
 Catalysts:

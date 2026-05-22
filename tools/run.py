@@ -44,11 +44,6 @@ def main():
                         "overrides the registry entirely.")
     p.add_argument("--show-rationale", action="store_true",
                    help="Verbose mode (currently default)")
-    p.add_argument("--debug-spot-override", type=float, default=None,
-                   help="Force spot to this value (debug only — used to test "
-                        "AI cache invalidation on simulated spot moves without "
-                        "waiting for live price changes). Removed/refactored "
-                        "in W2 alongside the registry.")
     args = p.parse_args()
     return run_pipeline(args)
 
