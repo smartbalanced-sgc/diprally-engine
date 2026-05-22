@@ -13,9 +13,9 @@ import os
 from typing import Optional
 
 from src.config import (
-    OPUS_INPUT_PER_TOKEN,
-    OPUS_OUTPUT_PER_TOKEN,
+    MODEL_OPUS,
     WEB_SEARCH_PER_USE,
+    pricing_for_model,
 )
 
 
@@ -36,12 +36,19 @@ def _anthropic_client():
         return None
 
 
-def compute_opus_cost(response, had_web_search=False):
-    """Cost of an Opus 4.7 call ($15/M input, $75/M output, $0.01/web search)."""
+def compute_ai_cost(response, model_id: str = MODEL_OPUS, had_web_search: bool = False) -> float:
+    """Cost of an Anthropic API call. Dispatches pricing on model_id.
+
+    Honest fallback: returns 0.0 when usage data is unreadable. Earlier code
+    returned 0.30 / 0.05 as a guess, which over-reported a $0 outcome (no
+    actual API call) and under-reported a $1+ outcome — neither is acceptable
+    for the $2/day budget broker. 0.0 is the correct null value; the caller
+    should log a warning when usage is missing and treat it as a soft error.
+    """
     try:
         u = response.usage
-        cost = (u.input_tokens * OPUS_INPUT_PER_TOKEN
-                + u.output_tokens * OPUS_OUTPUT_PER_TOKEN)
+        in_rate, out_rate = pricing_for_model(model_id)
+        cost = u.input_tokens * in_rate + u.output_tokens * out_rate
         ws_uses = 0
         stu = getattr(u, "server_tool_use", None)
         if stu is not None:
@@ -50,8 +57,9 @@ def compute_opus_cost(response, had_web_search=False):
             ws_uses = 1
         cost += ws_uses * WEB_SEARCH_PER_USE
         return float(cost)
-    except Exception:
-        return 0.30 if had_web_search else 0.05
+    except Exception as e:
+        print(f"   WARNING: compute_ai_cost could not read response.usage: {e}")
+        return 0.0
 
 
 # =============================================================================
@@ -200,12 +208,12 @@ def call_ai_pass(prompt, max_tokens=3000, pass_label="Pass"):
 
     try:
         response = client.messages.create(
-            model="claude-opus-4-7",
+            model=MODEL_OPUS,
             max_tokens=max_tokens,
             tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
             messages=[{"role": "user", "content": prompt}],
         )
-        cost = compute_opus_cost(response, had_web_search=True)
+        cost = compute_ai_cost(response, model_id=MODEL_OPUS, had_web_search=True)
         text_parts = []
         for block in response.content:
             if hasattr(block, "text"):
@@ -280,11 +288,11 @@ Return ONLY valid JSON list.
 """
     try:
         response = client.messages.create(
-            model="claude-opus-4-7",
+            model=MODEL_OPUS,
             max_tokens=1500,
             messages=[{"role": "user", "content": prompt}],
         )
-        cost = compute_opus_cost(response, had_web_search=False)
+        cost = compute_ai_cost(response, model_id=MODEL_OPUS, had_web_search=False)
         text_parts = []
         for block in response.content:
             if hasattr(block, "text"):

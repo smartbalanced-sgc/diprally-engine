@@ -14,12 +14,41 @@ DEFAULT_LOOKBACK_DAYS = 730
 
 
 # -----------------------------------------------------------
-# Opus 4.7 pricing
-# Verify against https://docs.anthropic.com/en/api/pricing before W1 ships
+# Anthropic pricing — Opus 4.7, Sonnet 4.6, Haiku 4.5
+# Verify against https://docs.anthropic.com/en/api/pricing before each wave ships
 # -----------------------------------------------------------
 OPUS_INPUT_PER_TOKEN = 15.00 / 1_000_000
 OPUS_OUTPUT_PER_TOKEN = 75.00 / 1_000_000
+SONNET_INPUT_PER_TOKEN = 3.00 / 1_000_000
+SONNET_OUTPUT_PER_TOKEN = 15.00 / 1_000_000
+HAIKU_INPUT_PER_TOKEN = 1.00 / 1_000_000
+HAIKU_OUTPUT_PER_TOKEN = 5.00 / 1_000_000
 WEB_SEARCH_PER_USE = 0.01
+
+# Canonical model IDs (centralised so model swaps are one-line)
+MODEL_OPUS = "claude-opus-4-7"
+MODEL_SONNET = "claude-sonnet-4-6"
+MODEL_HAIKU = "claude-haiku-4-5-20251001"
+
+# (model_id_prefix, input_rate, output_rate)
+_AI_PRICING = (
+    ("opus",   OPUS_INPUT_PER_TOKEN,   OPUS_OUTPUT_PER_TOKEN),
+    ("sonnet", SONNET_INPUT_PER_TOKEN, SONNET_OUTPUT_PER_TOKEN),
+    ("haiku",  HAIKU_INPUT_PER_TOKEN,  HAIKU_OUTPUT_PER_TOKEN),
+)
+
+
+def pricing_for_model(model_id: str) -> tuple[float, float]:
+    """Return (input_per_token, output_per_token) for the given model ID.
+    Matches by case-insensitive substring on the canonical family name.
+    Defaults to Opus pricing for unknown IDs (conservative — overstates cost
+    rather than understates).
+    """
+    lower = (model_id or "").lower()
+    for prefix, in_rate, out_rate in _AI_PRICING:
+        if prefix in lower:
+            return in_rate, out_rate
+    return OPUS_INPUT_PER_TOKEN, OPUS_OUTPUT_PER_TOKEN
 
 
 # -----------------------------------------------------------
