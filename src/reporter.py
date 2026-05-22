@@ -40,6 +40,8 @@ def format_report(
     unusual_move=None,
     sensitivity=None,
     path_metrics=None,
+    ev_hurdle_refused=False,
+    ev_pct_of_dip=None,
 ) -> str:
     lines: list[str] = []
     lines.append(hr(f"DIPRALLY ENGINE ({V2_VERSION}) — {snapshot.ticker} — {snapshot.timestamp:%Y-%m-%d %H:%M}"))
@@ -52,7 +54,21 @@ def format_report(
 
     # HEADLINE RECOMMENDATION
     lines.append(hr("ROUND-TRIP RECOMMENDATION"))
-    if best is None and method_check.get("refused"):
+    if ev_hurdle_refused and best is not None:
+        # Sacred decision #13 — EV-hurdle hard gate. Best pair found AND
+        # passed conviction thresholds, but EV/dip is below the institutional
+        # minimum (50 bps). Refuse to authorize. Sensitivity + path metrics
+        # still render below so the trader sees the context.
+        from src.config import EV_HURDLE_BPS_OF_DIP
+        ev_bps_str = f"{ev_pct_of_dip * 10000.0:.1f}bps" if ev_pct_of_dip is not None else "n/a"
+        lines.append(f"  ⛔ REFUSED — EV-hurdle gate (sacred decision #13).")
+        lines.append(f"  Best-EV pair was found ($1{best.dip_price:,.0f}/${best.rally_price:,.0f} would have")
+        lines.append(f"  qualified on conviction thresholds) but expected return is too marginal:")
+        lines.append(f"     EV/dip = {ev_bps_str}  <  required {EV_HURDLE_BPS_OF_DIP}bps")
+        lines.append(f"  Marginal positive-EV trades at this magnitude don't survive realistic")
+        lines.append(f"  friction / slippage / execution costs — institutional discipline says pass.")
+        lines.append(f"  Action: WAIT for a setup with EV ≥ {EV_HURDLE_BPS_OF_DIP}bps of dip.")
+    elif best is None and method_check.get("refused"):
         # Sacred decision #16 hard refusal — math layer can't agree.
         lines.append("  ⛔ REFUSED — three-method math disagreement exceeds the σ-scaled refusal threshold.")
         lines.append("  Publishing a recommendation under method disagreement would mean publishing")

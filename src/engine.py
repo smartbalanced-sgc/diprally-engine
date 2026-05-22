@@ -31,6 +31,7 @@ from src.config import (
     AI_VOL_REGIME_MULTIPLIERS,
     BACKTEST_MIN_SAMPLES,
     BLEND_WEIGHTS_V2,
+    EV_HURDLE_BPS_OF_DIP,
     DEFAULT_HORIZON_DAYS,
     DEFAULT_LOOKBACK_DAYS,
     DEFAULT_MC_PATHS,
@@ -1025,6 +1026,28 @@ def run_pipeline(args) -> int:
         vol_schedule=vol_schedule,
     )
 
+    # --- 11b. Sacred decision #13 — EV-hurdle hard gate.
+    # Refuse to recommend if EV < +EV_HURDLE_BPS_OF_DIP of dip after friction.
+    # Math: ev_pct_of_dip = (net_ev_total / shares) / dip_price
+    #                     = (net_ev_total / (capital/dip)) / dip
+    #                     = net_ev_total / capital
+    # So the gate threshold simplifies to:
+    #     net_ev_total < capital * EV_HURDLE_BPS_OF_DIP / 10000
+    # KEEP best (so sensitivity + path metrics still render — trader needs the
+    # context to understand WHY refusal fired). The refusal flag overrides the
+    # headline section in reporter.format_report.
+    ev_hurdle_refused = False
+    ev_pct_of_dip = None
+    if best is not None:
+        ev_pct_of_dip = best.net_expected_value / capital  # = EV/share ÷ dip
+        ev_hurdle_threshold = EV_HURDLE_BPS_OF_DIP / 10000.0
+        if ev_pct_of_dip < ev_hurdle_threshold:
+            ev_hurdle_refused = True
+            ev_bps = ev_pct_of_dip * 10000.0
+            print(f"⛔ Sacred #13 EV-hurdle refusal: EV/dip = {ev_bps:.1f}bps "
+                  f"< required {EV_HURDLE_BPS_OF_DIP}bps")
+            met_threshold_strict = False  # cascade — no clean-recommendation headline
+
     # --- 13. AI catalyst stress test — uses Pass 2's revised catalyst list
     #          when available (effective_ai), else Pass 1's. Sacred #7.
     catalyst_stress_results = []
@@ -1157,6 +1180,8 @@ def run_pipeline(args) -> int:
         unusual_move=unusual_move,
         sensitivity=sensitivity,
         path_metrics=path_metrics,
+        ev_hurdle_refused=ev_hurdle_refused,
+        ev_pct_of_dip=ev_pct_of_dip,
     )
     print(report)
 
