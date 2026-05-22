@@ -691,7 +691,17 @@ def run_pipeline(args) -> int:
         peer_tickers = ["MU", "WDC"]
     else:
         peer_tickers = []
-    peer_dfs = fetch_peer_history(peer_tickers, api_key, lookback_days=60) if peer_tickers else {}
+    # CRITICAL: peer history needs DEFAULT_LOOKBACK_DAYS calendar days (730), NOT 60.
+    # signal_from_peer_rs computes a 60-trading-day return which needs 61 trading
+    # bars (~85 calendar days). 60 calendar days = ~43 trading bars — insufficient.
+    # Previously this silently failed: n_day_return returned None on every peer
+    # fetch, signal_from_peer_rs returned _none_signal, and the display masked
+    # the absence as "+0.0% LOW". Result: 10% of the blend weight was inert from
+    # W0 through W1 across every smoke run. Aligning peer lookback with own-ticker
+    # lookback eliminates the implicit calendar-vs-trading-days assumption and
+    # future-proofs against signals that want longer lookback windows.
+    peer_dfs = fetch_peer_history(peer_tickers, api_key,
+                                    lookback_days=DEFAULT_LOOKBACK_DAYS) if peer_tickers else {}
 
     self_earnings = fetch_next_earnings(ticker, api_key)
     self_earnings_dt = None
