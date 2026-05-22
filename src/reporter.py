@@ -33,7 +33,6 @@ def format_report(
     conviction_dip,
     conviction_rally_cond,
     horizon_days,
-    capital_usd,
     total_ai_cost,
     runtime_seconds,
     met_threshold_strict=True,
@@ -50,7 +49,7 @@ def format_report(
     lines.append(f"  Sector / Industry: {snapshot.sector} / {snapshot.industry}")
     lines.append(f"  RSI: {snapshot.rsi:.1f}   5d mom: {snapshot.mom_5d:+.1%}   30d mom: {snapshot.mom_30d:+.1%}   YTD: {snapshot.ytd_return:+.1%}")
     lines.append(f"  Conviction thresholds: dip {conviction_dip:.0%} marginal, rally-cond {conviction_rally_cond:.0%}")
-    lines.append(f"  Horizon: {horizon_days} trading days   Capital: ${capital_usd:,.0f}")
+    lines.append(f"  Horizon: {horizon_days} trading days   (sacred #6: trader sizes externally)")
 
     # HEADLINE RECOMMENDATION
     lines.append(hr("ROUND-TRIP RECOMMENDATION"))
@@ -87,18 +86,17 @@ def format_report(
             lines.append("  ⚠ Showing best-by-EV fallback. DO NOT TRADE this pair without re-evaluating.")
             lines.append("  ⚠ Action: WAIT for a higher-conviction setup OR adjust thresholds with --conviction-dip / --conviction-rally-cond.")
             lines.append("")
-        if best.net_expected_value < 0 and met_threshold_strict:
+        if best.net_ev_per_share < 0 and met_threshold_strict:
             lines.append("  ⚠ NEGATIVE EXPECTED VALUE — thresholds met BUT average outcome loses money.")
-            lines.append(f"  ⚠ Bag-hold scenario (P={best.p_bag_hold:.0%}, ${best.expected_bag_hold_loss:,.0f}/share loss) dominates the gain.")
+            lines.append(f"  ⚠ Bag-hold scenario (P={best.p_bag_hold:.0%}, ${best.expected_bag_hold_loss:,.2f}/share loss) dominates the gain.")
             lines.append("  ⚠ Consider waiting for a higher-EV setup or skipping this trade.")
             lines.append("")
-        shares = capital_usd / best.dip_price
-        lines.append(f"  Dip buy-limit:    ${best.dip_price:,.0f}  (P(touch within {horizon_days}d) = {best.p_dip_touched:.1%}, expected day {best.expected_days_to_dip:.0f})")
-        lines.append(f"  Rally sell-limit: ${best.rally_price:,.0f}  (P(rally | dip touched) = {best.p_rally_given_dip:.1%}, expected day +{best.expected_days_dip_to_rally:.0f})")
+        lines.append(f"  Dip buy-limit:    ${best.dip_price:,.2f}  (P(touch within {horizon_days}d) = {best.p_dip_touched:.1%}, expected day {best.expected_days_to_dip:.0f})")
+        lines.append(f"  Rally sell-limit: ${best.rally_price:,.2f}  (P(rally | dip touched) = {best.p_rally_given_dip:.1%}, expected day +{best.expected_days_dip_to_rally:.0f})")
         lines.append(f"  Joint P(round-trip): {best.p_round_trip:.1%}")
-        lines.append(f"  Expected gain/share if completed: +${best.expected_gain_per_share:,.0f}")
-        lines.append(f"  Expected $ loss if bag-hold: ${best.expected_bag_hold_loss:,.0f}/share at horizon")
-        lines.append(f"  Net expected $/trade: ${best.net_expected_value:,.0f}  (capital ${capital_usd:,.0f} → ~{shares:.1f} shares)")
+        lines.append(f"  Expected gain/share if completed: +${best.expected_gain_per_share:,.2f}")
+        lines.append(f"  Expected $ loss/share if bag-hold: ${best.expected_bag_hold_loss:,.2f}")
+        lines.append(f"  Net EV/share: ${best.net_ev_per_share:+,.2f}   ({best.ev_pct_of_dip*10000:+.1f}bps of dip entry)")
 
         lines.append(hr("SCENARIO BREAKDOWN (sum to 100%)"))
         lines.append(f"  A. Round-trip completed:     {best.p_round_trip:6.1%}  → profit")
@@ -357,9 +355,10 @@ def generate_html_dashboard(
       </div>
       <div class="metrics">
         <div><span class="m-lbl">Joint P</span><span class="m-val">{best.p_round_trip:.0%}</span></div>
-        <div><span class="m-lbl">Gain/sh</span><span class="m-val">+${best.expected_gain_per_share:,.0f}</span></div>
+        <div><span class="m-lbl">Gain/sh</span><span class="m-val">+${best.expected_gain_per_share:,.2f}</span></div>
         <div><span class="m-lbl">Bag-hold P</span><span class="m-val">{best.p_bag_hold:.0%}</span></div>
-        <div><span class="m-lbl">Net EV</span><span class="m-val">${best.net_expected_value:,.0f}</span></div>
+        <div><span class="m-lbl">EV/sh</span><span class="m-val">${best.net_ev_per_share:+,.2f}</span></div>
+        <div><span class="m-lbl">EV/dip</span><span class="m-val">{best.ev_pct_of_dip*10000:+.0f}bps</span></div>
       </div>
     </div>
 """

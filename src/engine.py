@@ -172,7 +172,8 @@ class JointConditionalResult:
     expected_days_dip_to_rally: float
     expected_gain_per_share: float
     expected_bag_hold_loss: float
-    net_expected_value: float
+    net_ev_per_share: float       # per-share EV (replaces capital-scaled net_expected_value)
+    ev_pct_of_dip: float          # net_ev_per_share / dip_price (trader-comparable across tickers)
 
 
 # =============================================================================
@@ -254,13 +255,16 @@ def scan_dip_rally_grid(
     paths,
     conviction_dip,
     conviction_rally_cond,
-    capital_usd=10000.0,
     spread_per_share_round_trip=2.0,
     vol_schedule=None,
 ):
     """Scan (dip × rally) grid with Brownian bridge correction.
 
     Returns (best, candidates, met_threshold_strict).
+
+    Sacred decision #6: no capital concept. EV is reported per-share + as
+    a percent of dip-entry price. The trader sizes externally; engine is
+    a recommendation tool, not a position-sizer.
     """
     n_paths, n_days = paths.shape
     dip_min = S0 * (1.0 - DIP_GRID_MAX_DEPTH_PCT)
@@ -296,14 +300,16 @@ def scan_dip_rally_grid(
             if p_rally_cond < conviction_rally_cond - 0.08:
                 continue
 
-            shares = capital_usd / float(dip)
             gain_per_share = float(rally) - float(dip) - spread_per_share_round_trip
             bag_hold_loss_per_share = float(dip) - result["bag_hold_terminal_median"]
             net_ev_per_share = (
                 result["p_round_trip"] * gain_per_share
                 + result["p_bag_hold"] * (-bag_hold_loss_per_share)
             )
-            net_ev_total = net_ev_per_share * shares
+            # EV as % of dip entry — the trader-meaningful comparable across
+            # tickers regardless of price level. SNDK $5/share on $1500 dip
+            # vs LWLG $0.50/share on $13 dip both compute to ~30bps.
+            ev_pct_of_dip = net_ev_per_share / float(dip)
 
             jc = JointConditionalResult(
                 dip_price=float(dip),
@@ -318,7 +324,8 @@ def scan_dip_rally_grid(
                 expected_days_dip_to_rally=result["expected_days_dip_to_rally"],
                 expected_gain_per_share=gain_per_share,
                 expected_bag_hold_loss=bag_hold_loss_per_share,
-                net_expected_value=net_ev_total,
+                net_ev_per_share=net_ev_per_share,
+                ev_pct_of_dip=ev_pct_of_dip,
             )
             candidates.append(jc)
 
@@ -327,11 +334,11 @@ def scan_dip_rally_grid(
         if c.p_dip_touched >= conviction_dip and c.p_rally_given_dip >= conviction_rally_cond
     ]
     if qualified:
-        qualified.sort(key=lambda c: c.net_expected_value, reverse=True)
+        qualified.sort(key=lambda c: c.net_ev_per_share, reverse=True)
         best = qualified[0]
         met_threshold_strict = True
     else:
-        candidates_sorted = sorted(candidates, key=lambda c: c.net_expected_value, reverse=True)
+        candidates_sorted = sorted(candidates, key=lambda c: c.net_ev_per_share, reverse=True)
         best = candidates_sorted[0] if candidates_sorted else None
         met_threshold_strict = False
 
@@ -340,7 +347,7 @@ def scan_dip_rally_grid(
 
 def compute_sensitivity_table(
     S0, base_sigma, base_mu, horizon_days,
-    dip_price, rally_price, capital_usd,
+    dip_price, rally_price,
     spread_per_share_round_trip,
     catalyst_shocks, vol_schedule_base=None, n_paths_sensitivity=10_000,
 ):
@@ -384,7 +391,7 @@ def compute_sensitivity_table(
             result["p_round_trip"] * gain_per_share
             + result["p_bag_hold"] * (-bag_hold_loss)
         )
-        shares = capital_usd / dip_price
+        ev_pct_of_dip = net_ev_per_share / dip_price
         rows.append({
             "label": label,
             "mu": mu_s,
@@ -393,7 +400,7 @@ def compute_sensitivity_table(
             "p_bag_hold": result["p_bag_hold"],
             "p_no_trade": result["p_no_trade_rally_first"],
             "net_ev_per_share": net_ev_per_share,
-            "net_ev_total": net_ev_per_share * shares,
+            "ev_pct_of_dip": ev_pct_of_dip,
         })
     return rows
 
@@ -402,12 +409,19 @@ def compute_sensitivity_table(
 # CSV persistence
 # =============================================================================
 
+# CSV schema bump for sacred #6 (no capital concept):
+# - Drop net_expected_value (was capital × per-share, capital-scaled)
+# - Add net_ev_per_share + ev_pct_of_dip (capital-independent, comparable
+#   across tickers regardless of price level)
+# Old history files written before this bump are not backwards-compatible
+# with the new schema. N=1 day at this point (no calibration accumulated)
+# so the clean break is acceptable.
 CSV_COLUMNS = [
     "date", "spot", "sigma_blended", "drift_posterior", "drift_posterior_std",
     "recommended_dip", "p_dip", "expected_days_to_dip",
     "recommended_rally", "p_rally_cond",
     "p_round_trip", "p_bag_hold", "p_no_trade_rally_first", "p_neither",
-    "expected_gain_per_share", "net_expected_value",
+    "expected_gain_per_share", "net_ev_per_share", "ev_pct_of_dip",
     "ai_drift_pass1", "ai_drift_pass2", "ai_vol_regime",
     "narrative_score", "catalyst_proximity_drift",
     "garch_alpha_plus_beta", "horizon_days",
@@ -583,7 +597,6 @@ def run_pipeline(args) -> int:
     horizon_days = args.horizon
     conviction_dip = args.conviction_dip
     conviction_rally_cond = args.conviction_rally_cond
-    capital = args.capital
 
     output_dir = Path(__file__).resolve().parent.parent / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1023,24 +1036,20 @@ def run_pipeline(args) -> int:
         paths=paths,
         conviction_dip=conviction_dip,
         conviction_rally_cond=conviction_rally_cond,
-        capital_usd=capital,
         vol_schedule=vol_schedule,
     )
 
     # --- 11b. Sacred decision #13 — EV-hurdle hard gate.
     # Refuse to recommend if EV < +EV_HURDLE_BPS_OF_DIP of dip after friction.
-    # Math: ev_pct_of_dip = (net_ev_total / shares) / dip_price
-    #                     = (net_ev_total / (capital/dip)) / dip
-    #                     = net_ev_total / capital
-    # So the gate threshold simplifies to:
-    #     net_ev_total < capital * EV_HURDLE_BPS_OF_DIP / 10000
+    # Post-sacred-#6: ev_pct_of_dip is computed per-pair in scan_dip_rally_grid
+    # (no capital concept anywhere). Just read best.ev_pct_of_dip and gate.
     # KEEP best (so sensitivity + path metrics still render — trader needs the
     # context to understand WHY refusal fired). The refusal flag overrides the
     # headline section in reporter.format_report.
     ev_hurdle_refused = False
     ev_pct_of_dip = None
     if best is not None:
-        ev_pct_of_dip = best.net_expected_value / capital  # = EV/share ÷ dip
+        ev_pct_of_dip = best.ev_pct_of_dip
         ev_hurdle_threshold = EV_HURDLE_BPS_OF_DIP / 10000.0
         if ev_pct_of_dip < ev_hurdle_threshold:
             ev_hurdle_refused = True
@@ -1123,7 +1132,6 @@ def run_pipeline(args) -> int:
             S0=spot, base_sigma=effective_sigma, base_mu=post_mu,
             horizon_days=horizon_days,
             dip_price=best.dip_price, rally_price=best.rally_price,
-            capital_usd=capital,
             spread_per_share_round_trip=2.0,
             catalyst_shocks=catalyst_stress_results,
             vol_schedule_base=vol_schedule,
@@ -1156,7 +1164,8 @@ def run_pipeline(args) -> int:
         "p_no_trade_rally_first": f"{best.p_no_trade_rally_first:.4f}" if best else "",
         "p_neither": f"{best.p_neither:.4f}" if best else "",
         "expected_gain_per_share": f"{best.expected_gain_per_share:.2f}" if best else "",
-        "net_expected_value": f"{best.net_expected_value:.2f}" if best else "",
+        "net_ev_per_share": f"{best.net_ev_per_share:.4f}" if best else "",
+        "ev_pct_of_dip": f"{best.ev_pct_of_dip:.6f}" if best else "",
         "ai_drift_pass1": f"{pass1.drift_estimate:.4f}" if pass1 else "",
         "ai_drift_pass2": f"{pass2.drift_estimate:.4f}" if pass2 else "",
         "ai_vol_regime": effective_ai.vol_regime if effective_ai else "",
@@ -1175,7 +1184,7 @@ def run_pipeline(args) -> int:
     report = format_report(
         snapshot, vol_profile, base_signals, pass1, pass2, posterior_summary,
         best, method_check, catalyst_stress_results, backtest,
-        conviction_dip, conviction_rally_cond, horizon_days, capital,
+        conviction_dip, conviction_rally_cond, horizon_days,
         total_ai_cost, runtime,
         met_threshold_strict=met_threshold_strict,
         unusual_move=unusual_move,
