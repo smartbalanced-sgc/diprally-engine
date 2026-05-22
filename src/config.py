@@ -137,7 +137,14 @@ class TickerConfig(_StrictModel):
     sigma_class: str = Field(pattern=r"^(EXTREME|HIGH|MID)$")
     sector_expected: str
     stock_peers: list[str]
-    etf_peer: str  # "" when not configured
+    etf_peer: str = ""              # "" when not configured
+    # Per-provider symbol translation (D-W2-14 fallback foundation).
+    # When empty, the canonical symbol (the YAML key) is used as-is.
+    # Override for tickers where providers diverge (e.g. BRK.B on FMP vs
+    # BRK-B on yfinance; today's universe doesn't need it but the registry
+    # supports it for future additions).
+    fmp_symbol: str = ""
+    yf_symbol: str = ""
 
 
 class DiprallyConfig(_StrictModel):

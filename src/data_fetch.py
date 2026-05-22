@@ -46,15 +46,8 @@ class FetchError(Exception):
         super().__init__(f"{source} fetch failed for {ticker}{status_part}: {self.reason}")
 
 
-def fetch_history(ticker, api_key, lookback_days):
-    """Fetch OHLC history for a ticker. Raises FetchError on any failure.
-
-    Wrap-with-typed-error pattern: never let raw requests exceptions leak to
-    the caller, never let URL strings (which contain the apikey) appear in
-    propagated error messages. W5 batch mode catches FetchError to skip a
-    ticker; single-ticker mode catches it for a clean exit with informative
-    output.
-    """
+def _fetch_history_fmp(ticker: str, api_key: str, lookback_days: int) -> pd.DataFrame:
+    """FMP-only history fetch. Raises FetchError on any failure. Internal."""
     end = datetime.now().strftime("%Y-%m-%d")
     start = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
     url = f"{FMP_BASE}/historical-price-eod/full"
@@ -64,10 +57,9 @@ def fetch_history(ticker, api_key, lookback_days):
         r.raise_for_status()
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else None
-        # 402 = ticker not in plan tier; 404 = ticker not found; 429 = rate limit
         hint = ""
         if status == 402:
-            hint = " (ticker not in FMP plan tier — try yfinance fallback when D-W2-14 ships)"
+            hint = " (ticker not in FMP plan tier)"
         elif status == 429:
             hint = " (FMP rate limit — back off)"
         raise FetchError(ticker, "fmp", status, f"HTTP error{hint}") from None
@@ -85,7 +77,92 @@ def fetch_history(ticker, api_key, lookback_days):
         raise FetchError(ticker, "fmp", r.status_code, "empty response — ticker may not exist")
     df = pd.DataFrame(data).rename(columns={"date": "Date", "close": "Close"})
     df["Date"] = pd.to_datetime(df["Date"])
-    return df.sort_values("Date").reset_index(drop=True)
+    df = df.sort_values("Date").reset_index(drop=True)
+    df.attrs["data_source"] = "fmp"
+    return df
+
+
+def _fetch_history_yfinance(ticker: str, lookback_days: int) -> pd.DataFrame:
+    """yfinance history fetch. Raises FetchError on any failure. Internal.
+
+    Used as the fallback provider when FMP fails (D-W2-14). yfinance covers
+    a wider universe than FMP Starter (e.g. handles MOG.A dot-form fine,
+    handles all NYSE/NASDAQ names including microcaps and class shares).
+    Free; no apikey; rate-limited softly by Yahoo but typically generous.
+    """
+    try:
+        import yfinance as yf
+    except ImportError:
+        raise FetchError(ticker, "yfinance", None, "yfinance not installed") from None
+
+    try:
+        tk = yf.Ticker(ticker)
+        # Calendar days; yfinance period strings: "1y", "2y", "5y"; or
+        # explicit start/end. Use start/end to match FMP semantics.
+        start = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+        end = datetime.now().strftime("%Y-%m-%d")
+        df = tk.history(start=start, end=end, auto_adjust=False)
+    except Exception as e:
+        raise FetchError(ticker, "yfinance", None, f"history fetch error: {e}") from None
+
+    if df is None or df.empty:
+        raise FetchError(ticker, "yfinance", None, "empty response")
+
+    # Normalize to FMP-compatible shape: Date + Close columns.
+    df = df.reset_index().rename(columns={"index": "Date"})
+    if "Date" not in df.columns:
+        # Some yfinance versions name the index column 'Date' already
+        df = df.rename(columns={df.columns[0]: "Date"})
+    df["Date"] = pd.to_datetime(df["Date"])
+    if "Close" not in df.columns:
+        raise FetchError(ticker, "yfinance", None, "no Close column in response")
+    df = df.sort_values("Date").reset_index(drop=True)
+    df.attrs["data_source"] = "yfinance"
+    return df
+
+
+def fetch_history(ticker: str, api_key: str, lookback_days: int) -> pd.DataFrame:
+    """Fetch OHLC history with FMP-primary, yfinance-fallback resilience.
+
+    D-W2-14: closes the single-point-of-failure that previously meant one bad
+    FMP response (402/404/429/5xx/timeout) killed the entire pipeline. Now:
+
+      1. Try FMP first (cheap, higher-quality OHLC, lower latency)
+      2. If FMP raises FetchError, log the reason and retry on yfinance
+      3. If yfinance also fails, raise a combined FetchError with both reasons
+
+    Per-provider symbol translation (when needed) lives in the registry
+    (sacred #17). Today's universe uses the same dash form on both providers,
+    so caller passes one canonical ticker and both providers see it.
+
+    Return df.attrs['data_source'] is 'fmp' or 'yfinance' so downstream
+    consumers (CSV row, reporter) can log which provider supplied the data.
+    """
+    # Per-provider symbol resolution (registry handles divergences if any).
+    # Imported lazily to avoid circular import (registry imports config).
+    try:
+        from src.registry import provider_symbol
+        fmp_sym = provider_symbol(ticker, "fmp")
+        yf_sym = provider_symbol(ticker, "yfinance")
+    except Exception:
+        # Registry lookup may fail for unknown tickers — use canonical.
+        fmp_sym = yf_sym = ticker
+
+    # Primary: FMP
+    try:
+        return _fetch_history_fmp(fmp_sym, api_key, lookback_days)
+    except FetchError as fmp_err:
+        print(f"   ⚠ FMP fetch failed for {ticker}: {fmp_err.reason} — falling back to yfinance")
+        # Fallback: yfinance
+        try:
+            return _fetch_history_yfinance(yf_sym, lookback_days)
+        except FetchError as yf_err:
+            # Both providers failed. Raise combined error so caller sees
+            # both reasons (helps debugging — was it a network outage,
+            # a tier issue, or a genuinely-unknown ticker?).
+            combined = (f"FMP failed ({fmp_err.reason}); "
+                        f"yfinance fallback also failed ({yf_err.reason})")
+            raise FetchError(ticker, "all-providers", None, combined) from None
 
 
 def _fmp_get(endpoint, api_key, params=None):

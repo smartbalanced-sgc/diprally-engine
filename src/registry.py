@@ -90,3 +90,30 @@ def expected_sector(symbol: str) -> Optional[str]:
     upper = symbol.upper()
     entry = _CONFIG.tickers.get(upper)
     return entry.sector_expected if entry else None
+
+
+def provider_symbol(symbol: str, provider: str) -> str:
+    """Translate a canonical ticker to the form required by a specific data
+    provider. Sacred decision #17: per-provider translation is data in
+    config/diprally.yaml.
+
+    provider must be 'fmp' or 'yfinance' (case-insensitive). Returns the
+    canonical (caller-passed) symbol if:
+      - the ticker is not in the registered universe (caller responsibility)
+      - the registry entry has an empty fmp_symbol / yf_symbol field
+        (default — most tickers use the same symbol on both providers)
+
+    Today's universe uses dash form (MOG-A) on both FMP and yfinance, so no
+    overrides are configured. The mechanism is in place for future tickers
+    where providers diverge (e.g. BRK.B on FMP vs BRK-B on Yahoo).
+    """
+    upper = symbol.upper()
+    entry = _CONFIG.tickers.get(upper)
+    if entry is None:
+        return upper
+    provider_lower = provider.lower()
+    if provider_lower == "fmp":
+        return entry.fmp_symbol or upper
+    if provider_lower in ("yfinance", "yf"):
+        return entry.yf_symbol or upper
+    raise ValueError(f"Unknown provider {provider!r}; expected 'fmp' or 'yfinance'")
