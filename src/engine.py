@@ -63,6 +63,7 @@ from src.data_fetch import (
     fetch_analyst_summary,
     fetch_analyst_targets,
     fetch_company_profile,
+    fetch_fundamentals,
     fetch_history,
     fetch_macro_indicators,
     fetch_next_earnings,
@@ -96,6 +97,7 @@ from src.signals import (
     parse_catalyst_date,  # noqa: F401  (re-export for callers)
     signal_from_analyst_targets,
     signal_from_catalyst_proximity,
+    signal_from_fundamentals,
     signal_from_historical,
     signal_from_macro,
     signal_from_peer_rs,
@@ -258,6 +260,7 @@ def _signals_dict_to_display_list(signals_dict, weights, blend=None):
         "sector": "Sector momentum",
         "macro": "Macro regime (VIX/SPY)",
         "short_interest": "Short interest (squeeze tail)",
+        "fundamentals": "Fundamentals (FCF + leverage + margin trend)",
         "peer_rs": "Peer RS (60d)",
         "sector_decoupling": "Sector decoupling (vs sector, 30d)",
         "ai": "AI analyst",
@@ -849,6 +852,8 @@ def run_pipeline(args) -> int:
     # data_fetch.py for any future audit / analytical use, but does not
     # feed the recommendation blend.
     short_data = fetch_short_interest(ticker, api_key)
+    # W6 PR #34: TTM FCF + leverage + margin trend.
+    fundamentals = fetch_fundamentals(ticker, api_key, market_cap=market_cap)
 
     # Peer resolution via registry (D-W2-1 closed). CLI --peers is an override;
     # absent --peers falls back to config/diprally.yaml's per-ticker entry
@@ -907,6 +912,7 @@ def run_pipeline(args) -> int:
         "macro": signal_from_macro(macro),
         # sacred #15: insider dropped (D-W2-16)
         "short_interest": signal_from_short_interest(short_data),
+        "fundamentals": signal_from_fundamentals(fundamentals),
         "peer_rs": signal_from_peer_rs(history_df, peer_dfs, lookback_days=60, ticker=ticker),
         "sector_decoupling": signal_from_sector_decoupling(history_df, sector_perf,
                                                             lookback_days=30, ticker=ticker),

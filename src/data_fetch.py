@@ -254,6 +254,78 @@ def fetch_company_profile(ticker, api_key):
     return data[0]
 
 
+def fetch_fundamentals(ticker, api_key, market_cap=None):
+    """W6 PR #34 — TTM FCF + leverage + margin trend.
+
+    Pulls from two FMP endpoints:
+      * key-metrics-ttm  → TTM FCF, EBITDA, net debt (per-share scaled)
+      * income-statement?period=quarter  → last 8 quarters for the
+                                            margin-trend sub-component
+
+    Returns a dict {fcf_yield, net_debt_to_ebitda, op_margin_trend,
+    n_components_available}. Each numeric field is None when not
+    computable (pre-revenue names, missing endpoint, etc.); the signal
+    function treats None as "this sub-component unavailable" rather
+    than as zero.
+    """
+    out = {
+        "fcf_yield": None,
+        "net_debt_to_ebitda": None,
+        "op_margin_trend": None,
+        "n_components_available": 0,
+    }
+
+    # TTM key metrics
+    ttm = _fmp_get("key-metrics-ttm", api_key, {"symbol": ticker})
+    if ttm and isinstance(ttm, list) and ttm:
+        row = ttm[0]
+        # FCF yield: FMP exposes freeCashFlowYieldTTM directly (decimal).
+        fcfy = row.get("freeCashFlowYieldTTM")
+        if fcfy is not None:
+            try:
+                out["fcf_yield"] = float(fcfy)
+                out["n_components_available"] += 1
+            except (TypeError, ValueError):
+                pass
+        # Net debt / EBITDA: FMP exposes netDebtToEBITDATTM. Only valid
+        # when EBITDA > 0 (negative-EBITDA names get None — leverage
+        # ratio is meaningless against negative cash flow).
+        ebitda = row.get("ebitdaTTM") or row.get("evToEbitdaTTM")
+        nd_ebitda = row.get("netDebtToEBITDATTM")
+        if nd_ebitda is not None and ebitda and float(ebitda) > 0:
+            try:
+                out["net_debt_to_ebitda"] = float(nd_ebitda)
+                out["n_components_available"] += 1
+            except (TypeError, ValueError):
+                pass
+
+    # Quarterly income statement for margin-trend.
+    inc = _fmp_get(f"income-statement/{ticker}", api_key,
+                    {"period": "quarter", "limit": 8})
+    if inc and isinstance(inc, list) and len(inc) >= 8:
+        try:
+            # FMP rows are newest-first.
+            recent_4q = inc[:4]
+            prior_4q = inc[4:8]
+            def _avg_margin(rows):
+                margins = []
+                for r in rows:
+                    rev = float(r.get("revenue") or 0.0)
+                    op_inc = float(r.get("operatingIncome") or 0.0)
+                    if rev > 0:
+                        margins.append(op_inc / rev)
+                return sum(margins) / len(margins) if margins else None
+            recent_avg = _avg_margin(recent_4q)
+            prior_avg = _avg_margin(prior_4q)
+            if recent_avg is not None and prior_avg is not None:
+                out["op_margin_trend"] = recent_avg - prior_avg
+                out["n_components_available"] += 1
+        except (TypeError, ValueError, KeyError):
+            pass
+
+    return out
+
+
 def fetch_sector_perf(sector, api_key, days=None, exchange_filter="NASDAQ"):
     """FMP historical-sector-performance — filtered to one exchange, last-N unique dates.
 

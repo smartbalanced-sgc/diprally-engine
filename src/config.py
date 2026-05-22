@@ -308,6 +308,26 @@ class CatalystProximityConfig(_StrictModel):
     in_window_count_medium_conf: int = Field(ge=1)
 
 
+class FundamentalsSignalConfig(_StrictModel):
+    """W6 PR #34: fundamentals signal thresholds. Three sub-components
+    (FCF yield, net debt / EBITDA, operating margin trend) combined to
+    an annualised drift contribution. EXTREME / pre-revenue names with
+    ≤0 EBITDA or ≤0 FCF degrade to LOW confidence rather than crash."""
+    fcf_yield_strong_bull: float
+    fcf_yield_mild_bull: float
+    fcf_yield_neutral_low: float
+    fcf_yield_strong_bear: float
+    bullish_drift_pp: float = Field(ge=0.0)
+    mild_drift_pp: float = Field(ge=0.0)
+    leverage_strong_bull: float = Field(gt=0.0)
+    leverage_neutral_high: float = Field(gt=0.0)
+    leverage_mild_bear: float = Field(gt=0.0)
+    margin_trend_bull: float
+    margin_trend_bear: float
+    margin_trend_drift_pp: float = Field(ge=0.0)
+    drift_cap_abs: float = Field(gt=0.0)
+
+
 class SignalsConfig(_StrictModel):
     """D-W2-6: aggregate of all signal-level embedded thresholds."""
     analyst: AnalystSignalConfig
@@ -319,6 +339,7 @@ class SignalsConfig(_StrictModel):
     sector_decoupling: SectorDecouplingConfig
     regime_detection: RegimeDetectionConfig
     catalyst_proximity: CatalystProximityConfig
+    fundamentals: FundamentalsSignalConfig
 
 
 class V3ReviewCriteriaConfig(_StrictModel):
@@ -644,6 +665,7 @@ def _rebind_module_constants() -> None:
     g["SIGNAL_SECTOR_DECOUPLING"] = sig.sector_decoupling
     g["SIGNAL_REGIME_DETECTION"] = sig.regime_detection
     g["SIGNAL_CATALYST_PROXIMITY"] = sig.catalyst_proximity
+    g["SIGNAL_FUNDAMENTALS"] = sig.fundamentals
     g["PHANTOM_SIGNAL_SE_CONFIG"] = _CONFIG.phantom_signal_se  # signals.py reads PHANTOM_SIGNAL_SE locally
 
     # AI cache

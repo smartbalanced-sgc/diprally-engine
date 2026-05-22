@@ -139,9 +139,10 @@ blend_weights_v2:
   short_interest: 0.02
   peer_rs: 0.10
   sector_decoupling: 0.10
-  ai: 0.26
+  ai: 0.20                              # W6 PR #34: trimmed from 0.26 to make room
   catalyst_proximity: 0.10
-  narrative: 0.10
+  narrative: 0.08                       # trimmed from 0.10
+  fundamentals: 0.08                    # W6 PR #34: FCF + leverage + margin trend
 
 # Standard error per qualitative confidence tier (decimal annualised return).
 confidence_to_se:
@@ -485,6 +486,32 @@ signals:
     drift_cap_abs: 0.15
     in_window_count_high_conf: 3        # ≥ this in-horizon catalysts → HIGH conf
     in_window_count_medium_conf: 1
+
+  # W6 PR #34 — fundamentals signal. Three sub-components combined to
+  # an annualised drift contribution: FCF yield (cash-generative names
+  # get a structural bid), net debt / EBITDA (over-levered balance
+  # sheet drags drift down), operating-margin trend (improving =
+  # bullish). EXTREME/pre-revenue names often have ≤0 EBITDA + ≤0 FCF
+  # — the signal degrades to LOW confidence rather than crashing.
+  fundamentals:
+    # FCF yield = TTM FCF / market cap. Brackets are decimal (0.05 = 5%).
+    fcf_yield_strong_bull: 0.05         # ≥ this → +bullish_drift_pp
+    fcf_yield_mild_bull:   0.02         # ≥ this → +mild_drift_pp
+    fcf_yield_neutral_low: 0.00         # below 0 starts bearish
+    fcf_yield_strong_bear: -0.05        # ≤ this → -bullish_drift_pp
+    bullish_drift_pp:      0.04
+    mild_drift_pp:         0.02
+    # Net debt / EBITDA (only computable when EBITDA > 0).
+    leverage_strong_bull:  1.0          # ≤ this multiple → +mild_drift_pp
+    leverage_neutral_high: 3.0          # within neutral band
+    leverage_mild_bear:    5.0          # > 3× and ≤ this → -mild_drift_pp
+    # > leverage_mild_bear → -bullish_drift_pp.
+    # Operating-margin trend: avg margin last 4Q vs prior 4Q (decimal).
+    margin_trend_bull:     0.05         # +5pp = bullish
+    margin_trend_bear:    -0.05         # -5pp = bearish
+    margin_trend_drift_pp: 0.02         # contribution per side
+    # Drift cap on the combined fundamentals signal.
+    drift_cap_abs:         0.08         # combined signal capped here
 
 # -----------------------------------------------------------
 # Sensitivity scenarios (D-W2-7) — already declared above.
