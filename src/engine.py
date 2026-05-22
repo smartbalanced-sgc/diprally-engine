@@ -694,6 +694,25 @@ def run_pipeline(args) -> int:
         except Exception:
             pass
 
+    # Peer earnings within horizon — fed into the catalyst-aware vol_schedule.
+    # Previously this was left empty, meaning MU/WDC/competitor earnings in
+    # SNDK's horizon never spiked SNDK's σ. Sacred decision #9 (bridge MC)
+    # depends on vol_schedule being accurate; passing [] was degrading bridge
+    # fidelity on every full-AI run with peer earnings in window.
+    peer_earnings_dts = []
+    for p in peer_tickers:
+        try:
+            pe = fetch_next_earnings(p, api_key)
+            if pe and pe.get("date"):
+                dt = datetime.strptime(pe["date"][:10], "%Y-%m-%d")
+                # Only include if within horizon window
+                days_away = (dt.date() - datetime.now().date()).days
+                if 0 <= days_away <= horizon_days:
+                    peer_earnings_dts.append(dt)
+                    print(f"   Peer earnings in horizon: {p} on {pe['date']} ({days_away}d)")
+        except Exception as e:
+            print(f"   WARNING: peer earnings fetch failed for {p}: {e}")
+
     signals_dict = {
         "historical": signal_from_historical(mu_effective_historical, mu_hist, blended_sigma),
         "analyst": signal_from_analyst_targets(targets, spot,
@@ -904,12 +923,14 @@ def run_pipeline(args) -> int:
 
     base_signals = _signals_dict_to_display_list(signals_dict, BLEND_WEIGHTS_V2)
 
-    # --- 8. Vol schedule ---
+    # --- 8. Vol schedule (catalyst-aware) ---
+    # peer_earnings_dts populated at fetch time (step 3.5). macro_event_dates
+    # still empty — populated in W4/W5 alongside the FOMC/CPI calendar.
     vol_schedule = build_catalyst_vol_schedule(
         base_vol=blended_sigma,
         horizon_days=horizon_days,
         self_earnings_date=self_earnings_dt,
-        peer_earnings_dates=[],
+        peer_earnings_dates=peer_earnings_dts,
         macro_event_dates=[],
     )
 
