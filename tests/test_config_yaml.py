@@ -141,22 +141,23 @@ def test_perturbing_blend_weights_propagates():
     try:
         tmp = _write_perturbed({
             "blend_weights_v2": {
-                "ai": 0.10,           # was 0.25 — dramatic reduction
+                "ai": 0.10,           # was 0.26 — dramatic reduction
                 "historical": 0.30,   # was 0.05 — dramatic increase
-                "analyst": 0.15,
+                "analyst": 0.16,
                 "sector": 0.04,
                 "macro": 0.07,
-                "insider": 0.02,
                 "short_interest": 0.02,
                 "peer_rs": 0.10,
                 "sector_decoupling": 0.10,
                 "catalyst_proximity": 0.10,
                 "narrative": 0.10,
+                # sacred #15: no insider key (dropped in D-W2-16)
             }
         })
         cfg.reload_config(tmp)
         assert cfg.BLEND_WEIGHTS_V2["ai"] == 0.10
         assert cfg.BLEND_WEIGHTS_V2["historical"] == 0.30
+        assert "insider" not in cfg.BLEND_WEIGHTS_V2
     finally:
         _restore()
         os.unlink(tmp)

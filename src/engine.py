@@ -50,7 +50,6 @@ from src.data_fetch import (
     fetch_analyst_targets,
     fetch_company_profile,
     fetch_history,
-    fetch_insider_activity,
     fetch_macro_indicators,
     fetch_next_earnings,
     fetch_options_iv,
@@ -84,7 +83,6 @@ from src.signals import (
     signal_from_analyst_targets,
     signal_from_catalyst_proximity,
     signal_from_historical,
-    signal_from_insider,
     signal_from_macro,
     signal_from_peer_rs,
     signal_from_sector,
@@ -231,7 +229,6 @@ def _signals_dict_to_display_list(signals_dict, weights, blend=None):
         "analyst": "Analyst (price-target-summary)",
         "sector": "Sector momentum",
         "macro": "Macro regime (VIX/SPY)",
-        "insider": "Insider activity (90d, mcap-scaled)",
         "short_interest": "Short interest (squeeze tail)",
         "peer_rs": "Peer RS (60d)",
         "sector_decoupling": "Sector decoupling (vs sector, 30d)",
@@ -759,7 +756,10 @@ def run_pipeline(args) -> int:
     regime = detect_swing_regime(rsi, mom_5d, mom_30d * 100,
                                   blended_sigma, ytd_return * 100)
     macro = fetch_macro_indicators(api_key)
-    insider = fetch_insider_activity(ticker, api_key)
+    # Sacred decision #15: insider signal dropped (Form 4 lag + noise).
+    # No fetch_insider_activity call. fetch_insider_activity remains in
+    # data_fetch.py for any future audit / analytical use, but does not
+    # feed the recommendation blend.
     short_data = fetch_short_interest(ticker, api_key)
 
     # Peer resolution via registry (D-W2-1 closed). CLI --peers is an override;
@@ -817,7 +817,7 @@ def run_pipeline(args) -> int:
                                                 summary=summary),
         "sector": signal_from_sector(sector_perf, swing_regime=regime),
         "macro": signal_from_macro(macro),
-        "insider": signal_from_insider(insider, market_cap_usd=market_cap),
+        # sacred #15: insider dropped (D-W2-16)
         "short_interest": signal_from_short_interest(short_data),
         "peer_rs": signal_from_peer_rs(history_df, peer_dfs, lookback_days=60, ticker=ticker),
         "sector_decoupling": signal_from_sector_decoupling(history_df, sector_perf,
