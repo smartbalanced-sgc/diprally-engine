@@ -132,6 +132,35 @@ Each of these is a tunable buried inside a function. Lift to YAML under a
   truncate sanely (end at word boundary, append ellipsis), or widen the
   column to accommodate.
 
+### D-W2-12. Drift Intelligence display shows nominal weights, not effective
+- **Discovered**: INTC W1 full-AI smoke (2026-05-22 16:29)
+- **Symptom**: report's "DRIFT INTELLIGENCE (11 signals)" table prints the
+  `BLEND_WEIGHTS_V2[name]` value in the Weight column — the NOMINAL design
+  weight. The blend itself uses these weights AFTER:
+    (a) zeroing NONE_FOUND signals
+    (b) halving LOW-confidence signals
+    (c) halving SPECULATIVE+single-source signals
+    (d) re-normalizing the surviving set to sum to 1.0
+  On INTC the gap is material — analyst's effective contribution to the
+  blend is ~21% (HIGH conf survives the halving, then renormalized up
+  because LOW signals shrank); the display shows 15%. A trader scanning
+  the table to reconcile "what's driving the blend point estimate"
+  systematically misreads the actual contribution of every signal.
+- **Why it matters**: institution-grade discipline requires the display
+  to match the math. The blend is being driven by effective weights;
+  the trader's mental model must align with that.
+- **Fix in W2**: extend `_signals_dict_to_display_list` to compute the
+  effective normalized weight alongside the nominal. `DriftSignal` gains
+  an `effective_weight: float` field. Reporter prints two columns:
+  `Nominal | Effective`. HTML dashboard table updated accordingly.
+  Belongs in W2 because BLEND_WEIGHTS moves to YAML in W2 — same
+  refactor touches the display code.
+- **Acceptance**: rerun any W1 smoke; verify the table shows both
+  nominal and effective columns; verify effective column sums to 100%
+  (or 0% when all signals are dropped); spot-check on a name where
+  several signals are LOW-conf to confirm the halving + renormalization
+  produces the expected effective weight.
+
 ### Acceptance for W2
 - `python tools/run.py SNDK` (no `--peers`, no `--capital`) auto-resolves
   peers from registry; report shows EV/share + EV% of dip; no SNDK
@@ -145,6 +174,8 @@ Each of these is a tunable buried inside a function. Lift to YAML under a
   to 0.60 and confirming the report reflects the new threshold.
 - The unit test from W1 (`tests/test_refusal_gate.py`) still passes — no
   regression in the σ-scaled tolerance + refusal gate.
+- Drift Intelligence table shows both Nominal and Effective weight
+  columns (D-W2-12).
 
 ---
 
@@ -276,6 +307,41 @@ Each of these is a tunable buried inside a function. Lift to YAML under a
   hallucinated catalysts from entering the blend in the first place.
   D-W10-1 is calibrative — measure how well preventative + Pass 2 are
   working, adjust weights accordingly. Both are needed.
+
+### D-W10-2. Sector-decoupling signal saturates on every momentum name
+- **Discovered**: pattern across SNDK / LWLG / RKLB / INTC W1 smokes
+  (2026-05-22). All four tickers reported `Sector decoupling +20.0% HIGH`
+  — the signal hit its own `±0.20` cap (signals.signal_from_sector_decoupling
+  line 319) on every single name tested.
+- **Symptom**: a signal that saturates on every observation isn't a
+  discriminator — it's contributing a near-constant `+0.20 × 10% = +2pp`
+  to the blend regardless of ticker. The signal's design weight (10%)
+  is allocated to information value that isn't being delivered for this
+  engine's target universe.
+- **Root cause**: the cap was inherited from the seed (W0 migration).
+  The seed engine ran only on SNDK at SNDK-like vol. The cap was
+  conservative for that single-ticker context. On a 17-ticker universe
+  of high-momentum names (where YTD returns are routinely +80% to +460%
+  vs sector returns of -5% to +5%), the raw decoupling is regularly
+  +50% to +300%, all clipped to the same +20% value.
+- **Fix in W10 (data-driven decision)**:
+    - After N≥30 days of runtime, regress signal_from_sector_decoupling's
+      historical drift contribution against realized 60-day returns
+      across the universe.
+    - Three candidate corrections (test each):
+      (a) Widen the cap to `±0.50` (preserve ranking discrimination)
+      (b) Replace the cap with a σ-class-aware cap (EXTREME wider, MID tighter)
+      (c) Reduce the signal's blend weight from 10% → 5% (acknowledge
+          information-value degradation in this universe)
+    - Pick the candidate with the lowest realized Brier score against
+      held-out validation.
+- **Why not fix earlier than W10**: changing the cap or weight without
+  data is guessing. The seed value was conservative; W10 calibration is
+  the right venue to revise it from realized outcomes.
+- **Interim mitigation**: the W2 effective-weight display fix (D-W2-12)
+  at least makes this visible to the trader — they can see that
+  sector_decoupling is contributing a constant value across every ticker
+  and discount it mentally.
 
 ---
 
