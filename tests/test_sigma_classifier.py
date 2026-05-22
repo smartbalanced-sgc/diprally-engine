@@ -173,6 +173,53 @@ def test_friction_in_bps_is_price_agnostic():
     assert abs(fracA - bps / 10000.0) < 1e-12
 
 
+# =============================================================================
+# W3 PR #24 — per-class panic floor + AI vol_regime multipliers
+# =============================================================================
+
+def test_per_class_panic_floor_widens_with_volatility():
+    """Higher-vol classes need a deeper panic floor: the natural
+    distribution extends further left, so -18% on a MID name means
+    something very different than -18% on an EXTREME name."""
+    extreme = SIGMA_CLASSES["EXTREME"].panic_floor_pct
+    high = SIGMA_CLASSES["HIGH"].panic_floor_pct
+    mid = SIGMA_CLASSES["MID"].panic_floor_pct
+    assert extreme > high > mid, (
+        f"Panic floor ordering wrong: EXTREME={extreme} HIGH={high} MID={mid}"
+    )
+    # Sanity: still less than the corresponding dip_max_depth (we only
+    # flag panic BELOW the dip-scan range — within the dip range is the
+    # engine's normal operating area).
+    for cls in ("EXTREME", "HIGH", "MID"):
+        entry = SIGMA_CLASSES[cls]
+        assert entry.panic_floor_pct < entry.grid.dip_max_depth_pct, (
+            f"{cls}: panic_floor {entry.panic_floor_pct} >= dip depth "
+            f"{entry.grid.dip_max_depth_pct} — overlap inverts the metric"
+        )
+
+
+def test_per_class_vol_regime_multipliers_have_required_keys():
+    """Every class must expose HIGH / MEDIUM / LOW regime multipliers
+    so AI dispatch can't land on a missing key at runtime."""
+    required = {"HIGH", "MEDIUM", "LOW"}
+    for cls in ("EXTREME", "HIGH", "MID"):
+        keys = set(SIGMA_CLASSES[cls].ai_vol_regime_multipliers.keys())
+        assert required <= keys, (
+            f"{cls} ai_vol_regime_multipliers missing keys: "
+            f"required={required} got={keys}"
+        )
+
+
+def test_per_class_vol_regime_ordering():
+    """Within each class HIGH multiplier > MEDIUM == 1.0 > LOW —
+    HIGH regime amplifies σ, LOW dampens, MEDIUM is identity."""
+    for cls in ("EXTREME", "HIGH", "MID"):
+        mults = SIGMA_CLASSES[cls].ai_vol_regime_multipliers
+        assert mults["HIGH"] > 1.0
+        assert mults["MEDIUM"] == 1.0
+        assert mults["LOW"] < 1.0
+
+
 def test_per_class_grid_yields_tractable_point_count():
     """Step + depth combination yields a tractable candidate-pair count.
     Lower bound (≥30 cells per dimension) ensures a fine-enough EV

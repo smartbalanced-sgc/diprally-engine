@@ -128,6 +128,18 @@ sigma_classes:
     # — proportional to the average price across both legs. EXTREME
     # ticks wider, has higher impact, lower liquidity → 70 bps RT.
     friction_bps_round_trip: 70.0
+    # Panic-floor depth (PR #24) — flagged as "below this, the trader
+    # needs a structural thesis, not a swing setup." Deeper for higher-
+    # vol classes because the natural distribution extends further left.
+    panic_floor_pct: 0.35
+    # AI vol_regime → effective_sigma multiplier (PR #24). Class-tuned
+    # because the same "HIGH vol_regime" call from AI means something
+    # different on a MID name (already high σ to begin with) vs EXTREME
+    # (already extreme; less room to amplify). Sacred CLAUDE.md numbers.
+    ai_vol_regime_multipliers:
+      HIGH: 1.10
+      MEDIUM: 1.00
+      LOW: 0.90
   HIGH:
     conviction:
       dip: 0.65
@@ -138,6 +150,11 @@ sigma_classes:
       dip_max_depth_pct: 0.35
       rally_max_reach_pct: 0.50
     friction_bps_round_trip: 35.0
+    panic_floor_pct: 0.25
+    ai_vol_regime_multipliers:
+      HIGH: 1.15
+      MEDIUM: 1.00
+      LOW: 0.90
   MID:
     conviction:
       dip: 0.65
@@ -148,6 +165,11 @@ sigma_classes:
       dip_max_depth_pct: 0.20
       rally_max_reach_pct: 0.30
     friction_bps_round_trip: 18.0
+    panic_floor_pct: 0.18
+    ai_vol_regime_multipliers:
+      HIGH: 1.25
+      MEDIUM: 1.00
+      LOW: 0.80
 
 # -----------------------------------------------------------
 # Horizon + MC paths
@@ -159,25 +181,13 @@ horizon:
   deep_dip_autoscale_paths: 200000
 
 # -----------------------------------------------------------
-# Grid scan (dip × rally)
-#
-# D-W3-1 CLOSED in PR #22: step + depth + reach now live per-σ-class
-# under sigma_classes.<CLASS>.grid (price-agnostic, % of spot). The
-# legacy fixed-dollar/global-pct fields below are RETIRED and no
-# longer read by the engine — kept here only as a breadcrumb during
-# W3 in case YAML is reverted; safe to delete after W3 closes.
-# panic_floor_pct moves per-class in PR #24.
+# Legacy global blocks RETIRED in W3:
+#   - grid.step/depth/reach        → PR #22 (sigma_classes.<CLASS>.grid)
+#   - grid.panic_floor_pct          → PR #24 (sigma_classes.<CLASS>.panic_floor_pct)
+#   - ai_vol_regime_multipliers     → PR #24 (sigma_classes.<CLASS>.ai_vol_regime_multipliers)
+#   - engine.spread_per_share_round_trip → PR #23 (sigma_classes.<CLASS>.friction_bps_round_trip)
+# Engine reads everything class-keyed; no global fallback path remains.
 # -----------------------------------------------------------
-grid:
-  panic_floor_pct: 0.30         # path-metrics panic floor (W3 PR #24 → per-class)
-
-# -----------------------------------------------------------
-# AI vol_regime → vol multiplier (drives effective σ in MC)
-# -----------------------------------------------------------
-ai_vol_regime_multipliers:
-  HIGH: 1.15
-  MEDIUM: 1.00
-  LOW: 0.90
 
 # -----------------------------------------------------------
 # Structural narrative score → drift adjustment (annualised pp)

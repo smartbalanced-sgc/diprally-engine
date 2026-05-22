@@ -24,7 +24,6 @@ from src.config import (
     GARCH_INITIAL_OMEGA,
     GARCH_INITIAL_OMEGA_FULL,
     GARCH_MIN_DATA_BARS,
-    PANIC_FLOOR_PCT,
     PDE_N_SPACE,
     PDE_N_TIME,
     REALIZED_VOL_WINDOWS,
@@ -637,18 +636,19 @@ def build_catalyst_vol_schedule(
 # =============================================================================
 
 def compute_path_metrics(paths: np.ndarray, S0: float, dip_price: float,
-                          rally_price: float) -> dict:
+                          rally_price: float, panic_floor_pct: float) -> dict:
     """Extract path-dependent statistics from MC paths.
 
     Returns max-drawdown distribution, panic-floor touch probability, and
-    time-to-target percentiles.
+    time-to-target percentiles. W3 PR #24: panic_floor_pct is per-σ-class
+    (passed by the engine from SIGMA_CLASSES[class].panic_floor_pct).
     """
     n_paths, n_days = paths.shape
     running_max = np.maximum.accumulate(paths, axis=1)
     drawdowns = (running_max - paths) / running_max
     max_dd_per_path = drawdowns.max(axis=1)
 
-    panic_floor = S0 * (1.0 - PANIC_FLOOR_PCT)
+    panic_floor = S0 * (1.0 - panic_floor_pct)
     p_panic_touched = float((paths.min(axis=1) <= panic_floor).mean())
 
     dip_touch_day = np.where(

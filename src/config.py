@@ -86,10 +86,14 @@ class SigmaClassGridConfig(_StrictModel):
 class SigmaClassThresholdConfig(_StrictModel):
     """One row in the sigma_classes table. PR #21 added conviction;
     PR #22 added grid; PR #23 added friction_bps_round_trip;
-    panic/ai_vol_mult slot in via PR #24."""
+    PR #24 added panic_floor_pct + ai_vol_regime_multipliers.
+    Class table is now feature-complete — every per-class lever lives
+    here."""
     conviction: SigmaClassConvictionConfig
     grid: SigmaClassGridConfig
     friction_bps_round_trip: float = Field(ge=0.0)
+    panic_floor_pct: float = Field(gt=0.0, lt=1.0)
+    ai_vol_regime_multipliers: dict[str, float]
 
 
 class HorizonConfig(_StrictModel):
@@ -97,13 +101,6 @@ class HorizonConfig(_StrictModel):
     default_mc_paths: int = Field(gt=0)
     deep_dip_autoscale_threshold: float = Field(gt=0.0, lt=1.0)
     deep_dip_autoscale_paths: int = Field(gt=0)
-
-
-class GridConfig(_StrictModel):
-    """Legacy global grid container — step/depth/reach moved to
-    sigma_classes.<CLASS>.grid in W3 PR #22. panic_floor stays here
-    until PR #24 moves it per-class."""
-    panic_floor_pct: float = Field(gt=0.0, lt=1.0)
 
 
 class MethodToleranceConfig(_StrictModel):
@@ -334,8 +331,6 @@ class DiprallyConfig(_StrictModel):
     sigma_class_boundaries: SigmaClassBoundariesConfig
     sigma_classes: dict[str, SigmaClassThresholdConfig]
     horizon: HorizonConfig
-    grid: GridConfig
-    ai_vol_regime_multipliers: dict[str, float]
     narrative_drift_adjustment: dict[str, float]
     factor_arithmetic: FactorArithmeticConfig
     catalyst: CatalystConfig
@@ -470,12 +465,8 @@ def _rebind_module_constants() -> None:
     g["DEEP_DIP_AUTOSCALE_THRESHOLD"] = _CONFIG.horizon.deep_dip_autoscale_threshold
     g["DEEP_DIP_AUTOSCALE_PATHS"] = _CONFIG.horizon.deep_dip_autoscale_paths
 
-    # Grid — step/depth/reach now per-σ-class (W3 PR #22); only
-    # panic_floor remains global until PR #24.
-    g["PANIC_FLOOR_PCT"] = _CONFIG.grid.panic_floor_pct
-
-    # AI vol regime + narrative
-    g["AI_VOL_REGIME_MULTIPLIERS"] = dict(_CONFIG.ai_vol_regime_multipliers)
+    # Narrative drift (panic_floor + ai_vol_regime_multipliers are now
+    # per-σ-class — accessed via SIGMA_CLASSES[class].<field>).
     g["NARRATIVE_DRIFT_ADJUSTMENT"] = dict(_CONFIG.narrative_drift_adjustment)
 
     # Factor arithmetic

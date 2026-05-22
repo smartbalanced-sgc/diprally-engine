@@ -245,7 +245,8 @@ def format_report(
         lines.append(f"    median: {path_metrics['max_dd_p50']*100:5.1f}% (${path_metrics['max_dd_price_p50']:,.0f} touched)")
         lines.append(f"    p75:    {path_metrics['max_dd_p75']*100:5.1f}% (${path_metrics['max_dd_price_p75']:,.0f} touched)")
         lines.append(f"    p90:    {path_metrics['max_dd_p90']*100:5.1f}% (${path_metrics['max_dd_price_p90']:,.0f} touched)")
-        lines.append(f"  Panic floor ${path_metrics['panic_floor_price']:,.0f} (30% below spot) touched: P = {path_metrics['p_panic_touched']*100:.0f}%")
+        panic_pct = 1.0 - path_metrics["panic_floor_price"] / snapshot.spot
+        lines.append(f"  Panic floor ${path_metrics['panic_floor_price']:,.0f} ({panic_pct*100:.0f}% below spot) touched: P = {path_metrics['p_panic_touched']*100:.0f}%")
         if path_metrics.get("time_to_dip_p50") is not None:
             lines.append(
                 f"  Time-to-dip (paths that touched): median {path_metrics['time_to_dip_p50']:.0f}d, "

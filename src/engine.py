@@ -34,7 +34,6 @@ from src.ai_layer import (
     parse_ai_pass2,
 )
 from src.config import (
-    AI_VOL_REGIME_MULTIPLIERS,
     BACKTEST_MIN_SAMPLES,
     BAYESIAN_DEFAULT_PRIOR_STD,
     BAYESIAN_DEFAULT_TODAY_STD,
@@ -1124,8 +1123,13 @@ def run_pipeline(args) -> int:
 
     # --- 9. Apply AI vol_regime multiplier (uses Pass 2's revised regime
     #         when available — Pass 2 wins, sacred decision #7).
+    # PR #24: vol_regime multiplier is per-σ-class. The same "HIGH"
+    # vol_regime call means something different on a MID name (already
+    # high σ; amplify more aggressively) vs EXTREME (already extreme;
+    # less room to amplify).
     if effective_ai:
-        vol_mult = AI_VOL_REGIME_MULTIPLIERS.get(effective_ai.vol_regime, 1.0)
+        class_vol_mults = SIGMA_CLASSES[sigma_class].ai_vol_regime_multipliers
+        vol_mult = class_vol_mults.get(effective_ai.vol_regime, 1.0)
         effective_sigma = blended_sigma * vol_mult
     else:
         effective_sigma = blended_sigma
@@ -1276,7 +1280,10 @@ def run_pipeline(args) -> int:
     # --- 14c. Path metrics ---
     path_metrics = None
     if best is not None:
-        path_metrics = compute_path_metrics(paths, spot, best.dip_price, best.rally_price)
+        path_metrics = compute_path_metrics(
+            paths, spot, best.dip_price, best.rally_price,
+            panic_floor_pct=SIGMA_CLASSES[sigma_class].panic_floor_pct,
+        )
 
     # --- 15. Backtest layer ---
     backtest = run_backtest_layer(history_path, spot)
