@@ -117,15 +117,21 @@ def test_display_effective_weight_computed_from_blend():
     }
     blend = blend_with_uncertainty(signals_dict, weights_dict=BLEND_WEIGHTS_V2)
     out = _signals_dict_to_display_list(signals_dict, BLEND_WEIGHTS_V2, blend=blend)
-    by_name = {s.name.split()[0]: s for s in out}
     historical = [s for s in out if "Historical" in s.name][0]
     analyst = [s for s in out if "Analyst" in s.name][0]
     ai = [s for s in out if "AI analyst" in s.name][0]
-    # historical: nominal 0.05 / (0.05 + 0.15) = 25% effective (only 2 active)
-    # analyst: nominal 0.15 / 0.20 = 75% effective
-    # ai: NONE_FOUND → 0
-    assert abs(historical.effective_weight - 0.25) < 0.01, f"hist effective: {historical.effective_weight}"
-    assert abs(analyst.effective_weight - 0.75) < 0.01, f"analyst effective: {analyst.effective_weight}"
+    # Dynamic: post D-W2-16 (sacred #15 insider drop), weights shifted.
+    # Compute expected from live BLEND_WEIGHTS_V2: historical and analyst
+    # are both MEDIUM/HIGH (no halving); only those two contribute to total.
+    hist_nominal = BLEND_WEIGHTS_V2["historical"]
+    ana_nominal = BLEND_WEIGHTS_V2["analyst"]
+    total = hist_nominal + ana_nominal
+    expected_hist_eff = hist_nominal / total
+    expected_ana_eff = ana_nominal / total
+    assert abs(historical.effective_weight - expected_hist_eff) < 0.01, \
+        f"hist effective: {historical.effective_weight} (expected {expected_hist_eff})"
+    assert abs(analyst.effective_weight - expected_ana_eff) < 0.01, \
+        f"analyst effective: {analyst.effective_weight} (expected {expected_ana_eff})"
     assert ai.effective_weight == 0.0, f"ai effective should be 0: {ai.effective_weight}"
 
 
@@ -310,6 +316,29 @@ def test_ev_hurdle_refusal_headline_shows_correct_prices():
     assert "46.5bps" in report
 
 
+# ---------- Sacred #15: insider signal dropped (D-W2-16) ----------
+
+def test_insider_signal_not_in_blend_weights():
+    """Sacred #15: insider signal dropped (Form 4 lag + noise). Must not
+    appear in either v1 or v2 blend weights post D-W2-16."""
+    from src.config import BLEND_WEIGHTS, BLEND_WEIGHTS_V2
+    assert "insider" not in BLEND_WEIGHTS_V2, "Insider signal must be dropped per sacred #15"
+    assert "insider" not in BLEND_WEIGHTS, "Insider signal must be dropped per sacred #15 (v1 too)"
+
+
+def test_blend_weights_v2_has_expected_signals():
+    """Post D-W2-16: 10 active signals in v2 (down from 11). Specifically
+    historical, analyst, sector, macro, short_interest, peer_rs,
+    sector_decoupling, ai, catalyst_proximity, narrative."""
+    from src.config import BLEND_WEIGHTS_V2
+    expected = {
+        "historical", "analyst", "sector", "macro", "short_interest",
+        "peer_rs", "sector_decoupling", "ai", "catalyst_proximity", "narrative",
+    }
+    assert set(BLEND_WEIGHTS_V2.keys()) == expected, \
+        f"v2 signals drifted: {set(BLEND_WEIGHTS_V2.keys())}"
+
+
 # ---------- Sacred #14 trend filter (D-W2-15) ----------
 
 def test_trend_filter_threshold_constant():
@@ -403,17 +432,26 @@ def test_has_supporting_catalyst_ignores_out_of_horizon():
 # ---------- 6. Effective-weight via blend ----------
 
 def test_blend_weights_reflect_low_halving():
-    """blend['weights'] after LOW halving should be smaller than nominal."""
+    """blend['weights'] after LOW halving should be smaller than nominal.
+
+    Post-D-W2-16 (sacred #15 insider drop), v2 nominal weights are:
+      ai: 0.26, analyst: 0.16 (each picked up part of insider's 2%).
+    LOW conf halves ai's nominal → 0.13."""
+    from src.config import BLEND_WEIGHTS_V2
     signals_dict = {
         "ai": {"drift": 0.10, "confidence": "LOW", "source_quality": "REPUTABLE",
-               "sources_count": 5, "notes": "ok"},  # nominal 0.25, LOW halves to 0.125
+               "sources_count": 5, "notes": "ok"},
         "analyst": {"drift": 0.05, "confidence": "HIGH", "source_quality": "REPUTABLE",
-                    "sources_count": 10, "notes": "ok"},  # nominal 0.15 stays 0.15
+                    "sources_count": 10, "notes": "ok"},
     }
     blend = blend_with_uncertainty(signals_dict, weights_dict=BLEND_WEIGHTS_V2)
     weights = blend["weights"]
-    assert abs(weights["ai"] - 0.125) < 0.001, f"AI halved weight: {weights['ai']}"
-    assert abs(weights["analyst"] - 0.15) < 0.001, f"analyst full weight: {weights['analyst']}"
+    expected_ai_halved = BLEND_WEIGHTS_V2["ai"] * 0.5
+    expected_analyst_full = BLEND_WEIGHTS_V2["analyst"]
+    assert abs(weights["ai"] - expected_ai_halved) < 0.001, \
+        f"AI halved weight: {weights['ai']} (expected {expected_ai_halved})"
+    assert abs(weights["analyst"] - expected_analyst_full) < 0.001, \
+        f"analyst full weight: {weights['analyst']} (expected {expected_analyst_full})"
 
 
 if __name__ == "__main__":
