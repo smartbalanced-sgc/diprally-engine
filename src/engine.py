@@ -854,18 +854,28 @@ def run_pipeline(args) -> int:
                 pass1.bull_factors, pass1.bear_factors,
             )
 
-    signals_dict["catalyst_proximity"] = {
-        "drift": catalyst_mu, "confidence": catalyst_conf,
-        "source_quality": "PRIMARY",
-        "sources_count": len(effective_ai.catalysts) if effective_ai else 0,
-        "notes": catalyst_rat,
-    }
-    signals_dict["narrative"] = {
-        "drift": narrative_mu, "confidence": narrative_conf,
-        "source_quality": "PRIMARY",
-        "sources_count": 0,
-        "notes": narrative_rat,
-    }
+    if effective_ai:
+        signals_dict["catalyst_proximity"] = {
+            "drift": catalyst_mu, "confidence": catalyst_conf,
+            "source_quality": "PRIMARY",
+            "sources_count": len(effective_ai.catalysts),
+            "notes": catalyst_rat,
+        }
+        signals_dict["narrative"] = {
+            "drift": narrative_mu, "confidence": narrative_conf,
+            "source_quality": "PRIMARY",
+            "sources_count": 0,
+            "notes": narrative_rat,
+        }
+    else:
+        # No AI ran (--no-ai or Pass 1 failed). catalyst_proximity and
+        # narrative are AI-DERIVED — without AI they are genuinely MISSING,
+        # not "active at zero." Mark as NONE_FOUND so blend_with_uncertainty's
+        # phantom-signal std accounting captures all three AI-derived weights
+        # (ai 25% + catalyst_proximity 10% + narrative 10% = 45% total
+        # phantom contribution to within_var).
+        signals_dict["catalyst_proximity"] = _none_signal("AI absent — no catalyst extraction")
+        signals_dict["narrative"] = _none_signal("AI absent — no narrative synthesis")
 
     if effective_ai:
         if pass2:
