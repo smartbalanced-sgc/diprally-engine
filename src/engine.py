@@ -475,7 +475,7 @@ CSV_COLUMNS = [
     "ai_drift_pass1", "ai_drift_pass2", "ai_vol_regime",
     "narrative_score", "catalyst_proximity_drift",
     "garch_alpha_plus_beta", "horizon_days",
-    "method_agreement_flags", "ai_cost_total",
+    "method_agreement_flags", "ai_cost_total", "data_source",
 ]
 
 
@@ -662,6 +662,9 @@ def run_pipeline(args) -> int:
         # will catch the same FetchError to skip the ticker and continue.
         print(f"ERROR: {e}")
         return 1
+    data_source = history_df.attrs.get("data_source", "unknown") if history_df is not None else "unknown"
+    if data_source == "yfinance":
+        print(f"   ℹ data source: yfinance (FMP fell back — see warning above)")
     if history_df is None or history_df.empty:
         print(f"ERROR: empty history returned for {ticker}")
         return 1
@@ -1241,6 +1244,7 @@ def run_pipeline(args) -> int:
         "horizon_days": str(horizon_days),
         "method_agreement_flags": ";".join(method_check["flags"]),
         "ai_cost_total": f"{total_ai_cost:.2f}",
+        "data_source": data_source,
     }
     append_history_row(history_path, csv_row)
 
