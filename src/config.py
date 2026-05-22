@@ -143,6 +143,22 @@ class SectorPerfConfig(_StrictModel):
     default_lookback_days: int = Field(gt=0)
 
 
+class PDEGridConfig(_StrictModel):
+    """D-W2-9: PDE Crank-Nicolson grid resolution."""
+    n_space: int = Field(gt=10)
+    n_time: int = Field(gt=10)
+
+
+class GARCHConfig(_StrictModel):
+    """D-W2-9: GARCH(1,1) fit parameters."""
+    min_data_bars: int = Field(gt=10)
+    fallback_bars: int = Field(gt=10)
+    initial_omega: float = Field(gt=0.0, lt=1.0)
+    initial_omega_full: float = Field(gt=0.0, lt=1.0)
+    initial_alpha: float = Field(ge=0.0, lt=1.0)
+    initial_beta: float = Field(ge=0.0, lt=1.0)
+
+
 class V3ReviewCriteriaConfig(_StrictModel):
     n_days_min: int = Field(ge=1)
     calibration_dip_target: tuple[float, float]
@@ -191,6 +207,9 @@ class DiprallyConfig(_StrictModel):
     macro_regime: MacroRegimeConfig
     options_iv: OptionsIVConfig
     sector_perf: SectorPerfConfig
+    pde_grid: PDEGridConfig
+    garch: GARCHConfig
+    realized_vol_windows: list[int]
     phantom_signal_se: float = Field(gt=0.0, le=1.0)
     ai_cache: AICacheConfig
     bag_hold_terminal_assumption: str
@@ -353,6 +372,21 @@ def _rebind_module_constants() -> None:
 
     # Sector perf (D-W2-8)
     g["SECTOR_PERF_DEFAULT_LOOKBACK_DAYS"] = _CONFIG.sector_perf.default_lookback_days
+
+    # PDE grid (D-W2-9)
+    g["PDE_N_SPACE"] = _CONFIG.pde_grid.n_space
+    g["PDE_N_TIME"] = _CONFIG.pde_grid.n_time
+
+    # GARCH (D-W2-9)
+    g["GARCH_MIN_DATA_BARS"] = _CONFIG.garch.min_data_bars
+    g["GARCH_FALLBACK_BARS"] = _CONFIG.garch.fallback_bars
+    g["GARCH_INITIAL_OMEGA"] = _CONFIG.garch.initial_omega
+    g["GARCH_INITIAL_OMEGA_FULL"] = _CONFIG.garch.initial_omega_full
+    g["GARCH_INITIAL_ALPHA"] = _CONFIG.garch.initial_alpha
+    g["GARCH_INITIAL_BETA"] = _CONFIG.garch.initial_beta
+
+    # Realized vol windows (D-W2-9)
+    g["REALIZED_VOL_WINDOWS"] = tuple(_CONFIG.realized_vol_windows)
     g["PHANTOM_SIGNAL_SE_CONFIG"] = _CONFIG.phantom_signal_se  # signals.py reads PHANTOM_SIGNAL_SE locally
 
     # AI cache

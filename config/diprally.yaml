@@ -225,6 +225,32 @@ sector_perf:
   default_lookback_days: 30
 
 # -----------------------------------------------------------
+# PDE Crank-Nicolson grid resolution (math_utils.pde_two_barrier).
+# Trade-off: finer grid = better accuracy but slower runtime. D-W2-9.
+# -----------------------------------------------------------
+pde_grid:
+  n_space: 400        # spatial discretization
+  n_time: 2000        # temporal discretization
+
+# -----------------------------------------------------------
+# GARCH(1,1) fit parameters (math_utils.fit_garch_11 + fit_garch_11_full).
+# D-W2-9.
+# -----------------------------------------------------------
+garch:
+  min_data_bars: 50              # below this → fall back to rolling variance
+  fallback_bars: 90              # rolling variance computed on tail(N).var()
+  initial_omega: 0.01            # neg-log-likelihood optimizer starting point
+  initial_omega_full: 0.0001     # full-fit version uses tighter omega seed
+  initial_alpha: 0.05
+  initial_beta: 0.90
+
+# -----------------------------------------------------------
+# Realized volatility windows (math_utils.compute_realized_vol). D-W2-9.
+# The (30, 60, 90)-day triple drives σ triangulation alongside GARCH + IV.
+# -----------------------------------------------------------
+realized_vol_windows: [30, 60, 90]
+
+# -----------------------------------------------------------
 # Phantom-signal std accounting (W1).
 # When AI-derived signals (ai, catalyst_proximity, narrative) drop with
 # NONE_FOUND status, their nominal weight contributes to within_var via

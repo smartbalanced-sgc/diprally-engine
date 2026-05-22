@@ -18,7 +18,16 @@ from scipy.stats import norm
 
 from src.config import (
     DEFAULT_MC_PATHS,
+    GARCH_FALLBACK_BARS,
+    GARCH_INITIAL_ALPHA,
+    GARCH_INITIAL_BETA,
+    GARCH_INITIAL_OMEGA,
+    GARCH_INITIAL_OMEGA_FULL,
+    GARCH_MIN_DATA_BARS,
     PANIC_FLOOR_PCT,
+    PDE_N_SPACE,
+    PDE_N_TIME,
+    REALIZED_VOL_WINDOWS,
     VOL_SCHEDULE_MULTIPLIERS,
     method_refusal_pp,
     method_tolerance_pp,
@@ -30,9 +39,10 @@ from src.config import (
 # =============================================================================
 
 def fit_garch_11(returns):
-    """GARCH(1,1) one-step-ahead variance forecast. Scalar return."""
+    """GARCH(1,1) one-step-ahead variance forecast. Scalar return.
+    Parameters in config/diprally.yaml under garch (sacred #17, D-W2-9)."""
     r = returns.replace([np.inf, -np.inf], np.nan).dropna()
-    if len(r) < 50:
+    if len(r) < GARCH_MIN_DATA_BARS:
         return r.var()
 
     def neg_ll(params):
@@ -47,13 +57,15 @@ def fit_garch_11(returns):
         return 0.5 * np.sum(np.log(2 * np.pi * s2) + r.values**2 / s2)
 
     try:
-        res = minimize(neg_ll, [0.01, 0.05, 0.90], method="L-BFGS-B",
+        res = minimize(neg_ll,
+                       [GARCH_INITIAL_OMEGA, GARCH_INITIAL_ALPHA, GARCH_INITIAL_BETA],
+                       method="L-BFGS-B",
                        bounds=[(1e-6, 1), (0, 1), (0, 1)])
         omega, alpha, beta = res.x
         last_var = r.tail(20).var()
         return omega + alpha * r.iloc[-1]**2 + beta * last_var
     except Exception:
-        return r.tail(90).var()
+        return r.tail(GARCH_FALLBACK_BARS).var()
 
 
 def fit_garch_11_full(returns: pd.Series) -> dict:
@@ -63,7 +75,7 @@ def fit_garch_11_full(returns: pd.Series) -> dict:
     Stationarity: α + β < 1 (else non-stationary / IGARCH).
     """
     r = returns.replace([np.inf, -np.inf], np.nan).dropna()
-    if len(r) < 50:
+    if len(r) < GARCH_MIN_DATA_BARS:
         return {
             "omega": 0.0, "alpha": 0.0, "beta": 0.0,
             "forecast_variance": float(r.var()) if len(r) > 0 else 1e-6,
@@ -83,7 +95,9 @@ def fit_garch_11_full(returns: pd.Series) -> dict:
 
     try:
         res = minimize(
-            neg_ll, [0.0001, 0.05, 0.90], method="L-BFGS-B",
+            neg_ll,
+            [GARCH_INITIAL_OMEGA_FULL, GARCH_INITIAL_ALPHA, GARCH_INITIAL_BETA],
+            method="L-BFGS-B",
             bounds=[(1e-8, 1.0), (0.0, 1.0), (0.0, 0.9999)],
         )
         omega, alpha, beta = res.x
@@ -97,7 +111,7 @@ def fit_garch_11_full(returns: pd.Series) -> dict:
             "fit_ok": bool(res.success and forecast_var > 0 and not np.isnan(forecast_var)),
         }
     except Exception:
-        fallback_var = float(r.tail(90).var())
+        fallback_var = float(r.tail(GARCH_FALLBACK_BARS).var())
         return {
             "omega": 0.0, "alpha": 0.0, "beta": 0.0,
             "forecast_variance": fallback_var, "fit_ok": False,
@@ -119,8 +133,14 @@ def enrichment_drift(rsi, mom_5d):
     return max(-0.10, min(0.10, rsi_drift + mom_drift))
 
 
-def compute_realized_vol(returns, windows=(30, 60, 90)):
-    """Realized vol over multiple rolling windows. Returns {window: annualised sigma}."""
+def compute_realized_vol(returns, windows=None):
+    """Realized vol over multiple rolling windows. Returns {window: annualised sigma}.
+
+    `windows` defaults to config realized_vol_windows (sacred #17, D-W2-9).
+    Default (30, 60, 90) anchors σ triangulation.
+    """
+    if windows is None:
+        windows = REALIZED_VOL_WINDOWS
     out = {}
     r = returns.replace([np.inf, -np.inf], np.nan).dropna()
     for w in windows:
@@ -183,12 +203,20 @@ def closed_touch_down(S0, L, T, mu, sigma):
 # PDE two-barrier first-passage (Fokker-Planck, Crank-Nicolson)
 # =============================================================================
 
-def pde_two_barrier(S0, U, L, T, mu, sigma, n_space=400, n_time=2000):
+def pde_two_barrier(S0, U, L, T, mu, sigma, n_space=None, n_time=None):
     """Solve Fokker-Planck PDE with absorbing barriers at L and U.
 
     PDE in log-space: dp/dt = -nu * dp/dx + (sigma^2/2) * d^2p/dx^2
     where nu = mu - sigma^2/2 (Ito correction).
+
+    Grid resolution (n_space, n_time) defaults from config pde_grid
+    (sacred #17, D-W2-9). Researchers tuning accuracy/runtime tradeoff
+    edit YAML rather than function signatures.
     """
+    if n_space is None:
+        n_space = PDE_N_SPACE
+    if n_time is None:
+        n_time = PDE_N_TIME
     x_L, x_U = np.log(L), np.log(U)
     x = np.linspace(x_L, x_U, n_space)
     dx = x[1] - x[0]
