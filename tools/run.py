@@ -41,8 +41,10 @@ def main():
                    help="Skip all AI calls (math + backtest only).")
     p.add_argument("--peers", nargs="*", default=None,
                    help="Peer tickers for the peer-RS signal (e.g. --peers MU WDC). "
-                        "No default: ticker registry supplies these in W2. As a "
-                        "W0 transition shim, SNDK falls back to ['MU', 'WDC'].")
+                        "When omitted, defaults to config/diprally.yaml's per-ticker "
+                        "entry (stock_peers preferred, etf_peer fallback for EXTREME "
+                        "names without comparable stock peers). Explicit --peers "
+                        "overrides the registry entirely.")
     p.add_argument("--show-rationale", action="store_true",
                    help="Verbose mode (currently default)")
     p.add_argument("--debug-spot-override", type=float, default=None,
