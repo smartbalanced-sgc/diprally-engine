@@ -1,0 +1,983 @@
+"""Single-ticker pipeline: data → vol → signals → AI → MC → grid → CSV → report.
+
+W0 inlines the v2 monolith's run_pipeline. W2 adds multi-ticker orchestration
+on top via a separate src/orchestrator.py.
+"""
+from __future__ import annotations
+
+import argparse  # noqa: F401  (kept available for run_pipeline arg type hints)
+import csv
+import os
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+
+from src.ai_layer import (
+    build_ai_pass1_prompt,
+    build_ai_pass2_prompt,
+    call_ai_catalyst_stress_test,
+    call_ai_pass,
+    parse_ai_pass1,
+    parse_ai_pass2,
+)
+from src.config import (
+    AI_VOL_REGIME_MULTIPLIERS,
+    BACKTEST_MIN_SAMPLES,
+    BLEND_WEIGHTS_V2,
+    DEFAULT_HORIZON_DAYS,
+    DEFAULT_LOOKBACK_DAYS,
+    DEFAULT_MC_PATHS,
+    DIP_GRID_MAX_DEPTH_PCT,
+    DIP_GRID_STEP,
+    RALLY_GRID_MAX_REACH_PCT,
+    RALLY_GRID_STEP,
+)
+from src.data_fetch import (
+    fetch_analyst_summary,
+    fetch_analyst_targets,
+    fetch_company_profile,
+    fetch_history,
+    fetch_insider_activity,
+    fetch_macro_indicators,
+    fetch_next_earnings,
+    fetch_options_iv,
+    fetch_peer_history,
+    fetch_sector_perf,
+    fetch_short_interest,
+)
+from src.math_utils import (
+    analyze_joint_conditional,
+    build_catalyst_vol_schedule,
+    closed_touch_down,
+    closed_touch_up,
+    compute_path_metrics,
+    compute_realized_vol,
+    compute_rsi_14,
+    enrichment_drift,
+    fit_garch_11_full,
+    precompute_first_touch_days,
+    run_mc_joint_conditional,
+    three_method_cross_check,
+    triangulate_sigma,
+)
+from src.signals import (
+    _none_signal,
+    apply_bull_bear_arithmetic,
+    bayesian_update,
+    blend_with_uncertainty,
+    compute_unusual_move_z,
+    detect_swing_regime,
+    parse_catalyst_date,  # noqa: F401  (re-export for callers)
+    signal_from_analyst_targets,
+    signal_from_catalyst_proximity,
+    signal_from_historical,
+    signal_from_insider,
+    signal_from_macro,
+    signal_from_peer_rs,
+    signal_from_sector,
+    signal_from_sector_decoupling,
+    signal_from_short_interest,
+    signal_from_structural_narrative,
+)
+
+
+# =============================================================================
+# Typed containers (v2 dataclasses)
+# =============================================================================
+
+@dataclass
+class MarketSnapshot:
+    ticker: str
+    timestamp: datetime
+    spot: float
+    market_cap: float
+    sector: str
+    industry: str
+    rsi: float
+    mom_5d: float
+    mom_30d: float
+    ytd_return: float
+    price_history: pd.DataFrame
+
+
+@dataclass
+class VolatilityProfile:
+    garch_sigma: float
+    garch_alpha: float
+    garch_beta: float
+    garch_alpha_plus_beta: float
+    realized_30d: float
+    realized_60d: float
+    realized_90d: float
+    options_iv: Optional[float]
+    options_dte: Optional[int]
+    blended_sigma: float
+    anchors_count: int
+    divergence_pp: float
+    near_unit_root: bool
+
+
+@dataclass
+class DriftSignal:
+    name: str
+    mu_annual: float
+    confidence: str
+    source_quality: str
+    weight: float
+    rationale: str
+
+
+@dataclass
+class AIPassOutput:
+    pass_number: int
+    drift_estimate: float
+    drift_range: tuple
+    confidence: str
+    vol_regime: str
+    narrative_score: str
+    catalysts: list
+    bull_factors: list
+    bear_factors: list
+    key_risks: list
+    revision_from_prior_pass: Optional[float]
+    cost_usd: float
+    raw_sources_cited: int
+
+
+@dataclass
+class JointConditionalResult:
+    dip_price: float
+    rally_price: float
+    p_dip_touched: float
+    p_rally_given_dip: float
+    p_round_trip: float
+    p_bag_hold: float
+    p_no_trade_rally_first: float
+    p_neither: float
+    expected_days_to_dip: float
+    expected_days_dip_to_rally: float
+    expected_gain_per_share: float
+    expected_bag_hold_loss: float
+    net_expected_value: float
+
+
+# =============================================================================
+# Signal dict → display list adapter
+# =============================================================================
+
+def _signals_dict_to_display_list(signals_dict, weights):
+    """Convert v1 signal dict format → list[DriftSignal] for display."""
+    pretty_names = {
+        "historical": "Historical (GARCH + enrichment)",
+        "analyst": "Analyst (price-target-summary)",
+        "sector": "Sector momentum",
+        "macro": "Macro regime (VIX/SPY)",
+        "insider": "Insider activity (90d, mcap-scaled)",
+        "short_interest": "Short interest (squeeze tail)",
+        "peer_rs": "Peer RS (60d)",
+        "sector_decoupling": "Sector decoupling (vs sector, 30d)",
+        "ai": "AI analyst",
+        "catalyst_proximity": "Catalyst proximity (AI-generated)",
+        "narrative": "Structural narrative score",
+    }
+    out: list[DriftSignal] = []
+    for name, info in signals_dict.items():
+        drift = info.get("drift")
+        if drift is None:
+            drift = 0.0
+        display_name = pretty_names.get(name, name)
+        if name == "ai":
+            notes = str(info.get("notes", ""))
+            if "Pass 2" in notes:
+                display_name = "AI analyst (Pass 2 revised, wins over Pass 1)"
+            elif "Pass 1" in notes:
+                display_name = "AI analyst (Pass 1, no Pass 2)"
+            else:
+                display_name = "AI analyst (skipped)"
+        out.append(DriftSignal(
+            name=display_name,
+            mu_annual=float(drift),
+            confidence=str(info.get("confidence", "LOW")),
+            source_quality=str(info.get("source_quality", "PRIMARY")),
+            weight=float(weights.get(name, 0.0)),
+            rationale=str(info.get("notes", "")),
+        ))
+    return out
+
+
+# =============================================================================
+# Grid scan — find best dip × rally pair maximizing net expected value
+# =============================================================================
+
+def scan_dip_rally_grid(
+    S0,
+    sigma,
+    mu,
+    horizon_days,
+    paths,
+    conviction_dip,
+    conviction_rally_cond,
+    capital_usd=10000.0,
+    spread_per_share_round_trip=2.0,
+    vol_schedule=None,
+):
+    """Scan (dip × rally) grid with Brownian bridge correction.
+
+    Returns (best, candidates, met_threshold_strict).
+    """
+    n_paths, n_days = paths.shape
+    dip_min = S0 * (1.0 - DIP_GRID_MAX_DEPTH_PCT)
+    dip_max = S0 * 0.99
+    rally_min = S0 * 1.01
+    rally_max = S0 * (1.0 + RALLY_GRID_MAX_REACH_PCT)
+
+    dip_grid = np.arange(dip_min, dip_max, DIP_GRID_STEP)
+    rally_grid = np.arange(rally_min, rally_max, RALLY_GRID_STEP)
+
+    print(f"  Precomputing bridge-corrected first-touch days for {len(dip_grid)} dip × {len(rally_grid)} rally barriers...")
+    dip_first_days_all = precompute_first_touch_days(
+        paths, S0, dip_grid, sigma, vol_schedule, "down", seed=42,
+    )
+    rally_first_days_all = precompute_first_touch_days(
+        paths, S0, rally_grid, sigma, vol_schedule, "up", seed=43,
+    )
+
+    candidates: list[JointConditionalResult] = []
+    for i, dip in enumerate(dip_grid):
+        for j, rally in enumerate(rally_grid):
+            result = analyze_joint_conditional(
+                paths, S0, float(dip), float(rally), horizon_days,
+                dip_first_days=dip_first_days_all[:, i],
+                rally_first_days=rally_first_days_all[:, j],
+            )
+
+            p_dip = result["p_dip_touched_marginal"]
+            p_rally_cond = result["p_rally_given_dip_conditional"]
+
+            if p_dip < conviction_dip - 0.08:
+                continue
+            if p_rally_cond < conviction_rally_cond - 0.08:
+                continue
+
+            shares = capital_usd / float(dip)
+            gain_per_share = float(rally) - float(dip) - spread_per_share_round_trip
+            bag_hold_loss_per_share = float(dip) - result["bag_hold_terminal_median"]
+            net_ev_per_share = (
+                result["p_round_trip"] * gain_per_share
+                + result["p_bag_hold"] * (-bag_hold_loss_per_share)
+            )
+            net_ev_total = net_ev_per_share * shares
+
+            jc = JointConditionalResult(
+                dip_price=float(dip),
+                rally_price=float(rally),
+                p_dip_touched=p_dip,
+                p_rally_given_dip=p_rally_cond,
+                p_round_trip=result["p_round_trip"],
+                p_bag_hold=result["p_bag_hold"],
+                p_no_trade_rally_first=result["p_no_trade_rally_first"],
+                p_neither=result["p_neither"],
+                expected_days_to_dip=result["expected_days_to_dip"],
+                expected_days_dip_to_rally=result["expected_days_dip_to_rally"],
+                expected_gain_per_share=gain_per_share,
+                expected_bag_hold_loss=bag_hold_loss_per_share,
+                net_expected_value=net_ev_total,
+            )
+            candidates.append(jc)
+
+    qualified = [
+        c for c in candidates
+        if c.p_dip_touched >= conviction_dip and c.p_rally_given_dip >= conviction_rally_cond
+    ]
+    if qualified:
+        qualified.sort(key=lambda c: c.net_expected_value, reverse=True)
+        best = qualified[0]
+        met_threshold_strict = True
+    else:
+        candidates_sorted = sorted(candidates, key=lambda c: c.net_expected_value, reverse=True)
+        best = candidates_sorted[0] if candidates_sorted else None
+        met_threshold_strict = False
+
+    return best, candidates, met_threshold_strict
+
+
+def compute_sensitivity_table(
+    S0, base_sigma, base_mu, horizon_days,
+    dip_price, rally_price, capital_usd,
+    spread_per_share_round_trip,
+    catalyst_shocks, vol_schedule_base=None, n_paths_sensitivity=10_000,
+):
+    """Small MCs with shifted (drift, sigma) for each scenario."""
+    scenarios = [
+        ("Baseline (current)",            base_mu,         base_sigma),
+        ("Drift -15pp",                   base_mu - 0.15,  base_sigma),
+        ("Drift +15pp",                   base_mu + 0.15,  base_sigma),
+        ("σ -20%",                        base_mu,         base_sigma * 0.80),
+        ("σ +20%",                        base_mu,         base_sigma * 1.20),
+        ("Hostile (Δ-15, σ+20)",          base_mu - 0.15,  base_sigma * 1.20),
+    ]
+    for shock in catalyst_shocks[:3]:
+        try:
+            name = str(shock.get("catalyst_name") or shock.get("name") or "catalyst")
+            pp = float(shock.get("drift_shock_pp_on_disappointment") or 0.0)
+            label = f"{name[:35]} ({pp:+.0f}pp)"
+            scenarios.append((label, base_mu + pp / 100.0, base_sigma))
+        except (TypeError, ValueError):
+            continue
+
+    rows = []
+    for label, mu_s, sigma_s in scenarios:
+        if vol_schedule_base is not None and base_sigma > 0:
+            scale = sigma_s / base_sigma
+            vs = vol_schedule_base * scale
+        else:
+            vs = None
+        paths_s = run_mc_joint_conditional(
+            S0=S0, sigma=sigma_s, mu=mu_s,
+            horizon_days=horizon_days, n_paths=n_paths_sensitivity,
+            vol_schedule=vs, seed=42 + len(rows),
+        )
+        result = analyze_joint_conditional(
+            paths_s, S0, dip_price, rally_price, horizon_days,
+            sigma=sigma_s, vol_schedule=vs,
+        )
+        gain_per_share = rally_price - dip_price - spread_per_share_round_trip
+        bag_hold_loss = dip_price - result["bag_hold_terminal_median"]
+        net_ev_per_share = (
+            result["p_round_trip"] * gain_per_share
+            + result["p_bag_hold"] * (-bag_hold_loss)
+        )
+        shares = capital_usd / dip_price
+        rows.append({
+            "label": label,
+            "mu": mu_s,
+            "sigma": sigma_s,
+            "p_round_trip": result["p_round_trip"],
+            "p_bag_hold": result["p_bag_hold"],
+            "p_no_trade": result["p_no_trade_rally_first"],
+            "net_ev_per_share": net_ev_per_share,
+            "net_ev_total": net_ev_per_share * shares,
+        })
+    return rows
+
+
+# =============================================================================
+# CSV persistence
+# =============================================================================
+
+CSV_COLUMNS = [
+    "date", "spot", "sigma_blended", "drift_posterior", "drift_posterior_std",
+    "recommended_dip", "p_dip", "expected_days_to_dip",
+    "recommended_rally", "p_rally_cond",
+    "p_round_trip", "p_bag_hold", "p_no_trade_rally_first", "p_neither",
+    "expected_gain_per_share", "net_expected_value",
+    "ai_drift_pass1", "ai_drift_pass2", "ai_vol_regime",
+    "narrative_score", "catalyst_proximity_drift",
+    "garch_alpha_plus_beta", "horizon_days",
+    "method_agreement_flags", "ai_cost_total",
+]
+
+
+def append_history_row(history_path, row):
+    """Write a row, replacing any existing row with the same date (#11)."""
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    today_str = row.get("date", "")
+
+    if not history_path.exists():
+        with open(history_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerow(row)
+        return
+
+    try:
+        with open(history_path, "r", newline="") as f:
+            existing = list(csv.DictReader(f))
+    except Exception:
+        existing = []
+
+    existing = [r for r in existing if r.get("date", "") != today_str]
+    existing.append(row)
+
+    with open(history_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS, extrasaction="ignore")
+        writer.writeheader()
+        for r in existing:
+            writer.writerow(r)
+
+
+def load_prior_posterior(history_path):
+    """Most-recent row's posterior drift for Bayesian smoothing.
+
+    Same-day guard (#12): if last row is today's, skip prior.
+    """
+    if not history_path.exists():
+        return None
+    try:
+        with open(history_path, "r") as f:
+            rows = list(csv.DictReader(f))
+        if not rows:
+            return None
+        last = rows[-1]
+        last_date_str = last.get("date", "")
+        try:
+            if last_date_str:
+                last_dt = datetime.strptime(last_date_str[:10], "%Y-%m-%d").date()
+                if last_dt == datetime.now().date():
+                    print(f"   Bayesian prior skipped: last row is from today ({last_date_str}); "
+                          f"same-day artifact prevention.")
+                    return None
+        except ValueError:
+            pass
+        mu_raw = last.get("drift_posterior", "")
+        if mu_raw in (None, ""):
+            return None
+        return {
+            "mu": float(mu_raw),
+            "std": float(last.get("drift_posterior_std") or 0.15),
+            "date": last_date_str,
+        }
+    except Exception:
+        return None
+
+
+# =============================================================================
+# Backtest layer
+# =============================================================================
+
+def run_backtest_layer(history_path, current_price):
+    """Walk through CSV history, compute calibration metrics."""
+    if not history_path.exists():
+        return {"n_samples": 0, "sufficient_data": False, "message": "no history yet"}
+
+    try:
+        with open(history_path, "r") as f:
+            rows = list(csv.DictReader(f))
+    except Exception as e:
+        return {"n_samples": 0, "sufficient_data": False, "message": f"read error: {e}"}
+
+    if not rows:
+        return {"n_samples": 0, "sufficient_data": False, "message": "empty CSV"}
+
+    n = len(rows)
+    if n < BACKTEST_MIN_SAMPLES:
+        return {
+            "n_samples": n,
+            "sufficient_data": False,
+            "message": f"need {BACKTEST_MIN_SAMPLES - n} more days for statistical validity",
+            "per_day_status": _build_per_day_status(rows, current_price),
+        }
+
+    dip_predictions_resolved = 0
+    dip_hits = 0
+    rally_predictions_resolved = 0
+    rally_hits = 0
+
+    today = datetime.now().date()
+    for row in rows:
+        try:
+            row_date = datetime.strptime(row["date"][:10], "%Y-%m-%d").date()
+        except Exception:
+            continue
+        days_elapsed = (today - row_date).days
+        horizon = int(row.get("horizon_days", DEFAULT_HORIZON_DAYS))
+        if days_elapsed < horizon:
+            continue
+        try:
+            dip_pred = float(row.get("recommended_dip", 0))
+            rally_pred = float(row.get("recommended_rally", 0))
+        except Exception:
+            continue
+        dip_predictions_resolved += 1
+        rally_predictions_resolved += 1
+
+    return {
+        "n_samples": n,
+        "sufficient_data": True,
+        "dip_predictions_resolved": dip_predictions_resolved,
+        "rally_predictions_resolved": rally_predictions_resolved,
+        "per_day_status": _build_per_day_status(rows, current_price),
+    }
+
+
+def _build_per_day_status(rows, current_price):
+    """For each prior prediction, classify status."""
+    today = datetime.now().date()
+    out = []
+    for row in rows:
+        try:
+            row_date = datetime.strptime(row["date"][:10], "%Y-%m-%d").date()
+        except Exception:
+            continue
+        days_elapsed = (today - row_date).days
+        horizon = int(row.get("horizon_days", DEFAULT_HORIZON_DAYS))
+        remaining = max(0, horizon - days_elapsed)
+        try:
+            dip_pred = float(row.get("recommended_dip", 0))
+            rally_pred = float(row.get("recommended_rally", 0))
+            p_round_trip = float(row.get("p_round_trip", 0))
+        except Exception:
+            continue
+        status = "unresolved" if remaining > 0 else "resolved"
+        out.append({
+            "date": row_date.strftime("%Y-%m-%d"),
+            "dip_target": dip_pred,
+            "rally_target": rally_pred,
+            "p_round_trip": p_round_trip,
+            "days_elapsed": days_elapsed,
+            "remaining": remaining,
+            "status": status,
+        })
+    return out
+
+
+# =============================================================================
+# Main pipeline (single ticker)
+# =============================================================================
+
+def run_pipeline(args) -> int:
+    t_start = time.time()
+    ticker = args.ticker.upper()
+    api_key = os.getenv("FMP_API_KEY")
+    if not api_key:
+        print("ERROR: FMP_API_KEY not set")
+        return 1
+
+    horizon_days = args.horizon
+    conviction_dip = args.conviction_dip
+    conviction_rally_cond = args.conviction_rally_cond
+    capital = args.capital
+
+    output_dir = Path(__file__).resolve().parent.parent / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    history_path = output_dir / f"round_trip_history_{ticker}.csv"
+    dashboard_path = output_dir / f"{ticker.lower()}_dipnrally_dashboard.html"
+
+    # --- 1. Fetch data ---
+    print(f"Fetching data for {ticker}...")
+    history_df = fetch_history(ticker, api_key, DEFAULT_LOOKBACK_DAYS)
+    if history_df is None or history_df.empty:
+        print(f"ERROR: failed to fetch history for {ticker}")
+        return 1
+    spot = float(history_df["Close"].iloc[-1])
+    closes_series = history_df["Close"]
+    closes = closes_series.values
+    returns = np.log(closes_series / closes_series.shift(1)).dropna()
+
+    rsi = compute_rsi_14(closes_series)
+    mom_5d = float((closes[-1] / closes[-6] - 1.0)) if len(closes) > 5 else 0.0
+    mom_30d = float((closes[-1] / closes[-31] - 1.0)) if len(closes) > 30 else 0.0
+    current_year = datetime.now().year
+    ytd_baseline = None
+    if "Date" in history_df.columns:
+        try:
+            jan1 = pd.Timestamp(year=current_year, month=1, day=1)
+            mask = history_df["Date"] >= jan1
+            if mask.any():
+                ytd_baseline = float(history_df.loc[mask, "Close"].iloc[0])
+        except Exception:
+            ytd_baseline = None
+    if ytd_baseline is None or ytd_baseline <= 0:
+        ytd_baseline = float(closes[0])
+    ytd_return = float(closes[-1] / ytd_baseline - 1.0)
+
+    profile = fetch_company_profile(ticker, api_key) or {}
+    market_cap = 0.0
+    for fname in ("mktCap", "marketCap", "mcap", "market_cap"):
+        try:
+            v = profile.get(fname)
+            if v and float(v) > 0:
+                market_cap = float(v)
+                break
+        except (TypeError, ValueError):
+            continue
+    sector = (profile.get("sector") or "Technology") if profile else "Technology"
+    industry = (profile.get("industry") or "Unknown") if profile else "Unknown"
+
+    snapshot = MarketSnapshot(
+        ticker=ticker, timestamp=datetime.now(), spot=spot,
+        market_cap=market_cap, sector=sector, industry=industry,
+        rsi=rsi, mom_5d=mom_5d, mom_30d=mom_30d, ytd_return=ytd_return,
+        price_history=history_df,
+    )
+
+    profile_beta = None
+    try:
+        profile_beta = float(profile.get("beta") or 1.0)
+    except (TypeError, ValueError):
+        profile_beta = 1.0
+    unusual_move = compute_unusual_move_z(history_df, beta=profile_beta, lookback=60)
+
+    # --- 2. Volatility profile ---
+    print("Computing volatility triangulation (GARCH α+β fit)...")
+    garch = fit_garch_11_full(returns)
+    if garch["fit_ok"] and garch["forecast_variance"] > 0:
+        garch_sigma = float(np.sqrt(garch["forecast_variance"] * 252))
+    else:
+        garch_sigma = float(returns.tail(90).std() * np.sqrt(252)) if len(returns) >= 90 else 0.30
+    alpha_plus_beta = float(garch["alpha"] + garch["beta"])
+
+    realized_vol_dict = compute_realized_vol(returns, windows=(30, 60, 90))
+    iv_data = fetch_options_iv(ticker, target_dte_days=horizon_days)
+
+    sigma_triangle = triangulate_sigma(garch_sigma, realized_vol_dict, iv_data)
+    if sigma_triangle:
+        blended_sigma = sigma_triangle["blended"]
+        anchors_count = sigma_triangle["n_anchors"]
+        divergence_pp = sigma_triangle["divergence_pp"]
+    else:
+        blended_sigma = garch_sigma
+        anchors_count = 1
+        divergence_pp = 0.0
+
+    iv_value = (iv_data.get("iv") if iv_data and iv_data.get("is_liquid") else None)
+    iv_dte = (iv_data.get("dte") if iv_data else None)
+
+    vol_profile = VolatilityProfile(
+        garch_sigma=garch_sigma,
+        garch_alpha=float(garch["alpha"]),
+        garch_beta=float(garch["beta"]),
+        garch_alpha_plus_beta=alpha_plus_beta,
+        realized_30d=realized_vol_dict.get(30, garch_sigma),
+        realized_60d=realized_vol_dict.get(60, garch_sigma),
+        realized_90d=realized_vol_dict.get(90, garch_sigma),
+        options_iv=iv_value,
+        options_dte=iv_dte,
+        blended_sigma=blended_sigma,
+        anchors_count=anchors_count,
+        divergence_pp=divergence_pp,
+        near_unit_root=alpha_plus_beta > 0.98,
+    )
+
+    # --- 3. Drift base + 8 signals ---
+    print("Computing 8 base drift signals...")
+    DRIFT_CAP = 1.0
+    mu_hist = float(returns.mean() * 252)
+    mu_capped = max(-DRIFT_CAP, min(DRIFT_CAP, mu_hist))
+    enr = enrichment_drift(rsi, mom_5d)
+    mu_effective_historical = mu_capped + enr * 252 / horizon_days
+
+    targets = fetch_analyst_targets(ticker, api_key)
+    summary = fetch_analyst_summary(ticker, api_key)
+    sector_perf = fetch_sector_perf(sector, api_key) if sector and sector != "Unknown" else None
+    regime = detect_swing_regime(rsi, mom_5d, mom_30d * 100,
+                                  blended_sigma, ytd_return * 100)
+    macro = fetch_macro_indicators(api_key)
+    insider = fetch_insider_activity(ticker, api_key)
+    short_data = fetch_short_interest(ticker, api_key)
+
+    # W0 TEMP — peer list defaults to user-supplied --peers; SNDK falls back to
+    # ["MU", "WDC"] to preserve W0 byte-for-byte output. Removed in W2 when the
+    # ticker registry supplies peers per ticker.
+    if args.peers:
+        peer_tickers = list(args.peers)
+    elif ticker == "SNDK":
+        peer_tickers = ["MU", "WDC"]
+    else:
+        peer_tickers = []
+    peer_dfs = fetch_peer_history(peer_tickers, api_key, lookback_days=60) if peer_tickers else {}
+
+    self_earnings = fetch_next_earnings(ticker, api_key)
+    self_earnings_dt = None
+    if self_earnings:
+        try:
+            self_earnings_dt = datetime.strptime(self_earnings.get("date", "")[:10], "%Y-%m-%d")
+        except Exception:
+            pass
+
+    signals_dict = {
+        "historical": signal_from_historical(mu_effective_historical, mu_hist, blended_sigma),
+        "analyst": signal_from_analyst_targets(targets, spot,
+                                                price_history_df=history_df,
+                                                summary=summary),
+        "sector": signal_from_sector(sector_perf, swing_regime=regime),
+        "macro": signal_from_macro(macro),
+        "insider": signal_from_insider(insider, market_cap_usd=market_cap),
+        "short_interest": signal_from_short_interest(short_data),
+        "peer_rs": signal_from_peer_rs(history_df, peer_dfs, lookback_days=60),
+        "sector_decoupling": signal_from_sector_decoupling(history_df, sector_perf,
+                                                            lookback_days=30),
+    }
+
+    # --- 4. AI Pass 1 ---
+    pass1 = None
+    pass1_cost_charged = 0.0
+    if args.no_ai:
+        print("AI Pass 1 skipped (--no-ai)")
+    else:
+        print("AI Pass 1 (data gathering + multi-hypothesis catalysts)...")
+        display_signals_for_prompt = _signals_dict_to_display_list(signals_dict, BLEND_WEIGHTS_V2)
+        pass1_prompt = build_ai_pass1_prompt(
+            ticker, snapshot, vol_profile, horizon_days, display_signals_for_prompt,
+            self_earnings_dt, peer_tickers,
+        )
+        pass1_raw, pass1_cost, pass1_sources = call_ai_pass(pass1_prompt, max_tokens=8000, pass_label="Pass 1")
+        pass1 = parse_ai_pass1(pass1_raw, pass1_sources, pass1_cost) if pass1_raw else None
+        pass1_cost_charged = pass1_cost
+
+    # --- 5. AI-derived signals ---
+    catalyst_mu, catalyst_conf, catalyst_rat = (0.0, "LOW", "no AI catalysts")
+    narrative_mu, narrative_conf, narrative_rat = (0.0, "LOW", "no AI narrative")
+    factor_bias, factor_rat = (0.0, "no factor analysis")
+    if pass1:
+        catalyst_mu, catalyst_conf, catalyst_rat = signal_from_catalyst_proximity(
+            pass1.catalysts, horizon_days,
+        )
+        evidence_count = sum(
+            1 for c in pass1.catalysts
+            if c.get("sources") and len(c.get("sources", [])) >= 2
+        )
+        narrative_mu, narrative_conf, narrative_rat = signal_from_structural_narrative(
+            pass1.narrative_score, evidence_count,
+        )
+        factor_bias, factor_rat = apply_bull_bear_arithmetic(pass1.bull_factors, pass1.bear_factors)
+
+    signals_dict["catalyst_proximity"] = {
+        "drift": catalyst_mu, "confidence": catalyst_conf,
+        "source_quality": "PRIMARY",
+        "sources_count": len(pass1.catalysts) if pass1 else 0,
+        "notes": catalyst_rat,
+    }
+    signals_dict["narrative"] = {
+        "drift": narrative_mu, "confidence": narrative_conf,
+        "source_quality": "PRIMARY",
+        "sources_count": 0,
+        "notes": narrative_rat,
+    }
+
+    if pass1:
+        signals_dict["ai"] = {
+            "drift": pass1.drift_estimate,
+            "confidence": pass1.confidence,
+            "source_quality": "REPUTABLE",
+            "sources_count": pass1.raw_sources_cited,
+            "notes": f"Pass 1 estimate ({pass1.raw_sources_cited} sources)",
+        }
+    else:
+        signals_dict["ai"] = _none_signal("AI Pass 1 failed")
+
+    # --- 5b. AI Pass 2 (adversarial critique) ---
+    pass2 = None
+    pass2_cost_charged = 0.0
+    if args.no_ai:
+        print("AI Pass 2 skipped (--no-ai)")
+    elif pass1:
+        print("AI Pass 2 (adversarial critique — runs before final MC so Pass 2 drives the math)...")
+        T_years = horizon_days / 252.0
+        prelim_mu_for_closed = float(pass1.drift_estimate)
+        try:
+            p_up_10 = closed_touch_up(spot, spot * 1.10, T_years, prelim_mu_for_closed, blended_sigma)
+            p_down_10 = closed_touch_down(spot, spot * 0.90, T_years, prelim_mu_for_closed, blended_sigma)
+            mc_marginal_summary = {
+                "p_up_10pct": f"{p_up_10*100:.0f}%",
+                "p_down_10pct": f"{p_down_10*100:.0f}%",
+            }
+        except Exception:
+            mc_marginal_summary = {"p_up_10pct": "n/a", "p_down_10pct": "n/a"}
+        sigma_summary = {"blended": blended_sigma, "divergence": divergence_pp}
+        pass2_prompt = build_ai_pass2_prompt(
+            ticker, snapshot, pass1, mc_marginal_summary, sigma_summary,
+            None,
+        )
+        pass2_raw, pass2_cost, _ = call_ai_pass(pass2_prompt, max_tokens=3000, pass_label="Pass 2")
+        pass2_cost_charged = pass2_cost
+        if pass2_raw:
+            pass2 = parse_ai_pass2(pass2_raw, pass1.drift_estimate, pass2_cost)
+            signals_dict["ai"] = {
+                "drift": pass2.drift_estimate,
+                "confidence": pass2.confidence,
+                "source_quality": "REPUTABLE",
+                "sources_count": pass1.raw_sources_cited,
+                "notes": f"Pass 2 revised ({pass2.revision_from_prior_pass:+.1%} vs Pass 1)",
+            }
+
+    # --- 6. Blend ---
+    print(f"Blending {len(signals_dict)} signals + bull/bear arithmetic...")
+    blend = blend_with_uncertainty(signals_dict, weights_dict=BLEND_WEIGHTS_V2)
+    if blend and blend.get("blended") is not None:
+        today_mu = float(blend["blended"]) + factor_bias
+        today_std = float(blend.get("std", 0.20))
+    else:
+        today_mu = mu_effective_historical + factor_bias
+        today_std = 0.25
+
+    # --- 7. Bayesian smoothing ---
+    prior_v2 = load_prior_posterior(history_path)
+    if prior_v2:
+        prior_age_days = max(1, (datetime.now().date() -
+                                  datetime.strptime(prior_v2["date"][:10], "%Y-%m-%d").date()).days)
+        prior_std_safe = max(0.05, float(prior_v2.get("std") or 0.15))
+        today_std_safe = max(0.05, float(today_std))
+        prior_blend_v1_fmt = {"blended": prior_v2["mu"], "std": prior_std_safe}
+        today_blend_v1_fmt = {"blended": today_mu, "std": today_std_safe}
+        bayesian = bayesian_update(prior_blend_v1_fmt, today_blend_v1_fmt,
+                                    prior_age_days=prior_age_days)
+        if bayesian and bayesian.get("posterior_mu") is not None:
+            post_mu = float(bayesian["posterior_mu"])
+            post_std = float(bayesian["posterior_std"])
+            prior_weight = float(bayesian.get("prior_weight", 0.0))
+        else:
+            post_mu, post_std, prior_weight = today_mu, today_std, 0.0
+    else:
+        post_mu, post_std, prior_weight = today_mu, today_std, 0.0
+
+    posterior_summary = {
+        "prior_mu": prior_v2["mu"] if prior_v2 else 0.0,
+        "prior_std": prior_v2["std"] if prior_v2 else 0.15,
+        "today_mu": today_mu, "today_std": today_std,
+        "post_mu": post_mu, "post_std": post_std,
+        "prior_weight": prior_weight,
+        "today_weight": 1 - prior_weight,
+    }
+
+    base_signals = _signals_dict_to_display_list(signals_dict, BLEND_WEIGHTS_V2)
+
+    # --- 8. Vol schedule ---
+    vol_schedule = build_catalyst_vol_schedule(
+        base_vol=blended_sigma,
+        horizon_days=horizon_days,
+        self_earnings_date=self_earnings_dt,
+        peer_earnings_dates=[],
+        macro_event_dates=[],
+    )
+
+    # --- 9. Apply AI vol_regime multiplier ---
+    if pass1:
+        vol_mult = AI_VOL_REGIME_MULTIPLIERS.get(pass1.vol_regime, 1.0)
+        effective_sigma = blended_sigma * vol_mult
+    else:
+        effective_sigma = blended_sigma
+
+    # --- 10. Run MC ---
+    print(f"Running Monte Carlo ({DEFAULT_MC_PATHS} paths)...")
+    paths = run_mc_joint_conditional(
+        S0=spot,
+        sigma=effective_sigma,
+        mu=post_mu,
+        horizon_days=horizon_days,
+        n_paths=DEFAULT_MC_PATHS,
+        vol_schedule=vol_schedule,
+        mean_reversion_strength=args.mean_reversion,
+        mean_reversion_anchor=spot * 0.95 if args.mean_reversion > 0 else None,
+    )
+
+    # --- 11. Scan grid ---
+    print("Scanning dip × rally grid (Brownian bridge correction)...")
+    best, all_candidates, met_threshold_strict = scan_dip_rally_grid(
+        S0=spot, sigma=effective_sigma, mu=post_mu, horizon_days=horizon_days,
+        paths=paths,
+        conviction_dip=conviction_dip,
+        conviction_rally_cond=conviction_rally_cond,
+        capital_usd=capital,
+        vol_schedule=vol_schedule,
+    )
+
+    # --- 13. AI catalyst stress test ---
+    catalyst_stress_results = []
+    catalyst_stress_cost = 0.0
+    if not args.no_ai and pass1 and best:
+        print("AI catalyst impact stress test...")
+        catalyst_stress_results, catalyst_stress_cost = call_ai_catalyst_stress_test(
+            ticker, spot, best.dip_price, best.rally_price, pass1.catalysts, horizon_days,
+        )
+
+    # --- 14. Three-method math cross-check ---
+    print("Three-method math cross-check...")
+    if best:
+        bridge_best_result = analyze_joint_conditional(
+            paths, spot, best.dip_price, best.rally_price, horizon_days,
+            sigma=effective_sigma, vol_schedule=vol_schedule,
+        )
+        method_check = three_method_cross_check(
+            spot, effective_sigma, post_mu, horizon_days,
+            best.dip_price, best.rally_price, bridge_best_result,
+        )
+    else:
+        method_check = {"table": [], "flags": [], "agreement_status": "n/a — no pair found",
+                        "pde_mass_conservation": 1.0, "pde_p_neither": 0.0}
+
+    # --- 14b. Sensitivity table ---
+    sensitivity = None
+    if best is not None:
+        print("Computing sensitivity table (drift/σ scenarios + catalyst shocks)...")
+        sensitivity = compute_sensitivity_table(
+            S0=spot, base_sigma=effective_sigma, base_mu=post_mu,
+            horizon_days=horizon_days,
+            dip_price=best.dip_price, rally_price=best.rally_price,
+            capital_usd=capital,
+            spread_per_share_round_trip=2.0,
+            catalyst_shocks=catalyst_stress_results,
+            vol_schedule_base=vol_schedule,
+            n_paths_sensitivity=10_000,
+        )
+
+    # --- 14c. Path metrics ---
+    path_metrics = None
+    if best is not None:
+        path_metrics = compute_path_metrics(paths, spot, best.dip_price, best.rally_price)
+
+    # --- 15. Backtest layer ---
+    backtest = run_backtest_layer(history_path, spot)
+
+    # --- 16. Persist CSV row ---
+    total_ai_cost = pass1_cost_charged + pass2_cost_charged + catalyst_stress_cost
+    csv_row = {
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "spot": f"{spot:.2f}",
+        "sigma_blended": f"{blended_sigma:.4f}",
+        "drift_posterior": f"{post_mu:.4f}",
+        "drift_posterior_std": f"{post_std:.4f}",
+        "recommended_dip": f"{best.dip_price:.0f}" if best else "",
+        "p_dip": f"{best.p_dip_touched:.4f}" if best else "",
+        "expected_days_to_dip": f"{best.expected_days_to_dip:.1f}" if best else "",
+        "recommended_rally": f"{best.rally_price:.0f}" if best else "",
+        "p_rally_cond": f"{best.p_rally_given_dip:.4f}" if best else "",
+        "p_round_trip": f"{best.p_round_trip:.4f}" if best else "",
+        "p_bag_hold": f"{best.p_bag_hold:.4f}" if best else "",
+        "p_no_trade_rally_first": f"{best.p_no_trade_rally_first:.4f}" if best else "",
+        "p_neither": f"{best.p_neither:.4f}" if best else "",
+        "expected_gain_per_share": f"{best.expected_gain_per_share:.2f}" if best else "",
+        "net_expected_value": f"{best.net_expected_value:.2f}" if best else "",
+        "ai_drift_pass1": f"{pass1.drift_estimate:.4f}" if pass1 else "",
+        "ai_drift_pass2": f"{pass2.drift_estimate:.4f}" if pass2 else "",
+        "ai_vol_regime": pass1.vol_regime if pass1 else "",
+        "narrative_score": pass1.narrative_score if pass1 else "",
+        "catalyst_proximity_drift": f"{catalyst_mu:.4f}",
+        "garch_alpha_plus_beta": f"{vol_profile.garch_alpha_plus_beta:.4f}",
+        "horizon_days": str(horizon_days),
+        "method_agreement_flags": ";".join(method_check["flags"]),
+        "ai_cost_total": f"{total_ai_cost:.2f}",
+    }
+    append_history_row(history_path, csv_row)
+
+    # --- 17. Report ---
+    from src.reporter import format_report, generate_html_dashboard
+    runtime = time.time() - t_start
+    report = format_report(
+        snapshot, vol_profile, base_signals, pass1, pass2, posterior_summary,
+        best, method_check, catalyst_stress_results, backtest,
+        conviction_dip, conviction_rally_cond, horizon_days, capital,
+        total_ai_cost, runtime,
+        met_threshold_strict=met_threshold_strict,
+        unusual_move=unusual_move,
+        sensitivity=sensitivity,
+        path_metrics=path_metrics,
+    )
+    print(report)
+
+    # --- 18. HTML dashboard ---
+    with open(history_path, "r") as f:
+        history_rows_for_chart = list(csv.DictReader(f))
+    generate_html_dashboard(
+        dashboard_path, snapshot, best, vol_profile, base_signals,
+        pass1, pass2, method_check, backtest, history_rows_for_chart,
+        conviction_dip, conviction_rally_cond, horizon_days,
+    )
+
+    return 0
