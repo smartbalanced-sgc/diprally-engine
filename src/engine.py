@@ -64,6 +64,7 @@ from src.data_fetch import (
     fetch_analyst_targets,
     fetch_company_profile,
     fetch_fundamentals,
+    fetch_grades_history,
     fetch_history,
     fetch_macro_indicators,
     fetch_next_earnings,
@@ -101,6 +102,7 @@ from src.signals import (
     signal_from_historical,
     signal_from_macro,
     signal_from_peer_rs,
+    signal_from_revision_momentum,
     signal_from_sector,
     signal_from_sector_decoupling,
     signal_from_short_interest,
@@ -261,6 +263,7 @@ def _signals_dict_to_display_list(signals_dict, weights, blend=None):
         "macro": "Macro regime (VIX/SPY)",
         "short_interest": "Short interest (squeeze tail)",
         "fundamentals": "Fundamentals (FCF + leverage + margin trend)",
+        "revision_momentum": "Analyst revision momentum (90d, time-decayed)",
         "peer_rs": "Peer RS (60d)",
         "sector_decoupling": "Sector decoupling (vs sector, 30d)",
         "ai": "AI analyst",
@@ -854,6 +857,8 @@ def run_pipeline(args) -> int:
     short_data = fetch_short_interest(ticker, api_key)
     # W6 PR #34: TTM FCF + leverage + margin trend.
     fundamentals = fetch_fundamentals(ticker, api_key, market_cap=market_cap)
+    # W6 PR #35: analyst upgrade/downgrade history.
+    grades_history = fetch_grades_history(ticker, api_key)
 
     # Peer resolution via registry (D-W2-1 closed). CLI --peers is an override;
     # absent --peers falls back to config/diprally.yaml's per-ticker entry
@@ -913,6 +918,7 @@ def run_pipeline(args) -> int:
         # sacred #15: insider dropped (D-W2-16)
         "short_interest": signal_from_short_interest(short_data),
         "fundamentals": signal_from_fundamentals(fundamentals),
+        "revision_momentum": signal_from_revision_momentum(grades_history),
         "peer_rs": signal_from_peer_rs(history_df, peer_dfs, lookback_days=60, ticker=ticker),
         "sector_decoupling": signal_from_sector_decoupling(history_df, sector_perf,
                                                             lookback_days=30, ticker=ticker),

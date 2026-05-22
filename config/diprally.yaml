@@ -139,10 +139,11 @@ blend_weights_v2:
   short_interest: 0.02
   peer_rs: 0.10
   sector_decoupling: 0.10
-  ai: 0.20                              # W6 PR #34: trimmed from 0.26 to make room
+  ai: 0.17                              # W6 PR #34/#35: trimmed to make room
   catalyst_proximity: 0.10
-  narrative: 0.08                       # trimmed from 0.10
+  narrative: 0.07                       # W6 PR #35: trimmed from 0.08
   fundamentals: 0.08                    # W6 PR #34: FCF + leverage + margin trend
+  revision_momentum: 0.04               # W6 PR #35: analyst upgrades-downgrades
 
 # Standard error per qualitative confidence tier (decimal annualised return).
 confidence_to_se:
@@ -486,6 +487,25 @@ signals:
     drift_cap_abs: 0.15
     in_window_count_high_conf: 3        # ≥ this in-horizon catalysts → HIGH conf
     in_window_count_medium_conf: 1
+
+  # W6 PR #35 — analyst revision momentum. Net upgrades/downgrades
+  # over the last 90 days, time-decay-weighted (recent revisions count
+  # more — institutional convention). Each rating action contributes
+  # ±drift_per_unit_pp × time-decay weight. Cap on combined drift.
+  # Confidence ladder based on total revision count in window:
+  #   ≥ conf_high_count    → HIGH
+  #   conf_medium_count..  → MEDIUM
+  #   1..conf_medium_count → LOW
+  #   0                    → _none_signal (no activity)
+  revision_momentum:
+    recent_weight: 1.0                  # actions in last 30 days
+    medium_weight: 0.6                  # actions in 30-60d
+    older_weight: 0.3                   # actions in 60-90d
+    drift_per_unit_pp: 0.008            # per weighted unit (signed)
+    drift_cap_abs: 0.06                 # combined drift capped here
+    conf_high_count: 6
+    conf_medium_count: 3
+    lookback_days: 90                   # rolling window
 
   # W6 PR #34 — fundamentals signal. Three sub-components combined to
   # an annualised drift contribution: FCF yield (cash-generative names

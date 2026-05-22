@@ -359,13 +359,14 @@ def test_insider_signal_not_in_blend_weights():
 
 
 def test_blend_weights_v2_has_expected_signals():
-    """W6 PR #34: 11 active signals (added fundamentals).
-    Post D-W2-16 baseline was 10 (insider dropped per sacred #15)."""
+    """W6 PR #34/#35: 12 active signals — added fundamentals and
+    revision_momentum. Post D-W2-16 baseline was 10 (insider dropped
+    per sacred #15)."""
     from src.config import BLEND_WEIGHTS_V2
     expected = {
         "historical", "analyst", "sector", "macro", "short_interest",
         "peer_rs", "sector_decoupling", "ai", "catalyst_proximity",
-        "narrative", "fundamentals",
+        "narrative", "fundamentals", "revision_momentum",
     }
     assert set(BLEND_WEIGHTS_V2.keys()) == expected, \
         f"v2 signals drifted: {set(BLEND_WEIGHTS_V2.keys())}"

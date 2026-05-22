@@ -27,6 +27,7 @@ from src.config import (
     SIGNAL_PEER_RS,
     SIGNAL_REGIME_DETECTION,
     SIGNAL_FUNDAMENTALS,
+    SIGNAL_REVISION_MOMENTUM,
     SIGNAL_SECTOR_DECOUPLING,
     SIGNAL_SECTOR_MOMENTUM_CAPS,
     SIGNAL_SHORT_INTEREST_BRACKETS,
@@ -380,6 +381,93 @@ def signal_from_fundamentals(fundamentals):
         "source_quality": "PRIMARY",
         "sources_count": n_available,
         "notes": "; ".join(notes),
+    }
+
+
+def signal_from_revision_momentum(grades, today=None):
+    """W6 PR #35 — analyst upgrade/downgrade momentum.
+
+    Inputs:
+      grades: list of dicts with 'publishedDate' (YYYY-MM-DD...) and
+              'action' ("upgrade" / "downgrade" / "maintain" / "init" /
+              "reiterated") from data_fetch.fetch_grades_history.
+      today : datetime.date for the reference "now" — defaults to today.
+              Tests pass an explicit date for determinism.
+
+    Algorithm: each grade-change action contributes +1 / -1 / 0 weighted
+    by time-decay bucket. Recent actions (last 30d) get full weight;
+    older actions decay. Sum is multiplied by drift_per_unit_pp and
+    capped at drift_cap_abs.
+
+    Returns the standard signal dict; _none_signal when no grades in
+    the lookback window (small caps with no coverage).
+    """
+    if not grades:
+        return _none_signal("no analyst coverage / no grade changes")
+
+    cfg = SIGNAL_REVISION_MOMENTUM
+    if today is None:
+        today = datetime.now().date()
+
+    weighted_score = 0.0
+    in_window_count = 0
+    n_up = 0
+    n_down = 0
+
+    for g in grades:
+        if not isinstance(g, dict):
+            continue
+        date_str = g.get("publishedDate") or g.get("date") or ""
+        try:
+            # FMP returns "YYYY-MM-DD HH:MM:SS" or ISO — first 10 chars suffice.
+            gdate = datetime.strptime(date_str[:10], "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            continue
+        age_days = (today - gdate).days
+        if age_days < 0 or age_days > cfg.lookback_days:
+            continue
+        if age_days <= 30:
+            w = cfg.recent_weight
+        elif age_days <= 60:
+            w = cfg.medium_weight
+        else:
+            w = cfg.older_weight
+        action = str(g.get("action", "")).lower()
+        if action == "upgrade":
+            sign = 1
+            n_up += 1
+        elif action == "downgrade":
+            sign = -1
+            n_down += 1
+        else:
+            # "maintain" / "init" / "reiterated" → no direction
+            continue
+        weighted_score += sign * w
+        in_window_count += 1
+
+    if in_window_count == 0:
+        return _none_signal("no directional grade changes in lookback window")
+
+    drift = weighted_score * cfg.drift_per_unit_pp
+    capped = max(-cfg.drift_cap_abs, min(cfg.drift_cap_abs, drift))
+
+    if in_window_count >= cfg.conf_high_count:
+        confidence = "HIGH"
+    elif in_window_count >= cfg.conf_medium_count:
+        confidence = "MEDIUM"
+    else:
+        confidence = "LOW"
+
+    note = (
+        f"{n_up} upgrades / {n_down} downgrades over last {cfg.lookback_days}d "
+        f"(weighted score {weighted_score:+.1f})"
+    )
+    return {
+        "drift": float(capped),
+        "confidence": confidence,
+        "source_quality": "PRIMARY",
+        "sources_count": in_window_count,
+        "notes": note,
     }
 
 

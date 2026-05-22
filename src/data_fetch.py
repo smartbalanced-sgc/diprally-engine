@@ -254,6 +254,22 @@ def fetch_company_profile(ticker, api_key):
     return data[0]
 
 
+def fetch_grades_history(ticker, api_key, limit=50):
+    """W6 PR #35 — analyst upgrade/downgrade history.
+
+    FMP's `upgrades-downgrades` endpoint returns recent grade-change
+    actions. Each row has publishedDate, gradingCompany, previousGrade,
+    newGrade, action ("upgrade" / "downgrade" / "maintain" / "init" /
+    "reiterated"). Returns a list of dicts (newest first) or [] when
+    the ticker has no coverage / endpoint fails.
+    """
+    data = _fmp_get("upgrades-downgrades", api_key,
+                     {"symbol": ticker, "limit": limit})
+    if not data or not isinstance(data, list):
+        return []
+    return data
+
+
 def fetch_fundamentals(ticker, api_key, market_cap=None):
     """W6 PR #34 — TTM FCF + leverage + margin trend.
 

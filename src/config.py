@@ -308,6 +308,20 @@ class CatalystProximityConfig(_StrictModel):
     in_window_count_medium_conf: int = Field(ge=1)
 
 
+class RevisionMomentumSignalConfig(_StrictModel):
+    """W6 PR #35: analyst revision-momentum signal thresholds. Net
+    upgrades minus downgrades over the lookback window, time-decay-
+    weighted by age bucket. Capped at drift_cap_abs."""
+    recent_weight: float = Field(ge=0.0, le=1.0)
+    medium_weight: float = Field(ge=0.0, le=1.0)
+    older_weight: float = Field(ge=0.0, le=1.0)
+    drift_per_unit_pp: float = Field(gt=0.0)
+    drift_cap_abs: float = Field(gt=0.0)
+    conf_high_count: int = Field(ge=1)
+    conf_medium_count: int = Field(ge=1)
+    lookback_days: int = Field(ge=30)
+
+
 class FundamentalsSignalConfig(_StrictModel):
     """W6 PR #34: fundamentals signal thresholds. Three sub-components
     (FCF yield, net debt / EBITDA, operating margin trend) combined to
@@ -340,6 +354,7 @@ class SignalsConfig(_StrictModel):
     regime_detection: RegimeDetectionConfig
     catalyst_proximity: CatalystProximityConfig
     fundamentals: FundamentalsSignalConfig
+    revision_momentum: RevisionMomentumSignalConfig
 
 
 class V3ReviewCriteriaConfig(_StrictModel):
@@ -666,6 +681,7 @@ def _rebind_module_constants() -> None:
     g["SIGNAL_REGIME_DETECTION"] = sig.regime_detection
     g["SIGNAL_CATALYST_PROXIMITY"] = sig.catalyst_proximity
     g["SIGNAL_FUNDAMENTALS"] = sig.fundamentals
+    g["SIGNAL_REVISION_MOMENTUM"] = sig.revision_momentum
     g["PHANTOM_SIGNAL_SE_CONFIG"] = _CONFIG.phantom_signal_se  # signals.py reads PHANTOM_SIGNAL_SE locally
 
     # AI cache
