@@ -316,6 +316,38 @@ def test_ev_hurdle_refusal_headline_shows_correct_prices():
     assert "46.5bps" in report
 
 
+# ---------- D-W2-11: sensitivity label truncation ----------
+
+def test_truncate_at_word_boundary_no_truncation_when_fits():
+    from src.engine import _truncate_at_word_boundary
+    assert _truncate_at_word_boundary("short label", 32) == "short label"
+
+
+def test_truncate_at_word_boundary_walks_back_to_space():
+    """The bug we're fixing: 'Q4 guidance bar very high (rev $7.75-8.25B, EPS $30-33)'
+    truncated naively to [:35] became 'Q4 guidance bar very high (rev $7.7' —
+    chopped mid-parenthesis. Word-boundary truncation gives a clean ellipsis."""
+    from src.engine import _truncate_at_word_boundary
+    name = "Q4 guidance bar very high (rev $7.75-8.25B, EPS $30-33)"
+    out = _truncate_at_word_boundary(name, 32)
+    assert len(out) <= 32
+    # Must NOT end mid-parenthesis or mid-number
+    assert not out.endswith("$7.7")
+    assert not out.endswith("(rev")
+    # Must end with the ellipsis character indicating truncation
+    assert out.endswith("…")
+
+
+def test_truncate_at_word_boundary_falls_back_when_no_late_space():
+    """If the only space is very early, walking back would lose too much.
+    Fall back to hard truncate + ellipsis."""
+    from src.engine import _truncate_at_word_boundary
+    # One short word then a very long blob
+    name = "a" + "x" * 100
+    out = _truncate_at_word_boundary(name, 10)
+    assert len(out) <= 10
+
+
 # ---------- Sacred #15: insider signal dropped (D-W2-16) ----------
 
 def test_insider_signal_not_in_blend_weights():

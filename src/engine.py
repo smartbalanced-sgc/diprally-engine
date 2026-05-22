@@ -179,6 +179,20 @@ class JointConditionalResult:
 # Signal dict → display list adapter
 # =============================================================================
 
+def _truncate_at_word_boundary(text: str, max_chars: int) -> str:
+    """Truncate text to <=max_chars at the last word boundary, append '…' if
+    truncated. Avoids the D-W2-11 mid-parenthesis-chop class of bugs where
+    naive [:N] truncation produced labels like 'Q4 guidance bar very high (rev $7.7'."""
+    if len(text) <= max_chars:
+        return text
+    # Reserve 1 char for the ellipsis
+    cut = text[: max_chars - 1]
+    last_space = cut.rfind(" ")
+    if last_space > max_chars // 2:  # only walk back if we don't lose too much
+        cut = cut[:last_space]
+    return cut + "…"
+
+
 def _has_supporting_catalyst(effective_ai, horizon_days: int) -> bool:
     """Sacred decision #14 helper: returns True iff Pass 1/Pass 2 surfaced at
     least one in-horizon catalyst with direction_risk in (bullish, two-sided).
@@ -394,7 +408,13 @@ def compute_sensitivity_table(
         try:
             name = str(shock.get("catalyst_name") or shock.get("name") or "catalyst")
             pp = float(shock.get("drift_shock_pp_on_disappointment") or 0.0)
-            label = f"{name[:35]} ({pp:+.0f}pp)"
+            # D-W2-11 fix: word-boundary truncation. Previous behavior was
+            # name[:35] which chopped mid-parenthesis (e.g. "rev $7.7"
+            # truncated from "Q4 guidance bar very high (rev $7.75-8.25B, EPS $30-33)").
+            # Now: truncate at most 32 chars, walk back to last space, add ellipsis.
+            max_label_width = 32
+            short_name = _truncate_at_word_boundary(name, max_label_width)
+            label = f"{short_name} ({pp:+.0f}pp)"
             scenarios.append((label, base_mu + pp / 100.0, base_sigma))
         except (TypeError, ValueError):
             continue
@@ -646,13 +666,6 @@ def run_pipeline(args) -> int:
         print(f"ERROR: empty history returned for {ticker}")
         return 1
     spot = float(history_df["Close"].iloc[-1])
-    # Debug spot override (W1) — lets the cache-invalidation smoke test
-    # simulate a spot move without waiting for the live price to change.
-    # Removed/refactored in W2.
-    override = getattr(args, "debug_spot_override", None)
-    if override is not None and override > 0:
-        print(f"   ⚠ DEBUG spot override: ${spot:.2f} → ${override:.2f}")
-        spot = float(override)
     closes_series = history_df["Close"]
     closes = closes_series.values
     returns = np.log(closes_series / closes_series.shift(1)).dropna()
