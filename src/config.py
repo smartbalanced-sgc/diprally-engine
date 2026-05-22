@@ -173,6 +173,16 @@ BAG_HOLD_TERMINAL_ASSUMPTION = "median_terminal_dip_paths"
 # Backtest gate
 BACKTEST_MIN_SAMPLES = 30
 
+# Analyst signal extreme-outlier threshold (D-W2-13).
+# When |implied_drift| > this value, the analyst signal's confidence gets
+# downgraded one notch (HIGH → MEDIUM → LOW). Catches data-quality issues
+# (wrong-ticker, stale, sparse-coverage) before they drive the blend.
+# Surfaced by MOG-A smoke (2026-05-22): FMP returned -58.9% implied drift
+# HIGH conf on a $10B defense industrial up only +27% YTD — either genuine
+# deep-sell consensus or bad data. Either way, |drift| > 0.50/yr deserves
+# scrutiny, not full HIGH-conf weight in the blend.
+ANALYST_EXTREME_DRIFT_THRESHOLD = 0.50
+
 # v2 blend weights — 10 signals
 BLEND_WEIGHTS_V2 = {
     "historical":          0.05,
