@@ -159,6 +159,39 @@ class GARCHConfig(_StrictModel):
     initial_beta: float = Field(ge=0.0, lt=1.0)
 
 
+class EngineConfig(_StrictModel):
+    """D-W2-5 + D-W2-7: engine-level scattered tunables."""
+    drift_cap: float = Field(gt=0.0)
+    spread_per_share_round_trip: float = Field(ge=0.0)
+    garch_fallback_sigma: float = Field(gt=0.0, lt=10.0)
+    grid_prefilter_looseness: float = Field(ge=0.0, lt=1.0)
+
+
+class BayesianConfig(_StrictModel):
+    """D-W2-7: Bayesian smoothing parameters."""
+    prior_age_inflation_per_day: float = Field(ge=0.0)
+    default_prior_std: float = Field(gt=0.0, lt=1.0)
+    std_floor: float = Field(gt=0.0, lt=1.0)
+    default_today_std_when_blend_fails: float = Field(gt=0.0, lt=1.0)
+
+
+class MeanReversionConfig(_StrictModel):
+    """D-W2-7: mean-reversion anchor position when MR enabled via CLI."""
+    anchor_pct_below_spot: float = Field(ge=0.0, lt=1.0)
+
+
+class Pass2PromptConfig(_StrictModel):
+    """D-W2-7: Pass 2 closed-form math context bracket."""
+    closed_form_bracket_pct: float = Field(gt=0.0, lt=1.0)
+
+
+class SensitivityScenarioConfig(_StrictModel):
+    """D-W2-7: one row in the sensitivity table."""
+    label: str
+    drift_offset: float
+    sigma_multiplier: float = Field(gt=0.0)
+
+
 class V3ReviewCriteriaConfig(_StrictModel):
     n_days_min: int = Field(ge=1)
     calibration_dip_target: tuple[float, float]
@@ -210,6 +243,11 @@ class DiprallyConfig(_StrictModel):
     pde_grid: PDEGridConfig
     garch: GARCHConfig
     realized_vol_windows: list[int]
+    engine: EngineConfig
+    bayesian: BayesianConfig
+    mean_reversion: MeanReversionConfig
+    pass2_prompt: Pass2PromptConfig
+    sensitivity_scenarios: list[SensitivityScenarioConfig]
     phantom_signal_se: float = Field(gt=0.0, le=1.0)
     ai_cache: AICacheConfig
     bag_hold_terminal_assumption: str
@@ -387,6 +425,29 @@ def _rebind_module_constants() -> None:
 
     # Realized vol windows (D-W2-9)
     g["REALIZED_VOL_WINDOWS"] = tuple(_CONFIG.realized_vol_windows)
+
+    # Engine scattered (D-W2-5 + D-W2-7)
+    g["DRIFT_CAP"] = _CONFIG.engine.drift_cap
+    g["SPREAD_PER_SHARE_ROUND_TRIP"] = _CONFIG.engine.spread_per_share_round_trip
+    g["GARCH_FALLBACK_SIGMA"] = _CONFIG.engine.garch_fallback_sigma
+    g["GRID_PREFILTER_LOOSENESS"] = _CONFIG.engine.grid_prefilter_looseness
+
+    # Bayesian (D-W2-7)
+    g["BAYESIAN_PRIOR_AGE_INFLATION_PER_DAY"] = _CONFIG.bayesian.prior_age_inflation_per_day
+    g["BAYESIAN_DEFAULT_PRIOR_STD"] = _CONFIG.bayesian.default_prior_std
+    g["BAYESIAN_STD_FLOOR"] = _CONFIG.bayesian.std_floor
+    g["BAYESIAN_DEFAULT_TODAY_STD"] = _CONFIG.bayesian.default_today_std_when_blend_fails
+
+    # Mean reversion + Pass 2 prompt (D-W2-7)
+    g["MEAN_REVERSION_ANCHOR_PCT_BELOW_SPOT"] = _CONFIG.mean_reversion.anchor_pct_below_spot
+    g["PASS2_CLOSED_FORM_BRACKET_PCT"] = _CONFIG.pass2_prompt.closed_form_bracket_pct
+
+    # Sensitivity scenarios (D-W2-7) — list of dicts for downstream consumers
+    g["SENSITIVITY_SCENARIOS"] = [
+        {"label": s.label, "drift_offset": s.drift_offset,
+         "sigma_multiplier": s.sigma_multiplier}
+        for s in _CONFIG.sensitivity_scenarios
+    ]
     g["PHANTOM_SIGNAL_SE_CONFIG"] = _CONFIG.phantom_signal_se  # signals.py reads PHANTOM_SIGNAL_SE locally
 
     # AI cache

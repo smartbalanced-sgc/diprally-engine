@@ -251,6 +251,56 @@ garch:
 realized_vol_windows: [30, 60, 90]
 
 # -----------------------------------------------------------
+# Engine-level scattered tunables (D-W2-5 + D-W2-7).
+# -----------------------------------------------------------
+engine:
+  drift_cap: 1.0                          # |mu_hist| capped at this before enrichment
+  spread_per_share_round_trip: 2.0        # friction proxy (W3 will σ-class-vary)
+  garch_fallback_sigma: 0.30              # used when GARCH fit fails AND realized < 90 bars
+  grid_prefilter_looseness: 0.08          # candidates within (threshold - this) survive
+
+# Bayesian smoothing parameters (signals.bayesian_update + engine fallbacks).
+bayesian:
+  prior_age_inflation_per_day: 0.2        # prior_var multiplier per day of staleness
+  default_prior_std: 0.15                 # used when CSV history missing the column
+  std_floor: 0.05                         # min std anywhere in the smoothing
+  default_today_std_when_blend_fails: 0.25  # used when blend_with_uncertainty returns None
+
+# Mean reversion anchor (engine MC). Disabled by default (--mean-reversion 0.0).
+# When enabled, anchor is positioned anchor_pct_below_spot below current spot.
+mean_reversion:
+  anchor_pct_below_spot: 0.05
+
+# Pass 2 prompt closed-form bracket — frames the math context Pass 2 sees.
+# Currently ±10% from spot. Researchers may tune this to investigate
+# Pass 2's sensitivity to the math anchor.
+pass2_prompt:
+  closed_form_bracket_pct: 0.10
+
+# Sensitivity scenarios (engine.compute_sensitivity_table).
+# Researcher can add / remove / re-parameterize rows here. Per-catalyst
+# stress shocks from AI continue to append after these baseline rows.
+sensitivity_scenarios:
+  - label: "Baseline (current)"
+    drift_offset: 0.0
+    sigma_multiplier: 1.0
+  - label: "Drift -15pp"
+    drift_offset: -0.15
+    sigma_multiplier: 1.0
+  - label: "Drift +15pp"
+    drift_offset: +0.15
+    sigma_multiplier: 1.0
+  - label: "σ -20%"
+    drift_offset: 0.0
+    sigma_multiplier: 0.80
+  - label: "σ +20%"
+    drift_offset: 0.0
+    sigma_multiplier: 1.20
+  - label: "Hostile (Δ-15, σ+20)"
+    drift_offset: -0.15
+    sigma_multiplier: 1.20
+
+# -----------------------------------------------------------
 # Phantom-signal std accounting (W1).
 # When AI-derived signals (ai, catalyst_proximity, narrative) drop with
 # NONE_FOUND status, their nominal weight contributes to within_var via
