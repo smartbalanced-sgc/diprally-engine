@@ -84,9 +84,38 @@ confidence_to_se:
 # Conviction thresholds (sacred decisions #1, #13)
 # -----------------------------------------------------------
 conviction:
-  dip_marginal: 0.65            # P(touch dip) threshold
-  rally_conditional: 0.75       # P(rally | dip touched) threshold
+  dip_marginal: 0.65            # P(touch dip) threshold (used when sigma_class disabled or fallback)
+  rally_conditional: 0.75       # P(rally | dip touched) threshold (fallback)
   ev_hurdle_bps_of_dip: 50      # sacred #13: refuse if EV < 50bps of dip
+
+# -----------------------------------------------------------
+# σ-class auto-detection (W3 / D-W2-X / sacred decision spec from CLAUDE.md).
+# Detector picks a class from blended σ; class-specific defaults override
+# the flat conviction above. Boundaries chosen conservatively — EXTREME is
+# σ ≥ 95% (truly extraordinary names). RKLB at σ=112% should classify
+# EXTREME under this rule; CLAUDE.md hint says HIGH — surface mismatch
+# in report rather than silently override.
+# -----------------------------------------------------------
+sigma_class_boundaries:
+  extreme_min: 0.95             # σ ≥ this → EXTREME
+  high_min: 0.50                # this ≤ σ < extreme_min → HIGH; below → MID
+
+# Per-class threshold table. Other class-keyed config (grid, friction,
+# panic floor, AI vol_regime mult) lands in subsequent W3 PRs — kept
+# conviction-only here to keep PR #21 focused.
+sigma_classes:
+  EXTREME:
+    conviction:
+      dip: 0.60
+      rally_conditional: 0.75
+  HIGH:
+    conviction:
+      dip: 0.65
+      rally_conditional: 0.75
+  MID:
+    conviction:
+      dip: 0.65
+      rally_conditional: 0.70
 
 # -----------------------------------------------------------
 # Horizon + MC paths

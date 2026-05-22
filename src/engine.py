@@ -20,6 +20,11 @@ import pandas as pd
 
 from src import ai_cache
 from src.registry import resolve_peers
+from src.sigma_classifier import (
+    class_conviction,
+    classify_sigma,
+    reconcile_with_registry,
+)
 from src.ai_layer import (
     build_ai_pass1_prompt,
     build_ai_pass2_prompt,
@@ -487,7 +492,8 @@ def compute_sensitivity_table(
 # with the new schema. N=1 day at this point (no calibration accumulated)
 # so the clean break is acceptable.
 CSV_COLUMNS = [
-    "date", "spot", "sigma_blended", "drift_posterior", "drift_posterior_std",
+    "date", "spot", "sigma_blended", "sigma_class",
+    "drift_posterior", "drift_posterior_std",
     "recommended_dip", "p_dip", "expected_days_to_dip",
     "recommended_rally", "p_rally_cond",
     "p_round_trip", "p_bag_hold", "p_no_trade_rally_first", "p_neither",
@@ -665,8 +671,10 @@ def run_pipeline(args) -> int:
         return 1
 
     horizon_days = args.horizon
-    conviction_dip = args.conviction_dip
-    conviction_rally_cond = args.conviction_rally_cond
+    # W3: conviction thresholds resolved AFTER blended_sigma is known so the
+    # σ-class default table can apply. CLI flags (when supplied) still win.
+    cli_conviction_dip = args.conviction_dip
+    cli_conviction_rally_cond = args.conviction_rally_cond
 
     output_dir = Path(__file__).resolve().parent.parent / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -761,6 +769,22 @@ def run_pipeline(args) -> int:
 
     iv_value = (iv_data.get("iv") if iv_data and iv_data.get("is_liquid") else None)
     iv_dte = (iv_data.get("dte") if iv_data else None)
+
+    # W3: classify σ-class from blended_sigma (structural, pre AI vol_regime).
+    # Data wins for current run; registry hint surfaces as advisory only.
+    auto_sigma_class = classify_sigma(blended_sigma)
+    sigma_class, sigma_class_mismatch = reconcile_with_registry(
+        ticker, auto_sigma_class
+    )
+    class_dip, class_rally_cond = class_conviction(sigma_class)
+    conviction_dip = (
+        cli_conviction_dip if cli_conviction_dip is not None else class_dip
+    )
+    conviction_rally_cond = (
+        cli_conviction_rally_cond
+        if cli_conviction_rally_cond is not None
+        else class_rally_cond
+    )
 
     vol_profile = VolatilityProfile(
         garch_sigma=garch_sigma,
@@ -1246,6 +1270,7 @@ def run_pipeline(args) -> int:
         "date": datetime.now().strftime("%Y-%m-%d"),
         "spot": f"{spot:.2f}",
         "sigma_blended": f"{blended_sigma:.4f}",
+        "sigma_class": sigma_class,
         "drift_posterior": f"{post_mu:.4f}",
         "drift_posterior_std": f"{post_std:.4f}",
         "recommended_dip": f"{best.dip_price:.0f}" if best else "",
@@ -1288,6 +1313,8 @@ def run_pipeline(args) -> int:
         ev_hurdle_refused=ev_hurdle_refused,
         ev_pct_of_dip=ev_pct_of_dip,
         trend_filter_refused=trend_filter_refused,
+        sigma_class=sigma_class,
+        sigma_class_mismatch=sigma_class_mismatch,
     )
     print(report)
 

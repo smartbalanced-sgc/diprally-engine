@@ -42,6 +42,8 @@ def format_report(
     ev_hurdle_refused=False,
     ev_pct_of_dip=None,
     trend_filter_refused=False,
+    sigma_class=None,
+    sigma_class_mismatch=None,
 ) -> str:
     lines: list[str] = []
     lines.append(hr(f"DIPRALLY ENGINE ({V2_VERSION}) — {snapshot.ticker} — {snapshot.timestamp:%Y-%m-%d %H:%M}"))
@@ -49,6 +51,13 @@ def format_report(
     lines.append(f"  Spot: ${snapshot.spot:.2f}   Market cap: ${snapshot.market_cap/1e9:.1f}B")
     lines.append(f"  Sector / Industry: {snapshot.sector} / {snapshot.industry}")
     lines.append(f"  RSI: {snapshot.rsi:.1f}   5d mom: {snapshot.mom_5d:+.1%}   30d mom: {snapshot.mom_30d:+.1%}   YTD: {snapshot.ytd_return:+.1%}")
+    if sigma_class is not None:
+        lines.append(
+            f"  σ-class: {sigma_class}  (auto-detected from blended σ = "
+            f"{vol_profile.blended_sigma*100:.1f}%)"
+        )
+        if sigma_class_mismatch:
+            lines.append(f"    ⚠ {sigma_class_mismatch}")
     lines.append(f"  Conviction thresholds: dip {conviction_dip:.0%} marginal, rally-cond {conviction_rally_cond:.0%}")
     lines.append(f"  Horizon: {horizon_days} trading days   (sacred #6: trader sizes externally)")
 

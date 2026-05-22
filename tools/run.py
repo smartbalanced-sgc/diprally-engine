@@ -14,8 +14,6 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from src.config import (
-    DEFAULT_CONVICTION_DIP,
-    DEFAULT_CONVICTION_RALLY_COND,
     DEFAULT_HORIZON_DAYS,
 )
 from src.engine import run_pipeline
@@ -28,10 +26,14 @@ def main():
     p.add_argument("ticker", help="Ticker symbol (e.g. INTC)")
     p.add_argument("--horizon", type=int, default=DEFAULT_HORIZON_DAYS,
                    help=f"Patience horizon in trading days (default {DEFAULT_HORIZON_DAYS})")
-    p.add_argument("--conviction-dip", type=float, default=DEFAULT_CONVICTION_DIP,
-                   help=f"Marginal P(touch dip) threshold (default {DEFAULT_CONVICTION_DIP})")
-    p.add_argument("--conviction-rally-cond", type=float, default=DEFAULT_CONVICTION_RALLY_COND,
-                   help=f"Conditional P(rally | dip) threshold (default {DEFAULT_CONVICTION_RALLY_COND})")
+    p.add_argument("--conviction-dip", type=float, default=None,
+                   help="Marginal P(touch dip) threshold. When omitted, uses "
+                        "the σ-class default from config/diprally.yaml's "
+                        "sigma_classes table (EXTREME 0.60, HIGH/MID 0.65).")
+    p.add_argument("--conviction-rally-cond", type=float, default=None,
+                   help="Conditional P(rally|dip) threshold. When omitted, uses "
+                        "the σ-class default from config/diprally.yaml's "
+                        "sigma_classes table (EXTREME/HIGH 0.75, MID 0.70).")
     p.add_argument("--mean-reversion", type=float, default=0.0,
                    help="Mean-reversion strength (default 0.0 = OFF; try 0.05/0.10/0.20 for sensitivity)")
     p.add_argument("--no-ai", action="store_true",

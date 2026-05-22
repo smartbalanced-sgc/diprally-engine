@@ -59,6 +59,25 @@ class ConvictionConfig(_StrictModel):
     ev_hurdle_bps_of_dip: float = Field(ge=0.0)
 
 
+class SigmaClassBoundariesConfig(_StrictModel):
+    """W3: σ-class auto-detection boundaries. extreme_min > high_min must hold;
+    pydantic model_validator below enforces. Both in decimal (0.95 = 95%)."""
+    extreme_min: float = Field(gt=0.0, lt=10.0)
+    high_min: float = Field(gt=0.0, lt=10.0)
+
+
+class SigmaClassConvictionConfig(_StrictModel):
+    """Per-class conviction thresholds (W3, PR #21 scope: conviction only)."""
+    dip: float = Field(gt=0.0, lt=1.0)
+    rally_conditional: float = Field(gt=0.0, lt=1.0)
+
+
+class SigmaClassThresholdConfig(_StrictModel):
+    """One row in the sigma_classes table. Conviction-only in PR #21;
+    grid/friction/panic/ai_vol_mult slot in via subsequent W3 PRs."""
+    conviction: SigmaClassConvictionConfig
+
+
 class HorizonConfig(_StrictModel):
     default_days: int = Field(gt=0)
     default_mc_paths: int = Field(gt=0)
@@ -298,6 +317,8 @@ class DiprallyConfig(_StrictModel):
     blend_weights_v2: dict[str, float]
     confidence_to_se: dict[str, float]
     conviction: ConvictionConfig
+    sigma_class_boundaries: SigmaClassBoundariesConfig
+    sigma_classes: dict[str, SigmaClassThresholdConfig]
     horizon: HorizonConfig
     grid: GridConfig
     ai_vol_regime_multipliers: dict[str, float]
@@ -342,7 +363,22 @@ def _load_config(path: Path = CONFIG_PATH) -> DiprallyConfig:
     """
     with open(path) as f:
         raw = yaml.safe_load(f)
-    return DiprallyConfig(**raw)
+    config = DiprallyConfig(**raw)
+
+    # Cross-field invariants (W3):
+    b = config.sigma_class_boundaries
+    if b.extreme_min <= b.high_min:
+        raise ValueError(
+            f"sigma_class_boundaries: extreme_min ({b.extreme_min}) must be "
+            f"> high_min ({b.high_min}) — monotonicity violated"
+        )
+    required_classes = {"EXTREME", "HIGH", "MID"}
+    missing = required_classes - set(config.sigma_classes.keys())
+    if missing:
+        raise ValueError(
+            f"sigma_classes table missing required classes: {missing}"
+        )
+    return config
 
 
 _CONFIG: DiprallyConfig = _load_config()
@@ -404,10 +440,15 @@ def _rebind_module_constants() -> None:
     g["BLEND_WEIGHTS_V2"] = dict(_CONFIG.blend_weights_v2)
     g["CONFIDENCE_TO_SE"] = dict(_CONFIG.confidence_to_se)
 
-    # Conviction
+    # Conviction (flat — used as fallback when σ-class auto-detect can't fire)
     g["DEFAULT_CONVICTION_DIP"] = _CONFIG.conviction.dip_marginal
     g["DEFAULT_CONVICTION_RALLY_COND"] = _CONFIG.conviction.rally_conditional
     g["EV_HURDLE_BPS_OF_DIP"] = _CONFIG.conviction.ev_hurdle_bps_of_dip
+
+    # σ-class table (W3 PR #21 — conviction-only this PR; subsequent W3
+    # PRs add grid / friction / panic / ai_vol_regime per class)
+    g["SIGMA_CLASS_BOUNDARIES"] = _CONFIG.sigma_class_boundaries
+    g["SIGMA_CLASSES"] = _CONFIG.sigma_classes
 
     # Horizon
     g["DEFAULT_HORIZON_DAYS"] = _CONFIG.horizon.default_days
