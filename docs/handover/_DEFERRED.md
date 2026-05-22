@@ -161,6 +161,63 @@ Each of these is a tunable buried inside a function. Lift to YAML under a
   several signals are LOW-conf to confirm the halving + renormalization
   produces the expected effective weight.
 
+### D-W2-13. Analyst signal needs extreme-outlier sanity check + yfinance fallback
+- **Discovered**: MOG-A no-AI smoke (2026-05-22 17:05). FMP's
+  `price-target-summary` returned an implied drift of -58.9% HIGH conf —
+  meaning consensus 12-month PT for MOG-A sits at ~$131 vs spot $319.
+  For a defense components company up only +27.6% YTD (modestly
+  outperforming, not parabolic), this is either a genuinely deep "sell
+  call from consensus" or stale/wrong-ticker data.
+- **Symptom**: the signal got HIGH confidence (12+ analysts in last-month
+  window per the gating), 15% nominal weight, contributing -8.8pp to the
+  blend posterior. That single signal drove today_mu to -13.1% bearish.
+  No sanity check catches an obviously-extreme analyst PT call.
+- **Why it matters**: a trader acting on this would systematically short
+  MOG-A based on possibly-bad data. Institution-grade discipline requires
+  outlier detection at the signal layer, not just at the blend layer.
+- **Fix in W2 (two parts)**:
+  - **Part A**: in `signal_from_analyst_targets`, add a tolerance gate:
+    if |implied_drift| > 0.50 (i.e., consensus implies >50%/yr move in
+    either direction), downgrade confidence one notch (HIGH → MEDIUM,
+    MEDIUM → LOW) and add a NOTE flag in the signal's `notes` field
+    requiring manual verification. Threshold value in YAML.
+  - **Part B**: when FMP returns implied_drift outside ±0.50, cross-check
+    against yfinance's `targetMeanPrice` field. If the two disagree by
+    >25%, downgrade to LOW + flag for verification. This is the same
+    yfinance fallback architecture proposed for fetch_history (D-W2-14)
+    applied to the analyst endpoint.
+- **Acceptance**: rerun MOG-A; the -58.9% drift either gets confirmed by
+  yfinance (HIGH stays, but with explicit "verified extreme" note) or
+  gets downgraded with a flag. Trader sees the uncertainty.
+
+### D-W2-14. Yfinance fallback when FMP fails (resilience)
+- **Discovered**: MOG.A (dot form) smoke earlier today returned HTTPError
+  402 from FMP, killing the entire pipeline. Single-ticker mode prints
+  a Python stack trace; W5 batch mode would lose the entire daily run.
+- **Symptom**: `src/data_fetch.py:fetch_history` calls `r.raise_for_status()`
+  with no try/except. Any non-2xx response (402, 404, 429, 5xx) or
+  network timeout crashes the pipeline.
+- **Fix in W2** (alongside the YAML data_fetch refactor):
+  - Wrap every FMP request in a `_safe_get(endpoint, params, ticker)` helper
+  - On HTTPError or empty response: log informative error with status code,
+    REDACT apikey from any URL printed
+  - Try yfinance for the same data point (per-ticker translation if needed,
+    via W2 registry's per-provider symbol mapping)
+  - If both fail: raise typed `FetchError(ticker, fmp_status, yf_error)`
+    that the engine catches gracefully — batch mode skips ticker with
+    WARNING, single-ticker exits non-zero with clean error
+  - Add `tests/test_fetch_resilience.py` — mock FMP 402/404/429/timeout +
+    verify yfinance fallback path + verify URL redaction
+- **Per-provider ticker translation** (foundation for the fallback): the
+  W2 registry stores `{symbol: "MOG-A", fmp_symbol: "MOG-A", yf_symbol: "MOG-A"}`
+  per ticker — for now most map 1:1 since we standardized on dash, but the
+  table is the future-proofed shape if a new provider needs a different
+  form.
+- **Acceptance**: deliberately break FMP (set apikey to garbage) and run
+  any ticker; pipeline falls back to yfinance, completes, surfaces
+  `data_source: yfinance` in the CSV row. Restore key, run again; FMP
+  path used, `data_source: fmp` in CSV.
+
 ### Acceptance for W2
 - `python tools/run.py SNDK` (no `--peers`, no `--capital`) auto-resolves
   peers from registry; report shows EV/share + EV% of dip; no SNDK
@@ -169,11 +226,16 @@ Each of these is a tunable buried inside a function. Lift to YAML under a
   in W3); peers auto-resolve to LWLG's registry entry.
 - `python tools/run.py INTC` runs end-to-end (MID-class smoke; catches any
   signal-threshold bug that EXTREME-only smokes missed).
+- `python tools/run.py MOG-A` runs end-to-end (low-σ MID smoke; ticker
+  with dash flows through; analyst signal outlier produces the
+  flagged-for-verification path from D-W2-13).
 - Touching `config/diprally.yaml` and re-running changes behavior with
   ZERO code edits — verify by perturbing DEFAULT_CONVICTION_DIP from 0.65
   to 0.60 and confirming the report reflects the new threshold.
-- The unit test from W1 (`tests/test_refusal_gate.py`) still passes — no
-  regression in the σ-scaled tolerance + refusal gate.
+- Deliberately invalidating FMP_API_KEY and re-running falls back to
+  yfinance (D-W2-14).
+- Unit tests pass: `tests/test_refusal_gate.py` (existing) +
+  `tests/test_fetch_resilience.py` (new).
 - Drift Intelligence table shows both Nominal and Effective weight
   columns (D-W2-12).
 
@@ -309,10 +371,18 @@ Each of these is a tunable buried inside a function. Lift to YAML under a
   working, adjust weights accordingly. Both are needed.
 
 ### D-W10-2. Sector-decoupling signal saturates on every momentum name
-- **Discovered**: pattern across SNDK / LWLG / RKLB / INTC W1 smokes
-  (2026-05-22). All four tickers reported `Sector decoupling +20.0% HIGH`
-  — the signal hit its own `±0.20` cap (signals.signal_from_sector_decoupling
-  line 319) on every single name tested.
+- **Discovered**: pattern across SNDK / LWLG / RKLB / INTC / MOG-A W1
+  smokes (2026-05-22). All FIVE tickers reported `Sector decoupling
+  +20.0%` (HIGH conf on the parabolic names, MEDIUM on MOG-A which is
+  only mildly outperforming +27% YTD) — the signal hit its `±0.20` cap
+  (signals.signal_from_sector_decoupling line 319) on every name tested.
+- **MOG-A extends the diagnosis**: it's not just a "high-momentum
+  outliers cap out" issue. MOG-A has 30d momentum of only +2.2% vs sector
+  -7.8% — a 9.8pp 30d spread. The annualization formula
+  (`drift = spread × 252/30`) amplifies this to +82.3% annualized,
+  capped at +20%. So **the cap binds even on barely-outperforming names**.
+  The annualization-by-252/30 multiplier is too aggressive; one mild
+  outperformer month produces a maxed-out signal.
 - **Symptom**: a signal that saturates on every observation isn't a
   discriminator — it's contributing a near-constant `+0.20 × 10% = +2pp`
   to the blend regardless of ticker. The signal's design weight (10%)
