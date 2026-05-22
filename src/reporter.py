@@ -175,7 +175,7 @@ def format_report(
             )
 
     # AI SYNTHESIS
-    lines.append(hr("AI TWO-PASS SYNTHESIS (Claude Opus 4.7)"))
+    lines.append(hr("AI TWO-PASS SYNTHESIS (Pass 1: Opus 4.7 · Pass 2: Sonnet 4.6 · Stress: Haiku 4.5)"))
     if pass1:
         lines.append(f"  PASS 1: drift={pass1.drift_estimate:+.1%}/yr  conf={pass1.confidence}  vol_regime={pass1.vol_regime}  narrative={pass1.narrative_score}  sources={pass1.raw_sources_cited}  cost=${pass1.cost_usd:.2f}")
         lines.append(f"    Catalysts identified: {len(pass1.catalysts)}")

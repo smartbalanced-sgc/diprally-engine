@@ -13,7 +13,9 @@ import os
 from typing import Optional
 
 from src.config import (
+    MODEL_HAIKU,
     MODEL_OPUS,
+    MODEL_SONNET,
     WEB_SEARCH_PER_USE,
     pricing_for_model,
 )
@@ -196,24 +198,38 @@ ADVERSARIAL POSTURE:
 # AI dispatch + JSON extraction
 # =============================================================================
 
-def call_ai_pass(prompt, max_tokens=3000, pass_label="Pass"):
-    """Call Claude Opus, parse JSON, return (parsed, cost, sources_cited).
+def call_ai_pass(prompt, max_tokens=3000, pass_label="Pass",
+                 model=MODEL_OPUS, web_search_max_uses=5):
+    """Call Claude, parse JSON, return (parsed, cost, sources_cited).
 
     Returns (None, 0.0, 0) on failure.
+
+    model: full model ID (MODEL_OPUS / MODEL_SONNET / MODEL_HAIKU).
+    web_search_max_uses: cap on web_search tool uses. Set to 0 to disable
+    web_search entirely (Pass 2 critique doesn't need it — saves cost and
+    avoids the Sonnet-with-web-search latency hit).
     """
     client = _anthropic_client()
     if client is None:
         print(f"⚠️  No Anthropic client — {pass_label} skipped")
         return None, 0.0, 0
 
+    tools = []
+    if web_search_max_uses > 0:
+        tools.append({"type": "web_search_20250305", "name": "web_search",
+                      "max_uses": web_search_max_uses})
+
     try:
-        response = client.messages.create(
-            model=MODEL_OPUS,
-            max_tokens=max_tokens,
-            tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
-            messages=[{"role": "user", "content": prompt}],
-        )
-        cost = compute_ai_cost(response, model_id=MODEL_OPUS, had_web_search=True)
+        kwargs = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if tools:
+            kwargs["tools"] = tools
+        response = client.messages.create(**kwargs)
+        cost = compute_ai_cost(response, model_id=model,
+                                had_web_search=bool(tools))
         text_parts = []
         for block in response.content:
             if hasattr(block, "text"):
@@ -288,11 +304,11 @@ Return ONLY valid JSON list.
 """
     try:
         response = client.messages.create(
-            model=MODEL_OPUS,
+            model=MODEL_HAIKU,
             max_tokens=1500,
             messages=[{"role": "user", "content": prompt}],
         )
-        cost = compute_ai_cost(response, model_id=MODEL_OPUS, had_web_search=False)
+        cost = compute_ai_cost(response, model_id=MODEL_HAIKU, had_web_search=False)
         text_parts = []
         for block in response.content:
             if hasattr(block, "text"):

@@ -35,6 +35,8 @@ from src.config import (
     DEFAULT_MC_PATHS,
     DIP_GRID_MAX_DEPTH_PCT,
     DIP_GRID_STEP,
+    MODEL_OPUS,
+    MODEL_SONNET,
     RALLY_GRID_MAX_REACH_PCT,
     RALLY_GRID_STEP,
 )
@@ -717,7 +719,10 @@ def run_pipeline(args) -> int:
             ticker, snapshot, vol_profile, horizon_days, display_signals_for_prompt,
             self_earnings_dt, peer_tickers,
         )
-        pass1_raw, pass1_cost, pass1_sources = call_ai_pass(pass1_prompt, max_tokens=8000, pass_label="Pass 1")
+        pass1_raw, pass1_cost, pass1_sources = call_ai_pass(
+            pass1_prompt, max_tokens=8000, pass_label="Pass 1",
+            model=MODEL_OPUS, web_search_max_uses=5,
+        )
         pass1 = parse_ai_pass1(pass1_raw, pass1_sources, pass1_cost) if pass1_raw else None
         pass1_cost_charged = pass1_cost
 
@@ -785,7 +790,14 @@ def run_pipeline(args) -> int:
             ticker, snapshot, pass1, mc_marginal_summary, sigma_summary,
             None,
         )
-        pass2_raw, pass2_cost, _ = call_ai_pass(pass2_prompt, max_tokens=3000, pass_label="Pass 2")
+        # Pass 2 critique uses Sonnet 4.6 (Pass 2 is structured-output JSON
+        # critique — doesn't need Opus depth) with no web_search (relies on
+        # Pass 1's sourced material + math context already in the prompt).
+        # Saves ~$0.40-0.50 per full-AI run vs Opus+web.
+        pass2_raw, pass2_cost, _ = call_ai_pass(
+            pass2_prompt, max_tokens=3000, pass_label="Pass 2",
+            model=MODEL_SONNET, web_search_max_uses=0,
+        )
         pass2_cost_charged = pass2_cost
         if pass2_raw:
             pass2 = parse_ai_pass2(pass2_raw, pass1.drift_estimate, pass2_cost)
