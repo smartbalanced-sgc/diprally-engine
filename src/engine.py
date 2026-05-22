@@ -20,6 +20,7 @@ import pandas as pd
 
 from src import ai_cache
 from src.ai_tiers import resolve_tier, t0
+from src.ambiguity import compute_ambiguity
 from src.registry import resolve_peers
 from src.sigma_classifier import (
     class_conviction,
@@ -518,6 +519,7 @@ CSV_COLUMNS = [
     "narrative_score", "catalyst_proximity_drift",
     "garch_alpha_plus_beta", "horizon_days",
     "method_agreement_flags", "ai_cost_total", "data_source",
+    "ai_tier", "ambiguity_score",
 ]
 
 
@@ -1284,6 +1286,26 @@ def run_pipeline(args) -> int:
         best = None  # blocks recommendation; report prints refusal headline
         met_threshold_strict = False
 
+    # --- 14a. Ambiguity score (W4 PR #28) ---
+    # Computed AFTER all T0 outputs (math, σ triangulation, method check)
+    # but BEFORE any AI dispatch in batch mode. Single scalar in [0, 1];
+    # the broker (PR #29) ranks tickers by this to allocate T3→T2→T1
+    # within the $2/day cap.
+    method_table = method_check.get("table") or []
+    method_max_delta_pp = max((abs(row[3]) for row in method_table), default=0.0)
+    tols = method_check.get("tolerances") or {}
+    method_refuse_pp = float(tols.get("refuse_first_passage_pp", 999.0))
+    ambiguity = compute_ambiguity(
+        best_p_dip=(best.p_dip_touched if best is not None else None),
+        conviction_dip=conviction_dip,
+        best_ev_pct_of_dip=(best.ev_pct_of_dip if best is not None else None),
+        sigma_divergence_pp=divergence_pp,
+        method_max_delta_pp=method_max_delta_pp,
+        method_refuse_threshold_pp=method_refuse_pp,
+        mom_30d=mom_30d,
+    )
+    print(f"Ambiguity score: {ambiguity.overall:.2f}  (broker sort key)")
+
     # --- 14b. Sensitivity table ---
     sensitivity = None
     if best is not None:
@@ -1340,6 +1362,8 @@ def run_pipeline(args) -> int:
         "method_agreement_flags": ";".join(method_check["flags"]),
         "ai_cost_total": f"{total_ai_cost:.2f}",
         "data_source": data_source,
+        "ai_tier": tier.name,
+        "ambiguity_score": f"{ambiguity.overall:.4f}",
     }
     append_history_row(history_path, csv_row)
 
@@ -1360,6 +1384,8 @@ def run_pipeline(args) -> int:
         trend_filter_refused=trend_filter_refused,
         sigma_class=sigma_class,
         sigma_class_mismatch=sigma_class_mismatch,
+        ambiguity=ambiguity,
+        tier=tier,
     )
     print(report)
 

@@ -44,6 +44,8 @@ def format_report(
     trend_filter_refused=False,
     sigma_class=None,
     sigma_class_mismatch=None,
+    ambiguity=None,
+    tier=None,
 ) -> str:
     lines: list[str] = []
     lines.append(hr(f"DIPRALLY ENGINE ({V2_VERSION}) — {snapshot.ticker} — {snapshot.timestamp:%Y-%m-%d %H:%M}"))
@@ -85,6 +87,20 @@ def format_report(
             f"{ce.ai_vol_regime_multipliers['MEDIUM']:.2f}/"
             f"{ce.ai_vol_regime_multipliers['LOW']:.2f}"
         )
+
+    # W4: AI tier + ambiguity score (broker sort key).
+    if tier is not None or ambiguity is not None:
+        lines.append(hr("AI ALLOCATION (W4)"))
+        if tier is not None:
+            lines.append(
+                f"  Tier:        {tier.name}  (est. cost ${tier.estimated_cost_usd:.2f})"
+            )
+        if ambiguity is not None:
+            lines.append(
+                f"  Ambiguity:   {ambiguity.overall:.2f}  (broker sort key — higher = AI tokens have more leverage)"
+            )
+            for name, value in ambiguity.components.items():
+                lines.append(f"    {name:<24} {value:.2f}")
 
     # HEADLINE RECOMMENDATION
     lines.append(hr("ROUND-TRIP RECOMMENDATION"))
