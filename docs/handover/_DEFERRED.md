@@ -218,6 +218,93 @@ Each of these is a tunable buried inside a function. Lift to YAML under a
   `data_source: yfinance` in the CSV row. Restore key, run again; FMP
   path used, `data_source: fmp` in CSV.
 
+### D-W2-15. Sacred decision #14 — trend filter (NOT yet enforced)
+- **Discovered**: post-hotfix sacred-decisions audit (2026-05-22 18:24).
+  CLAUDE.md sacred decision #14: "Refuse dip if 30d momentum < -25%
+  AND no fundamental catalyst." Currently paper-only — never wired
+  into code. Sister to sacred #13 (closed in pre-W2 hotfix #2).
+- **Why this matters**: a stock down >25% in 30 days is in a falling-
+  knife regime. Buying its dip without a verifiable catalyst (earnings
+  beat, contract win, regulatory clarity) is empirically negative-EV.
+  Institutional discipline says don't catch falling knives without
+  a thesis.
+- **Fix in W2**: in engine.run_pipeline, after grid scan, check:
+    if snapshot.mom_30d < -0.25 AND pass1 has no catalyst with
+       direction_risk in ("bullish", "two-sided") within the horizon:
+       refuse, set trend_filter_refused=True, met_threshold_strict=False
+  Reporter gains a 4th refusal-headline branch.
+  Threshold value moves to YAML alongside #13's threshold.
+- **Acceptance**: build a synthetic test ticker where mom_30d=-0.30 and
+  Pass 1 returns only bearish catalysts → refusal fires. Same ticker
+  but with one bullish catalyst → recommendation proceeds.
+- **Why not enforce in pre-W2 hotfix #2 too**: requires AI catalyst
+  data (Pass 1 must have run) — runs cleanly only on T1+ AI tier.
+  Sacred #13 is math-only; sacred #14 is AI-conditional. Cleaner
+  to land in W2 with explicit AI-presence handling.
+
+### D-W2-16. Sacred decision #15 — insider signal still in blend (partial)
+- **Discovered**: post-hotfix sacred-decisions audit (2026-05-22 18:24).
+  CLAUDE.md sacred decision #15: "Insider signal dropped (Form 4 lag
+  + noise)." Reality: insider signal is still in BLEND_WEIGHTS_V2
+  with 2% nominal weight (src/config.py), still gets fetched
+  (data_fetch.fetch_insider_activity), still computed
+  (signals.signal_from_insider), still appears in DRIFT INTELLIGENCE
+  display row. Sacred decision is only partially honored.
+- **Why it stayed in W0**: byte-for-byte migration preserved the seed
+  v2 behavior. W3 was supposed to drop it (alongside σ-class refactor).
+  Still standing.
+- **Fix in W2 or W3**:
+  - Option A: drop insider entirely. Remove from BLEND_WEIGHTS_V2,
+    remove from data_fetch (no more API call), remove from
+    signal_from_insider, remove display row, redistribute the 2%
+    nominal weight across the remaining signals proportionally.
+  - Option B: keep insider as a DISPLAY-ONLY signal (not blended).
+    Show the insider flow in the report (informational), but don't
+    let it influence the drift point estimate. Acknowledges signal
+    EXISTS in raw data but trusts sacred-#15's lag/noise verdict.
+  - Recommend Option A — cleaner, aligns with literal sacred reading.
+- **Acceptance**: BLEND_WEIGHTS_V2 has no "insider" key; reporter
+  shows 10 signals not 11 (after AI-derived); CSV row no longer
+  has insider columns.
+
+### D-W2-17. peer_rs ±0.30 cap saturation (extend D-W10-2)
+- **Discovered**: post-hotfix SNDK smoke (2026-05-22 18:24). With
+  peer_rs finally working, SNDK at +449% YTD vs MU+WDC peers
+  produced +30.0% MEDIUM — capped at the +0.30 limit in
+  signals.signal_from_peer_rs:281.
+- **Pattern**: peer_rs saturates on extreme-momentum names the same
+  way sector_decoupling and sector_momentum do. All three signals
+  use the same annualization formula (multiply 30d/60d return spread
+  by 252/lookback) which amplifies modest outperformance past
+  reasonable caps.
+- **Fix in W10** (with sector_decoupling D-W10-2): treat all three
+  cap-saturated signals as a class. Three remediation candidates per
+  D-W10-2 apply equally:
+    (a) Wider caps (peer_rs ±0.50, sector_decoupling ±0.40)
+    (b) σ-class-aware caps
+    (c) Reduce weights when cap saturating
+  Pick by lowest Brier score from realized 60d outcomes (N≥30 days).
+
+### D-W2-18. Multi-saturation: blend over-confident when N signals all hit caps
+- **Discovered**: post-hotfix SNDK smoke (2026-05-22 18:24). 4 of 8
+  active signals were at extreme values in the bullish direction:
+    historical +88.9% (no cap),
+    peer_rs +30.0% (at cap),
+    sector_decoupling +20.0% (at cap),
+    sector_momentum +60.0% (at regime cap)
+  When 4-of-N signals saturate same-direction, the blend reflects
+  "extreme momentum" rather than discriminating ticker-specific
+  forward drift. Phantom-signal-std accounting (W1) addresses
+  MISSING signals; doesn't address MULTIPLE-SATURATED signals.
+- **Fix candidate (W10)**: when ≥N signals are at their caps in the
+  same direction, add a multi-saturation std inflation (similar
+  mechanism to phantom-signal). Counts as a form of model uncertainty:
+  "we don't know if this is genuine institutional consensus or just
+  a momentum cascade hitting our caps."
+- **Why not fix earlier**: requires calibration data to set N and the
+  inflation magnitude. Guessing the parameters without realized-outcome
+  feedback is over-engineering. W10 venue.
+
 ### Acceptance for W2
 - `python tools/run.py SNDK` (no `--peers`, no `--capital`) auto-resolves
   peers from registry; report shows EV/share + EV% of dip; no SNDK

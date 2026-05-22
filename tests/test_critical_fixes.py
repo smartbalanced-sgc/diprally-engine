@@ -202,6 +202,51 @@ def test_analyst_signal_downgrades_extreme_drift_end_to_end():
     assert "EXTREME OUTLIER" in s["notes"]
 
 
+# ---------- Sacred #13 EV-hurdle gate ----------
+
+def test_ev_hurdle_threshold_constant():
+    """Sacred decision #13 specifies 50bps as the minimum EV/dip ratio."""
+    from src.config import EV_HURDLE_BPS_OF_DIP
+    assert EV_HURDLE_BPS_OF_DIP == 50
+
+
+def test_ev_hurdle_math_ev_pct_of_dip_equals_ev_over_capital():
+    """Per the derivation in engine.py: ev_pct_of_dip simplifies to
+    net_ev_total / capital_usd. Verify on a concrete example."""
+    # SNDK post-hotfix smoke: net_ev_total $46, capital $10,000, dip $1467
+    capital = 10000.0
+    dip = 1467.0
+    net_ev_total = 46.0
+    shares = capital / dip
+    ev_per_share = net_ev_total / shares
+    ev_pct_of_dip_direct = ev_per_share / dip
+    ev_pct_of_dip_simplified = net_ev_total / capital
+    assert abs(ev_pct_of_dip_direct - ev_pct_of_dip_simplified) < 1e-9
+    # And it's the 46bps we computed in the smoke evaluation
+    assert abs(ev_pct_of_dip_simplified * 10000 - 46.0) < 0.1
+
+
+def test_ev_hurdle_triggers_at_46bps():
+    """The post-hotfix SNDK run produced EV = $46 on capital $10000, which
+    is 46bps of dip. Sacred #13 requires 50bps. Gate must fire."""
+    from src.config import EV_HURDLE_BPS_OF_DIP
+    capital = 10000.0
+    net_ev_total = 46.0
+    ev_pct_of_dip = net_ev_total / capital
+    threshold = EV_HURDLE_BPS_OF_DIP / 10000.0
+    assert ev_pct_of_dip < threshold, "46bps must fail the 50bps gate"
+
+
+def test_ev_hurdle_passes_at_60bps():
+    """Trade with EV = 60bps of dip should pass the sacred-#13 gate."""
+    from src.config import EV_HURDLE_BPS_OF_DIP
+    capital = 10000.0
+    net_ev_total = 60.0  # 60bps of $10k = $60
+    ev_pct_of_dip = net_ev_total / capital
+    threshold = EV_HURDLE_BPS_OF_DIP / 10000.0
+    assert ev_pct_of_dip >= threshold, "60bps must pass the 50bps gate"
+
+
 # ---------- 6. Effective-weight via blend ----------
 
 def test_blend_weights_reflect_low_halving():

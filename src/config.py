@@ -173,6 +173,15 @@ BAG_HOLD_TERMINAL_ASSUMPTION = "median_terminal_dip_paths"
 # Backtest gate
 BACKTEST_MIN_SAMPLES = 30
 
+# Sacred decision #13 — EV-hurdle gate.
+# "Refuse to recommend if EV < +50 bps of dip after friction."
+# Net expected $/trade divided by capital = EV % of dip (see derivation in
+# engine.py). When that ratio falls below this threshold (expressed in bps),
+# the engine refuses the recommendation regardless of conviction thresholds
+# being met. Marginal positive-EV trades at extreme valuation contexts must
+# not be authorized as clean recommendations.
+EV_HURDLE_BPS_OF_DIP = 50
+
 # Analyst signal extreme-outlier threshold (D-W2-13).
 # When |implied_drift| > this value, the analyst signal's confidence gets
 # downgraded one notch (HIGH → MEDIUM → LOW). Catches data-quality issues
