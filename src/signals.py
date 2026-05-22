@@ -20,6 +20,15 @@ from src.config import (
     FACTOR_TAIL_BIAS,
     FACTOR_WEIGHTS,
     NARRATIVE_DRIFT_ADJUSTMENT,
+    SIGNAL_ANALYST,
+    SIGNAL_CATALYST_PROXIMITY,
+    SIGNAL_HISTORICAL,
+    SIGNAL_MACRO_DRIFT_LEVELS,
+    SIGNAL_PEER_RS,
+    SIGNAL_REGIME_DETECTION,
+    SIGNAL_SECTOR_DECOUPLING,
+    SIGNAL_SECTOR_MOMENTUM_CAPS,
+    SIGNAL_SHORT_INTEREST_BRACKETS,
 )
 
 
@@ -60,23 +69,25 @@ def _none_signal(reason):
 
 def signal_from_analyst_targets(targets, S0, price_history_df=None,
                                   summary=None):
-    """Analyst targets → drift signal. Prefers fresh price-target-summary."""
+    """Analyst targets → drift signal. Prefers fresh price-target-summary.
+    Thresholds in config signals.analyst (D-W2-6)."""
+    cfg = SIGNAL_ANALYST
     if summary:
         target = None
         n_analysts = 0
         window = ""
         base_conf = "MEDIUM"
 
-        if summary.get("last_month_count", 0) >= 5 and summary.get("last_month_avg"):
+        if summary.get("last_month_count", 0) >= cfg.last_month_min_n_for_use and summary.get("last_month_avg"):
             target = float(summary["last_month_avg"])
             n_analysts = summary["last_month_count"]
             window = "last month"
-            base_conf = "HIGH" if n_analysts >= 12 else "MEDIUM"
-        elif summary.get("last_quarter_count", 0) >= 5 and summary.get("last_quarter_avg"):
+            base_conf = "HIGH" if n_analysts >= cfg.last_month_high_conf_n else "MEDIUM"
+        elif summary.get("last_quarter_count", 0) >= cfg.last_quarter_min_n_for_use and summary.get("last_quarter_avg"):
             target = float(summary["last_quarter_avg"])
             n_analysts = summary["last_quarter_count"]
             window = "last quarter"
-            base_conf = "MEDIUM" if n_analysts >= 15 else "LOW"
+            base_conf = "MEDIUM" if n_analysts >= cfg.last_quarter_medium_conf_n else "LOW"
         elif summary.get("last_year_avg"):
             target = float(summary["last_year_avg"])
             n_analysts = summary.get("last_year_count", 0)
@@ -90,7 +101,7 @@ def signal_from_analyst_targets(targets, S0, price_history_df=None,
                 try:
                     p60 = float(price_history_df["Close"].iloc[-60])
                     move_60d = abs((S0 - p60) / p60)
-                    if move_60d > 0.25:
+                    if move_60d > cfg.staleness_move_60d:
                         base_conf = "LOW"
                         staleness_note = (f" (STALENESS: stock moved {move_60d*100:+.0f}% "
                                           f"in 60d, only {window} avg available)")
@@ -116,9 +127,9 @@ def signal_from_analyst_targets(targets, S0, price_history_df=None,
         high = float(targets.get("target_high") or target)
         low = float(targets.get("target_low") or target)
         spread = (high - low) / target if target > 0 else 1.0
-        if spread < 0.10:
+        if spread < cfg.spread_high_conf:
             conf = "HIGH"
-        elif spread < 0.25:
+        elif spread < cfg.spread_medium_conf:
             conf = "MEDIUM"
         else:
             conf = "LOW"
@@ -128,7 +139,7 @@ def signal_from_analyst_targets(targets, S0, price_history_df=None,
             try:
                 p60 = float(price_history_df["Close"].iloc[-60])
                 move_60d = abs((S0 - p60) / p60)
-                if move_60d > 0.25:
+                if move_60d > cfg.staleness_move_60d:
                     conf = "LOW"
                     staleness_note = (f" (STALE: stock moved {move_60d*100:+.0f}% "
                                       f"in 60d, consensus lags; no fresh summary either)")
@@ -155,17 +166,19 @@ def signal_from_sector(sector_perf, swing_regime=None):
     cum = sector_perf["cum_return_pct"] / 100.0
     drift = (1 + cum) ** (252 / days) - 1.0
 
+    # Regime-conditional caps from config (D-W2-6).
+    caps = SIGNAL_SECTOR_MOMENTUM_CAPS
     regime_name = swing_regime.get("regime") if swing_regime else None
     if regime_name == "POST_PARABOLA":
-        cap_high, cap_low = 0.60, -0.50
+        cap_high, cap_low = caps.post_parabola
         conf = "LOW"
-        regime_note = " [POST_PARABOLA regime: sector cap reduced to +60%, conf LOW]"
+        regime_note = f" [POST_PARABOLA regime: sector cap reduced to +{cap_high*100:.0f}%, conf LOW]"
     elif regime_name in ("MOMENTUM_BULL", "MOMENTUM_BEAR"):
-        cap_high, cap_low = 1.00, -0.50
+        cap_high, cap_low = caps.momentum
         conf = "MEDIUM"
-        regime_note = f" [{regime_name}: cap +100%]"
+        regime_note = f" [{regime_name}: cap +{cap_high*100:.0f}%]"
     else:
-        cap_high, cap_low = 1.50, -0.50
+        cap_high, cap_low = caps.default
         conf = "MEDIUM"
         regime_note = ""
 
@@ -179,11 +192,12 @@ def signal_from_sector(sector_perf, swing_regime=None):
 
 
 def signal_from_macro(macro):
-    """VIX + SPY → drift tilt."""
+    """VIX + SPY → drift tilt. Levels in config signals.macro_drift_levels (D-W2-6)."""
     if not macro:
         return _none_signal("macro data unavailable")
     regime = macro.get("regime", "neutral")
-    drift = {"risk_on": 0.10, "neutral": 0.05, "risk_off": -0.05}.get(regime, 0.05)
+    levels = SIGNAL_MACRO_DRIFT_LEVELS
+    drift = levels.get(regime, levels.get("neutral", 0.05))
     return {
         "drift": float(drift), "confidence": "MEDIUM",
         "source_quality": "PRIMARY", "sources_count": 2,
@@ -225,13 +239,14 @@ def signal_from_insider(insider, market_cap_usd=None):
 
 
 def signal_from_historical(mu_capped, mu_raw, sigma):
-    """Historical mean-return drift, cap-gated to LOW confidence when binding."""
+    """Historical mean-return drift, cap-gated to LOW confidence when binding.
+    Thresholds in config signals.historical (D-W2-6)."""
     if mu_capped is None:
         return _none_signal("historical drift unavailable")
-    if abs(mu_raw) > 1.0:
+    if abs(mu_raw) > SIGNAL_HISTORICAL.cap_binding_abs_drift:
         conf = "LOW"
         gate_note = " (CAP BINDING — extrapolation risk; gated LOW)"
-    elif abs(mu_capped) > 0.5:
+    elif abs(mu_capped) > SIGNAL_HISTORICAL.medium_gating_abs_drift:
         conf = "MEDIUM"
         gate_note = " (large drift; gated MEDIUM)"
     else:
@@ -246,27 +261,20 @@ def signal_from_historical(mu_capped, mu_raw, sigma):
 
 
 def signal_from_short_interest(short_data):
-    """Short interest as drift tilt."""
+    """Short interest as drift tilt. Brackets in config signals.short_interest_brackets
+    (D-W2-6) — ordered list, first match wins."""
     if not short_data or short_data.get("short_percent_of_float") is None:
         return _none_signal("no short interest data")
     spf = short_data["short_percent_of_float"]
-    if spf < 0.03:
-        drift = 0.00
-        conf = "MEDIUM"
-        note = f"SI {spf*100:.1f}% of float — low, neutral signal"
-    elif spf < 0.10:
-        drift = -0.03
-        conf = "MEDIUM"
-        note = f"SI {spf*100:.1f}% of float — moderate skepticism (mild bearish)"
-    elif spf < 0.20:
-        drift = -0.05
-        conf = "LOW"
-        note = (f"SI {spf*100:.1f}% of float — elevated; tail risk both directions "
-                f"(squeeze upside vs structural bearishness)")
-    else:
-        drift = +0.05
-        conf = "LOW"
-        note = f"SI {spf*100:.1f}% of float — very high; squeeze tail upside"
+    drift = 0.0
+    conf = "LOW"
+    note = ""
+    for bracket in SIGNAL_SHORT_INTEREST_BRACKETS:
+        if spf < bracket.threshold_lt:
+            drift = bracket.drift
+            conf = bracket.confidence
+            note = f"SI {spf*100:.1f}% of float — {bracket.note}"
+            break
     return {
         "drift": float(drift), "confidence": conf,
         "source_quality": "PRIMARY", "sources_count": 1,
@@ -304,13 +312,14 @@ def signal_from_peer_rs(price_df, peer_dfs, lookback_days=60, ticker="ticker"):
     peer_median = float(np.median([r for _, r in peer_rets]))
     rs = own_ret - peer_median
     drift = rs * 252 / lookback_days
-    drift = max(-0.30, min(0.30, drift))
+    cap = SIGNAL_PEER_RS.drift_cap_abs
+    drift = max(-cap, min(cap, drift))
 
     if len(peer_rets) >= 2:
         peer_dispersion = float(np.std([r for _, r in peer_rets]))
-        if peer_dispersion < 0.05:
+        if peer_dispersion < SIGNAL_PEER_RS.dispersion_high_conf:
             conf = "HIGH"
-        elif peer_dispersion < 0.15:
+        elif peer_dispersion < SIGNAL_PEER_RS.dispersion_medium_conf:
             conf = "MEDIUM"
         else:
             conf = "LOW"
@@ -342,12 +351,13 @@ def signal_from_sector_decoupling(price_df, sector_perf, lookback_days=30, ticke
     sector_ret = sector_perf["cum_return_pct"] / 100.0
     decoup = own_ret - sector_ret
     drift = decoup * 252 / lookback_days
-    drift = max(-0.20, min(0.20, drift))
+    cap = SIGNAL_SECTOR_DECOUPLING.drift_cap_abs
+    drift = max(-cap, min(cap, drift))
 
-    if abs(decoup) < 0.02:
+    if abs(decoup) < SIGNAL_SECTOR_DECOUPLING.magnitude_low_conf:
         conf = "LOW"
         note_extra = "(low decoupling, signal noisy)"
-    elif abs(decoup) < 0.10:
+    elif abs(decoup) < SIGNAL_SECTOR_DECOUPLING.magnitude_medium_conf:
         conf = "MEDIUM"
         note_extra = ""
     else:
@@ -371,14 +381,16 @@ def detect_swing_regime(rsi, mom_5d, mom_30d_pct, sigma, ytd_return_pct=None):
     regime = "UNCERTAIN"
     detail = ""
 
-    is_high_vol = sigma > 0.50
-    has_parabola = ytd_return_pct is not None and ytd_return_pct > 200
-    rsi_overbought = rsi is not None and rsi > 70
-    rsi_oversold = rsi is not None and rsi < 30
-    mom5_pos = mom_5d > 0.02
-    mom5_neg = mom_5d < -0.02
-    mom30_pos = mom_30d_pct is not None and mom_30d_pct > 5
-    mom30_neg = mom_30d_pct is not None and mom_30d_pct < -5
+    # Triggers in config signals.regime_detection (D-W2-6).
+    rd = SIGNAL_REGIME_DETECTION
+    is_high_vol = sigma > rd.sigma_high_threshold
+    has_parabola = ytd_return_pct is not None and ytd_return_pct > rd.ytd_parabola_pct
+    rsi_overbought = rsi is not None and rsi > rd.rsi_overbought
+    rsi_oversold = rsi is not None and rsi < rd.rsi_oversold
+    mom5_pos = mom_5d > rd.mom_5d_threshold
+    mom5_neg = mom_5d < -rd.mom_5d_threshold
+    mom30_pos = mom_30d_pct is not None and mom_30d_pct > rd.mom_30d_pct_threshold
+    mom30_neg = mom_30d_pct is not None and mom_30d_pct < -rd.mom_30d_pct_threshold
 
     if has_parabola:
         regime = "POST_PARABOLA"
@@ -396,7 +408,7 @@ def detect_swing_regime(rsi, mom_5d, mom_30d_pct, sigma, ytd_return_pct=None):
     elif mom30_neg and mom5_neg:
         regime = "MOMENTUM_BEAR"
         detail = f"30d momentum {mom_30d_pct:+.1f}%, 5d {mom_5d*100:+.1f}%, RSI {rsi:.0f}"
-    elif not is_high_vol and abs(mom_5d) < 0.02:
+    elif not is_high_vol and abs(mom_5d) < rd.mom_5d_threshold:
         regime = "RANGE"
         detail = f"low vol ({sigma*100:.0f}%) + flat momentum"
     else:
@@ -624,9 +636,12 @@ def signal_from_catalyst_proximity(catalysts, horizon_days):
     if not catalysts:
         return 0.0, "LOW", "no catalysts identified"
 
+    # Thresholds in config signals.catalyst_proximity (D-W2-6).
+    cp = SIGNAL_CATALYST_PROXIMITY
     today = datetime.now().date()
     horizon_end = today + timedelta(days=horizon_days)
-    mag_map = {"high": 0.10, "med": 0.05, "low": 0.02}
+    mag_map = cp.magnitude_drift_map
+    mag_default = mag_map.get("med", 0.05)
     dir_sign = {"bullish": 1.0, "bearish": -1.0, "two-sided": 0.0}
 
     total = 0.0
@@ -639,16 +654,22 @@ def signal_from_catalyst_proximity(catalysts, horizon_days):
         if cdate is None:
             continue
         if today <= cdate <= horizon_end:
-            mag = mag_map.get(str(c.get("magnitude", "med")).lower(), 0.05)
+            mag = mag_map.get(str(c.get("magnitude", "med")).lower(), mag_default)
             sign = dir_sign.get(str(c.get("direction_risk", "two-sided")).lower(), 0.0)
             total += mag * sign
             in_window_count += 1
 
-    total = max(-0.15, min(0.15, total))
+    cap = cp.drift_cap_abs
+    total = max(-cap, min(cap, total))
     if in_window_count == 0:
         return 0.0, "LOW", "no catalysts in horizon"
 
-    conf = "HIGH" if in_window_count >= 3 else ("MEDIUM" if in_window_count >= 1 else "LOW")
+    if in_window_count >= cp.in_window_count_high_conf:
+        conf = "HIGH"
+    elif in_window_count >= cp.in_window_count_medium_conf:
+        conf = "MEDIUM"
+    else:
+        conf = "LOW"
     return total, conf, f"{in_window_count} catalysts in horizon, net {total:+.1%}"
 
 
