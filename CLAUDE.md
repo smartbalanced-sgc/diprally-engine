@@ -72,5 +72,7 @@ W3 σ-class auto-detection → W4 budget broker + ambiguity → W5 orchestrator 
 ## Pointers
 - Full session-start context: seed handover (Jesse's clipboard) or
   `docs/handover/01_SESSION_CONTEXT.md` (populated at W2+).
+- **Deferred fixes from earlier waves**: `docs/handover/_DEFERRED.md`. Scan at
+  the start of each wave; clear items whose target wave is now active.
 - v1 seed (`tools/_seed_v1.py`) and v2 seed (`tools/_seed_v2.py`) are deleted at
   end of W0. After W0, source of truth is `src/`.
