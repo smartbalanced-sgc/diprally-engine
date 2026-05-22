@@ -192,6 +192,78 @@ class SensitivityScenarioConfig(_StrictModel):
     sigma_multiplier: float = Field(gt=0.0)
 
 
+# ---- D-W2-6: signal-level embedded thresholds ----
+
+class AnalystSignalConfig(_StrictModel):
+    last_month_min_n_for_use: int = Field(ge=1)
+    last_month_high_conf_n: int = Field(ge=1)
+    last_quarter_min_n_for_use: int = Field(ge=1)
+    last_quarter_medium_conf_n: int = Field(ge=1)
+    staleness_move_60d: float = Field(gt=0.0, lt=1.0)
+    spread_high_conf: float = Field(gt=0.0, lt=1.0)
+    spread_medium_conf: float = Field(gt=0.0, lt=1.0)
+
+
+class SectorMomentumCapsConfig(_StrictModel):
+    """Regime-conditional sector momentum (high_cap, low_cap) tuples."""
+    post_parabola: tuple[float, float]
+    momentum: tuple[float, float]
+    default: tuple[float, float]
+
+
+class HistoricalSignalConfig(_StrictModel):
+    cap_binding_abs_drift: float = Field(gt=0.0)
+    medium_gating_abs_drift: float = Field(gt=0.0)
+
+
+class ShortInterestBracketConfig(_StrictModel):
+    threshold_lt: float = Field(gt=0.0, le=1.0)
+    drift: float
+    confidence: str = Field(pattern=r"^(HIGH|MEDIUM|LOW)$")
+    note: str
+
+
+class PeerRSConfig(_StrictModel):
+    drift_cap_abs: float = Field(gt=0.0)
+    dispersion_high_conf: float = Field(gt=0.0)
+    dispersion_medium_conf: float = Field(gt=0.0)
+
+
+class SectorDecouplingConfig(_StrictModel):
+    drift_cap_abs: float = Field(gt=0.0)
+    magnitude_low_conf: float = Field(gt=0.0)
+    magnitude_medium_conf: float = Field(gt=0.0)
+
+
+class RegimeDetectionConfig(_StrictModel):
+    sigma_high_threshold: float = Field(gt=0.0)
+    mom_5d_threshold: float = Field(gt=0.0)
+    mom_30d_pct_threshold: float = Field(gt=0.0)
+    rsi_overbought: float = Field(gt=50.0, le=100.0)
+    rsi_oversold: float = Field(ge=0.0, lt=50.0)
+    ytd_parabola_pct: float = Field(gt=0.0)
+
+
+class CatalystProximityConfig(_StrictModel):
+    magnitude_drift_map: dict[str, float]
+    drift_cap_abs: float = Field(gt=0.0)
+    in_window_count_high_conf: int = Field(ge=1)
+    in_window_count_medium_conf: int = Field(ge=1)
+
+
+class SignalsConfig(_StrictModel):
+    """D-W2-6: aggregate of all signal-level embedded thresholds."""
+    analyst: AnalystSignalConfig
+    sector_momentum_caps: SectorMomentumCapsConfig
+    macro_drift_levels: dict[str, float]
+    historical: HistoricalSignalConfig
+    short_interest_brackets: list[ShortInterestBracketConfig]
+    peer_rs: PeerRSConfig
+    sector_decoupling: SectorDecouplingConfig
+    regime_detection: RegimeDetectionConfig
+    catalyst_proximity: CatalystProximityConfig
+
+
 class V3ReviewCriteriaConfig(_StrictModel):
     n_days_min: int = Field(ge=1)
     calibration_dip_target: tuple[float, float]
@@ -248,6 +320,7 @@ class DiprallyConfig(_StrictModel):
     mean_reversion: MeanReversionConfig
     pass2_prompt: Pass2PromptConfig
     sensitivity_scenarios: list[SensitivityScenarioConfig]
+    signals: SignalsConfig
     phantom_signal_se: float = Field(gt=0.0, le=1.0)
     ai_cache: AICacheConfig
     bag_hold_terminal_assumption: str
@@ -448,6 +521,18 @@ def _rebind_module_constants() -> None:
          "sigma_multiplier": s.sigma_multiplier}
         for s in _CONFIG.sensitivity_scenarios
     ]
+
+    # Signal-level embedded thresholds (D-W2-6)
+    sig = _CONFIG.signals
+    g["SIGNAL_ANALYST"] = sig.analyst
+    g["SIGNAL_SECTOR_MOMENTUM_CAPS"] = sig.sector_momentum_caps
+    g["SIGNAL_MACRO_DRIFT_LEVELS"] = dict(sig.macro_drift_levels)
+    g["SIGNAL_HISTORICAL"] = sig.historical
+    g["SIGNAL_SHORT_INTEREST_BRACKETS"] = sig.short_interest_brackets
+    g["SIGNAL_PEER_RS"] = sig.peer_rs
+    g["SIGNAL_SECTOR_DECOUPLING"] = sig.sector_decoupling
+    g["SIGNAL_REGIME_DETECTION"] = sig.regime_detection
+    g["SIGNAL_CATALYST_PROXIMITY"] = sig.catalyst_proximity
     g["PHANTOM_SIGNAL_SE_CONFIG"] = _CONFIG.phantom_signal_se  # signals.py reads PHANTOM_SIGNAL_SE locally
 
     # AI cache
