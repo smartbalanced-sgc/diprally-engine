@@ -310,6 +310,96 @@ def test_ev_hurdle_refusal_headline_shows_correct_prices():
     assert "46.5bps" in report
 
 
+# ---------- Sacred #14 trend filter (D-W2-15) ----------
+
+def test_trend_filter_threshold_constant():
+    """Sacred #14 specifies mom_30d < -25% as the trend-filter floor."""
+    from src.config import TREND_FILTER_MOM_30D_THRESHOLD
+    assert TREND_FILTER_MOM_30D_THRESHOLD == -0.25
+
+
+def test_has_supporting_catalyst_returns_false_when_no_ai():
+    """In --no-ai mode (effective_ai=None), no catalysts known. Strict
+    reading of sacred #14: can't disprove falling-knife → refuse."""
+    from src.engine import _has_supporting_catalyst
+    assert _has_supporting_catalyst(None, 60) is False
+
+
+def test_has_supporting_catalyst_returns_false_when_only_bearish():
+    """Bearish-only catalysts don't rescue a falling knife — they confirm
+    it. Sacred #14 looks for bullish OR two-sided catalysts in horizon."""
+    from src.engine import AIPassOutput, _has_supporting_catalyst
+    from datetime import datetime, timedelta
+    in_horizon_date = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
+    fake_ai = AIPassOutput(
+        pass_number=1, drift_estimate=-0.10, drift_range=(-0.2, 0.0),
+        confidence="LOW", vol_regime="HIGH", narrative_score="weak",
+        catalysts=[
+            {"name": "Earnings miss risk", "date_or_window": in_horizon_date,
+             "direction_risk": "bearish", "magnitude": "high", "sources": ["s1"]}
+        ],
+        bull_factors=[], bear_factors=[], key_risks=[],
+        revision_from_prior_pass=None, cost_usd=0.0, raw_sources_cited=1,
+    )
+    assert _has_supporting_catalyst(fake_ai, 60) is False
+
+
+def test_has_supporting_catalyst_returns_true_when_bullish_in_horizon():
+    """Bullish catalyst in horizon → trend filter passes (doesn't refuse)."""
+    from src.engine import AIPassOutput, _has_supporting_catalyst
+    from datetime import datetime, timedelta
+    in_horizon_date = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
+    fake_ai = AIPassOutput(
+        pass_number=1, drift_estimate=0.10, drift_range=(0.0, 0.2),
+        confidence="MEDIUM", vol_regime="MEDIUM", narrative_score="neutral",
+        catalysts=[
+            {"name": "Product launch", "date_or_window": in_horizon_date,
+             "direction_risk": "bullish", "magnitude": "med", "sources": ["s1"]}
+        ],
+        bull_factors=[], bear_factors=[], key_risks=[],
+        revision_from_prior_pass=None, cost_usd=0.0, raw_sources_cited=1,
+    )
+    assert _has_supporting_catalyst(fake_ai, 60) is True
+
+
+def test_has_supporting_catalyst_returns_true_when_two_sided_in_horizon():
+    """Two-sided catalysts (earnings) provide a thesis even though direction
+    is uncertain. The trader's bet becomes 'dip exhausted before event'."""
+    from src.engine import AIPassOutput, _has_supporting_catalyst
+    from datetime import datetime, timedelta
+    in_horizon_date = (datetime.now() + timedelta(days=15)).strftime("%Y-%m-%d")
+    fake_ai = AIPassOutput(
+        pass_number=1, drift_estimate=0.0, drift_range=(-0.1, 0.1),
+        confidence="LOW", vol_regime="HIGH", narrative_score="neutral",
+        catalysts=[
+            {"name": "Q3 earnings", "date_or_window": in_horizon_date,
+             "direction_risk": "two-sided", "magnitude": "high", "sources": ["s1", "s2"]}
+        ],
+        bull_factors=[], bear_factors=[], key_risks=[],
+        revision_from_prior_pass=None, cost_usd=0.0, raw_sources_cited=2,
+    )
+    assert _has_supporting_catalyst(fake_ai, 60) is True
+
+
+def test_has_supporting_catalyst_ignores_out_of_horizon():
+    """Catalyst beyond the horizon doesn't count — by the time it occurs
+    the trade window has closed."""
+    from src.engine import AIPassOutput, _has_supporting_catalyst
+    from datetime import datetime, timedelta
+    far_future = (datetime.now() + timedelta(days=200)).strftime("%Y-%m-%d")
+    fake_ai = AIPassOutput(
+        pass_number=1, drift_estimate=0.10, drift_range=(0.0, 0.2),
+        confidence="MEDIUM", vol_regime="MEDIUM", narrative_score="neutral",
+        catalysts=[
+            {"name": "Far-future event", "date_or_window": far_future,
+             "direction_risk": "bullish", "magnitude": "high", "sources": ["s1"]}
+        ],
+        bull_factors=[], bear_factors=[], key_risks=[],
+        revision_from_prior_pass=None, cost_usd=0.0, raw_sources_cited=1,
+    )
+    assert _has_supporting_catalyst(fake_ai, 60) is False
+
+
 # ---------- 6. Effective-weight via blend ----------
 
 def test_blend_weights_reflect_low_halving():

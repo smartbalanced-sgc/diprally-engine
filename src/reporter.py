@@ -41,6 +41,7 @@ def format_report(
     path_metrics=None,
     ev_hurdle_refused=False,
     ev_pct_of_dip=None,
+    trend_filter_refused=False,
 ) -> str:
     lines: list[str] = []
     lines.append(hr(f"DIPRALLY ENGINE ({V2_VERSION}) — {snapshot.ticker} — {snapshot.timestamp:%Y-%m-%d %H:%M}"))
@@ -53,7 +54,19 @@ def format_report(
 
     # HEADLINE RECOMMENDATION
     lines.append(hr("ROUND-TRIP RECOMMENDATION"))
-    if ev_hurdle_refused and best is not None:
+    if trend_filter_refused and best is not None:
+        # Sacred decision #14 — falling-knife trend filter.
+        from src.config import TREND_FILTER_MOM_30D_THRESHOLD
+        lines.append(f"  ⛔ REFUSED — trend filter (sacred decision #14).")
+        lines.append(f"  30-day momentum {snapshot.mom_30d*100:+.1f}% is below the falling-knife")
+        lines.append(f"  threshold of {TREND_FILTER_MOM_30D_THRESHOLD*100:+.0f}% AND no in-horizon catalyst with")
+        lines.append(f"  bullish or two-sided direction was surfaced by AI Pass 1/Pass 2.")
+        lines.append(f"  Entering a dip buy here means catching a knife without a thesis —")
+        lines.append(f"  empirically negative-EV per the sacred-decision register.")
+        lines.append(f"  Action: WAIT until either momentum stabilizes (mom_30d > {TREND_FILTER_MOM_30D_THRESHOLD*100:+.0f}%)")
+        lines.append(f"  or a concrete catalyst materializes (earnings beat, contract win,")
+        lines.append(f"  regulatory clarity, M&A) to define the thesis.")
+    elif ev_hurdle_refused and best is not None:
         # Sacred decision #13 — EV-hurdle hard gate. Best pair found AND
         # passed conviction thresholds, but EV/dip is below the institutional
         # minimum (50 bps). Refuse to authorize. Sensitivity + path metrics

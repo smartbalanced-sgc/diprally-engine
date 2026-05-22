@@ -116,6 +116,12 @@ class AICacheConfig(_StrictModel):
     spot_move_invalidation_pct: float = Field(gt=0.0, lt=1.0)
 
 
+class TrendFilterConfig(_StrictModel):
+    """Sacred decision #14 — refuse dip if mom_30d below this threshold AND
+    no fundamental catalyst (bullish or two-sided) in horizon."""
+    mom_30d_threshold: float = Field(lt=0.0, gt=-1.0)
+
+
 class V3ReviewCriteriaConfig(_StrictModel):
     n_days_min: int = Field(ge=1)
     calibration_dip_target: tuple[float, float]
@@ -153,6 +159,7 @@ class DiprallyConfig(_StrictModel):
     method_tolerance: MethodToleranceConfig
     backtest: BacktestConfig
     analyst_outlier_threshold: float = Field(gt=0.0)
+    trend_filter: TrendFilterConfig
     phantom_signal_se: float = Field(gt=0.0, le=1.0)
     ai_cache: AICacheConfig
     bag_hold_terminal_assumption: str
@@ -298,6 +305,7 @@ def _rebind_module_constants() -> None:
 
     # Outlier gate + phantom SE
     g["ANALYST_EXTREME_DRIFT_THRESHOLD"] = _CONFIG.analyst_outlier_threshold
+    g["TREND_FILTER_MOM_30D_THRESHOLD"] = _CONFIG.trend_filter.mom_30d_threshold
     g["PHANTOM_SIGNAL_SE_CONFIG"] = _CONFIG.phantom_signal_se  # signals.py reads PHANTOM_SIGNAL_SE locally
 
     # AI cache
