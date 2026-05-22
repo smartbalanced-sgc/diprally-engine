@@ -25,10 +25,7 @@ def main():
     p = argparse.ArgumentParser(
         description="diprally-engine (W0 single-ticker) — round-trip dip-and-rally framework",
     )
-    p.add_argument("ticker", help="Ticker symbol (e.g. SNDK)")
-    p.add_argument("--capital", type=float, default=10000.0,
-                   help="Capital to deploy per round-trip in USD (default 10000). "
-                        "Removed in W2 — engine becomes a pure recommendation tool.")
+    p.add_argument("ticker", help="Ticker symbol (e.g. INTC)")
     p.add_argument("--horizon", type=int, default=DEFAULT_HORIZON_DAYS,
                    help=f"Patience horizon in trading days (default {DEFAULT_HORIZON_DAYS})")
     p.add_argument("--conviction-dip", type=float, default=DEFAULT_CONVICTION_DIP,

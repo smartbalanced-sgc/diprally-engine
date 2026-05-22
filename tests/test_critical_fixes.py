@@ -210,29 +210,23 @@ def test_ev_hurdle_threshold_constant():
     assert EV_HURDLE_BPS_OF_DIP == 50
 
 
-def test_ev_hurdle_math_ev_pct_of_dip_equals_ev_over_capital():
-    """Per the derivation in engine.py: ev_pct_of_dip simplifies to
-    net_ev_total / capital_usd. Verify on a concrete example."""
-    # SNDK post-hotfix smoke: net_ev_total $46, capital $10,000, dip $1467
-    capital = 10000.0
+def test_ev_hurdle_math_post_sacred_6():
+    """Post-sacred-#6 (capital removed), ev_pct_of_dip is computed directly
+    as net_ev_per_share / dip_price. No more capital-scaled total.
+
+    Verify on the historical SNDK case: net_ev_per_share ≈ $6.77, dip $1467
+    → ev_pct_of_dip = 6.77/1467 = 46.1bps."""
     dip = 1467.0
-    net_ev_total = 46.0
-    shares = capital / dip
-    ev_per_share = net_ev_total / shares
-    ev_pct_of_dip_direct = ev_per_share / dip
-    ev_pct_of_dip_simplified = net_ev_total / capital
-    assert abs(ev_pct_of_dip_direct - ev_pct_of_dip_simplified) < 1e-9
-    # And it's the 46bps we computed in the smoke evaluation
-    assert abs(ev_pct_of_dip_simplified * 10000 - 46.0) < 0.1
+    net_ev_per_share = 6.77
+    ev_pct_of_dip = net_ev_per_share / dip
+    # SNDK post-hotfix smoke surfaced 46.5bps — within rounding of the formula
+    assert 0.0040 < ev_pct_of_dip < 0.0050  # 40-50bps range
 
 
 def test_ev_hurdle_triggers_at_46bps():
-    """The post-hotfix SNDK run produced EV = $46 on capital $10000, which
-    is 46bps of dip. Sacred #13 requires 50bps. Gate must fire."""
+    """SNDK at ~46bps EV/dip must fail the sacred-#13 50bps gate."""
     from src.config import EV_HURDLE_BPS_OF_DIP
-    capital = 10000.0
-    net_ev_total = 46.0
-    ev_pct_of_dip = net_ev_total / capital
+    ev_pct_of_dip = 0.0046  # 46bps
     threshold = EV_HURDLE_BPS_OF_DIP / 10000.0
     assert ev_pct_of_dip < threshold, "46bps must fail the 50bps gate"
 
@@ -240,9 +234,7 @@ def test_ev_hurdle_triggers_at_46bps():
 def test_ev_hurdle_passes_at_60bps():
     """Trade with EV = 60bps of dip should pass the sacred-#13 gate."""
     from src.config import EV_HURDLE_BPS_OF_DIP
-    capital = 10000.0
-    net_ev_total = 60.0  # 60bps of $10k = $60
-    ev_pct_of_dip = net_ev_total / capital
+    ev_pct_of_dip = 0.0060  # 60bps
     threshold = EV_HURDLE_BPS_OF_DIP / 10000.0
     assert ev_pct_of_dip >= threshold, "60bps must pass the 50bps gate"
 
@@ -282,7 +274,8 @@ def test_ev_hurdle_refusal_headline_shows_correct_prices():
         p_neither=0.0,
         expected_days_to_dip=0.0, expected_days_dip_to_rally=11.0,
         expected_gain_per_share=185.0, expected_bag_hold_loss=540.0,
-        net_expected_value=46.5,
+        net_ev_per_share=6.77,        # post-sacred-#6: per-share not total
+        ev_pct_of_dip=0.00461,        # 46.1bps of $1467 dip
     )
     method_check = {"table": [], "flags": [], "refusals": [], "refused": False,
                     "agreement_status": "✓", "pde_mass_conservation": 1.0,
@@ -302,7 +295,7 @@ def test_ev_hurdle_refusal_headline_shows_correct_prices():
     report = format_report(
         snapshot, vol_profile, [], None, None, posterior,
         best, method_check, [], backtest,
-        0.65, 0.75, 60, 10000.0, 0.0, 30.0,
+        0.65, 0.75, 60, 0.0, 30.0,                # no capital arg post sacred #6
         met_threshold_strict=False,
         ev_hurdle_refused=True,
         ev_pct_of_dip=0.00465,  # 46.5 bps
