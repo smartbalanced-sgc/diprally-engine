@@ -48,7 +48,6 @@ from src.config import (
     PASS2_CLOSED_FORM_BRACKET_PCT,
     SENSITIVITY_SCENARIOS,
     SIGMA_CLASSES,
-    SPREAD_PER_SHARE_ROUND_TRIP,
     TREND_FILTER_MOM_30D_THRESHOLD,
     DEFAULT_HORIZON_DAYS,
     DEFAULT_LOOKBACK_DAYS,
@@ -312,7 +311,6 @@ def scan_dip_rally_grid(
     conviction_dip,
     conviction_rally_cond,
     sigma_class,
-    spread_per_share_round_trip=None,
     vol_schedule=None,
 ):
     """Scan (dip × rally) grid with Brownian bridge correction.
@@ -323,14 +321,18 @@ def scan_dip_rally_grid(
     per-σ-class table in config/diprally.yaml. Step is % of spot, so
     the engine is price-agnostic across the universe.
 
+    W3 PR #23: friction is per-σ-class round-trip bps applied to the
+    average traded notional (dip+rally)/2 — institutional convention,
+    proportional to what the trader actually transacts on each leg.
+
     Sacred decision #6: no capital concept. EV is reported per-share + as
     a percent of dip-entry price. The trader sizes externally; engine is
     a recommendation tool, not a position-sizer.
     """
-    if spread_per_share_round_trip is None:
-        spread_per_share_round_trip = SPREAD_PER_SHARE_ROUND_TRIP
     n_paths, n_days = paths.shape
-    class_grid = SIGMA_CLASSES[sigma_class].grid
+    class_entry = SIGMA_CLASSES[sigma_class]
+    class_grid = class_entry.grid
+    friction_bps_rt = class_entry.friction_bps_round_trip
     dip_step = S0 * class_grid.dip_step_pct
     rally_step = S0 * class_grid.rally_step_pct
     dip_min = S0 * (1.0 - class_grid.dip_max_depth_pct)
@@ -366,7 +368,13 @@ def scan_dip_rally_grid(
             if p_rally_cond < conviction_rally_cond - GRID_PREFILTER_LOOSENESS:
                 continue
 
-            gain_per_share = float(rally) - float(dip) - spread_per_share_round_trip
+            # PR #23: round-trip friction proportional to average leg
+            # notional. Two legs at their respective prices; bps_rt
+            # spread across the trip.
+            friction_per_share = (
+                (float(dip) + float(rally)) / 2.0 * friction_bps_rt / 10000.0
+            )
+            gain_per_share = float(rally) - float(dip) - friction_per_share
             bag_hold_loss_per_share = float(dip) - result["bag_hold_terminal_median"]
             net_ev_per_share = (
                 result["p_round_trip"] * gain_per_share
@@ -414,7 +422,7 @@ def scan_dip_rally_grid(
 def compute_sensitivity_table(
     S0, base_sigma, base_mu, horizon_days,
     dip_price, rally_price,
-    spread_per_share_round_trip=None,
+    sigma_class,
     catalyst_shocks=None, vol_schedule_base=None, n_paths_sensitivity=10_000,
 ):
     """Small MCs with shifted (drift, sigma) for each scenario.
@@ -423,9 +431,12 @@ def compute_sensitivity_table(
     D-W2-7). Researchers can add/remove/re-parameterize rows via YAML
     without code edits. Per-catalyst stress shocks from AI continue to
     append after these baseline scenarios.
+
+    W3 PR #23: friction is per-σ-class bps applied to (dip+rally)/2,
+    matching the grid scan's institutional round-trip convention.
     """
-    if spread_per_share_round_trip is None:
-        spread_per_share_round_trip = SPREAD_PER_SHARE_ROUND_TRIP
+    friction_bps_rt = SIGMA_CLASSES[sigma_class].friction_bps_round_trip
+    friction_per_share = (dip_price + rally_price) / 2.0 * friction_bps_rt / 10000.0
     if catalyst_shocks is None:
         catalyst_shocks = []
     scenarios = [
@@ -465,7 +476,7 @@ def compute_sensitivity_table(
             paths_s, S0, dip_price, rally_price, horizon_days,
             sigma=sigma_s, vol_schedule=vs,
         )
-        gain_per_share = rally_price - dip_price - spread_per_share_round_trip
+        gain_per_share = rally_price - dip_price - friction_per_share
         bag_hold_loss = dip_price - result["bag_hold_terminal_median"]
         net_ev_per_share = (
             result["p_round_trip"] * gain_per_share
@@ -1256,7 +1267,7 @@ def run_pipeline(args) -> int:
             S0=spot, base_sigma=effective_sigma, base_mu=post_mu,
             horizon_days=horizon_days,
             dip_price=best.dip_price, rally_price=best.rally_price,
-            spread_per_share_round_trip=2.0,
+            sigma_class=sigma_class,
             catalyst_shocks=catalyst_stress_results,
             vol_schedule_base=vol_schedule,
             n_paths_sensitivity=10_000,

@@ -85,10 +85,11 @@ class SigmaClassGridConfig(_StrictModel):
 
 class SigmaClassThresholdConfig(_StrictModel):
     """One row in the sigma_classes table. PR #21 added conviction;
-    PR #22 added grid; friction/panic/ai_vol_mult slot in via
-    subsequent W3 PRs."""
+    PR #22 added grid; PR #23 added friction_bps_round_trip;
+    panic/ai_vol_mult slot in via PR #24."""
     conviction: SigmaClassConvictionConfig
     grid: SigmaClassGridConfig
+    friction_bps_round_trip: float = Field(ge=0.0)
 
 
 class HorizonConfig(_StrictModel):
@@ -191,9 +192,10 @@ class GARCHConfig(_StrictModel):
 
 
 class EngineConfig(_StrictModel):
-    """D-W2-5 + D-W2-7: engine-level scattered tunables."""
+    """D-W2-5 + D-W2-7: engine-level scattered tunables.
+    spread_per_share_round_trip RETIRED in W3 PR #23 — friction is now
+    per-σ-class bps."""
     drift_cap: float = Field(gt=0.0)
-    spread_per_share_round_trip: float = Field(ge=0.0)
     garch_fallback_sigma: float = Field(gt=0.0, lt=10.0)
     grid_prefilter_looseness: float = Field(ge=0.0, lt=1.0)
 
@@ -549,9 +551,9 @@ def _rebind_module_constants() -> None:
     # Realized vol windows (D-W2-9)
     g["REALIZED_VOL_WINDOWS"] = tuple(_CONFIG.realized_vol_windows)
 
-    # Engine scattered (D-W2-5 + D-W2-7)
+    # Engine scattered (D-W2-5 + D-W2-7). SPREAD_PER_SHARE_ROUND_TRIP
+    # retired in W3 PR #23 — friction is per-σ-class bps now.
     g["DRIFT_CAP"] = _CONFIG.engine.drift_cap
-    g["SPREAD_PER_SHARE_ROUND_TRIP"] = _CONFIG.engine.spread_per_share_round_trip
     g["GARCH_FALLBACK_SIGMA"] = _CONFIG.engine.garch_fallback_sigma
     g["GRID_PREFILTER_LOOSENESS"] = _CONFIG.engine.grid_prefilter_looseness
 

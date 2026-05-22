@@ -52,9 +52,15 @@ def format_report(
     lines.append(f"  Sector / Industry: {snapshot.sector} / {snapshot.industry}")
     lines.append(f"  RSI: {snapshot.rsi:.1f}   5d mom: {snapshot.mom_5d:+.1%}   30d mom: {snapshot.mom_30d:+.1%}   YTD: {snapshot.ytd_return:+.1%}")
     if sigma_class is not None:
+        from src.config import SIGMA_CLASSES
+        class_entry = SIGMA_CLASSES[sigma_class]
         lines.append(
             f"  σ-class: {sigma_class}  (auto-detected from blended σ = "
             f"{vol_profile.blended_sigma*100:.1f}%)"
+        )
+        lines.append(
+            f"  Class friction: {class_entry.friction_bps_round_trip:.0f} bps RT"
+            f"  (applied to avg leg notional)"
         )
         if sigma_class_mismatch:
             lines.append(f"    ⚠ {sigma_class_mismatch}")

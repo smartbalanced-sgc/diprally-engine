@@ -123,6 +123,11 @@ sigma_classes:
       rally_step_pct: 0.010
       dip_max_depth_pct: 0.50
       rally_max_reach_pct: 0.60
+    # Round-trip friction in bps of average traded notional (PR #23).
+    # Institutional convention: total RT cost = (dip+rally)/2 × bps/10000
+    # — proportional to the average price across both legs. EXTREME
+    # ticks wider, has higher impact, lower liquidity → 70 bps RT.
+    friction_bps_round_trip: 70.0
   HIGH:
     conviction:
       dip: 0.65
@@ -132,6 +137,7 @@ sigma_classes:
       rally_step_pct: 0.0075
       dip_max_depth_pct: 0.35
       rally_max_reach_pct: 0.50
+    friction_bps_round_trip: 35.0
   MID:
     conviction:
       dip: 0.65
@@ -141,6 +147,7 @@ sigma_classes:
       rally_step_pct: 0.005
       dip_max_depth_pct: 0.20
       rally_max_reach_pct: 0.30
+    friction_bps_round_trip: 18.0
 
 # -----------------------------------------------------------
 # Horizon + MC paths
@@ -312,7 +319,8 @@ realized_vol_windows: [30, 60, 90]
 # -----------------------------------------------------------
 engine:
   drift_cap: 1.0                          # |mu_hist| capped at this before enrichment
-  spread_per_share_round_trip: 2.0        # friction proxy (W3 will σ-class-vary)
+  # spread_per_share_round_trip RETIRED in W3 PR #23 — friction is now
+  # per-σ-class bps under sigma_classes.<CLASS>.friction_bps_round_trip
   garch_fallback_sigma: 0.30              # used when GARCH fit fails AND realized < 90 bars
   grid_prefilter_looseness: 0.08          # candidates within (threshold - this) survive
 

@@ -138,6 +138,41 @@ def test_per_class_depth_widens_with_volatility():
     assert extreme.dip_step_pct > high.dip_step_pct > mid.dip_step_pct
 
 
+# =============================================================================
+# W3 PR #23 — per-class friction in bps
+# =============================================================================
+
+def test_per_class_friction_present_and_ordered():
+    """Each class exposes friction_bps_round_trip; EXTREME has the
+    highest friction (widest ticks, lowest liquidity, deepest impact)
+    and MID the lowest."""
+    extreme = SIGMA_CLASSES["EXTREME"].friction_bps_round_trip
+    high = SIGMA_CLASSES["HIGH"].friction_bps_round_trip
+    mid = SIGMA_CLASSES["MID"].friction_bps_round_trip
+    assert extreme > 0 and high > 0 and mid > 0
+    assert extreme > high > mid, (
+        f"Friction ordering wrong: EXTREME={extreme} HIGH={high} MID={mid}"
+    )
+
+
+def test_friction_in_bps_is_price_agnostic():
+    """The whole point of moving from $2/share to bps: same fractional
+    cost regardless of price level. Apply the EXTREME bps to a $13
+    stock and a $1500 stock at symmetric dip/rally pcts and verify the
+    friction expressed as a fraction of average notional is identical."""
+    bps = SIGMA_CLASSES["EXTREME"].friction_bps_round_trip
+    # Stock A: $13 spot, 30% dip / 40% rally
+    dipA, rallyA = 13.0 * 0.70, 13.0 * 1.40
+    fA = (dipA + rallyA) / 2.0 * bps / 10000.0
+    fracA = fA / ((dipA + rallyA) / 2.0)
+    # Stock B: $1500 spot, same fractional dip/rally
+    dipB, rallyB = 1500.0 * 0.70, 1500.0 * 1.40
+    fB = (dipB + rallyB) / 2.0 * bps / 10000.0
+    fracB = fB / ((dipB + rallyB) / 2.0)
+    assert abs(fracA - fracB) < 1e-12
+    assert abs(fracA - bps / 10000.0) < 1e-12
+
+
 def test_per_class_grid_yields_tractable_point_count():
     """Step + depth combination yields a tractable candidate-pair count.
     Lower bound (≥30 cells per dimension) ensures a fine-enough EV
