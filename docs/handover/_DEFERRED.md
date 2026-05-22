@@ -410,9 +410,30 @@ PR #32 — Aggregate dashboard: output/index.html (stable bookmark) +
         Cron docs in docs/cron.md with sample crontab + log
         rotation + flock budget-guard pattern.
 
+## W6 (institutional signals)  [WAVE CLOSED — PRs #33-#36]
+
+PR #33 — D-W5-1 catalyst verification (Haiku-constrained primary-
+        source check at T2 + T3; UNVERIFIED→magnitude=low,
+        REFUTED→drop). Closes the RKLB-convertible hallucination
+        class.
+PR #34 — Fundamentals signal (TTM FCF yield + ND/EBITDA leverage +
+        operating margin trend). Blend weight 0.08; FMP key-metrics-
+        ttm + income-statement endpoints. Graceful degradation for
+        pre-revenue names (LOW confidence on 1-2 sub-components).
+PR #35 — Analyst revision momentum (time-decay-weighted net
+        upgrades/downgrades over 90d). Blend weight 0.04; FMP
+        upgrades-downgrades endpoint. 1.0 / 0.6 / 0.3 weighting by
+        30d / 30-60d / 60-90d age buckets.
+PR #36 — Integration tests + W6 close-out (this).
+
+Net W6 blend impact:
+  v2 signals: 10 → 12 (added fundamentals + revision_momentum)
+  ai weight: 0.26 → 0.17 (AI's outsized voice trimmed for institutional
+                          structural signals to occupy)
+
 ## To W5 / W6 (AI quality — catalyst verification)
 
-### D-W5-1. AI catalyst-detail hallucination layer
+### D-W5-1. AI catalyst-detail hallucination layer  [CLOSED in W6 PR #33]
 - **Discovered**: RKLB W1 full-AI smoke (2026-05-22 15:47)
 - **Symptom**: Pass 1 produced "Convertible note conversion window
   (2026-04-01/2026-06-30, bearish, magnitude med)" and Pass 2 carried the
