@@ -26,7 +26,9 @@ from pathlib import Path
 from typing import Optional
 
 
-SPOT_MOVE_INVALIDATION_PCT = 0.01  # >=1% spot move -> cache miss
+# Spot-move cache invalidation threshold sourced from config/diprally.yaml
+# via src.config — sacred decision #17 (no hardcoded thresholds in src/).
+from src.config import AI_CACHE_SPOT_MOVE_INVALIDATION_PCT as SPOT_MOVE_INVALIDATION_PCT  # noqa: E402
 
 
 def _cache_dir() -> Path:

@@ -1,42 +1,317 @@
-"""Configuration constants — pricing, blend weights, vol schedule, threshold table.
+"""Config loader. Sacred decision #17 — all configurable values live in
+`config/diprally.yaml`. This module:
 
-W0: inlined from seed v1 + v2. Per-ticker registry (W2), σ-class table (W3),
-and AI budget broker tiers (W4) will move here in later waves.
+  1. Reads the YAML at import time
+  2. Validates the schema via pydantic (typed, catches errors loudly)
+  3. Exposes backwards-compatible module-level constants so every existing
+     `from src.config import X` import keeps working without changes
+
+Anywhere a constant is needed across `src/`, import from this module exactly
+as before. To change a value, edit `config/diprally.yaml`. No code edit, PR,
+or deploy required for threshold tuning — exactly what sacred #17 demands.
+
+W2 foundation scope: top-level constants previously hardcoded here. Future
+W2 sessions lift embedded thresholds from signals.py / data_fetch.py /
+math_utils.py and add the ticker registry.
 """
 from __future__ import annotations
 
+from pathlib import Path
 
-# -----------------------------------------------------------
-# Data sources
-# -----------------------------------------------------------
-FMP_BASE = "https://financialmodelingprep.com/stable"
-DEFAULT_LOOKBACK_DAYS = 730
+import yaml
+from pydantic import BaseModel, ConfigDict, Field
 
 
-# -----------------------------------------------------------
-# Anthropic pricing — Opus 4.7, Sonnet 4.6, Haiku 4.5
-# Verify against https://docs.anthropic.com/en/api/pricing before each wave ships
-# -----------------------------------------------------------
-OPUS_INPUT_PER_TOKEN = 15.00 / 1_000_000
-OPUS_OUTPUT_PER_TOKEN = 75.00 / 1_000_000
-SONNET_INPUT_PER_TOKEN = 3.00 / 1_000_000
-SONNET_OUTPUT_PER_TOKEN = 15.00 / 1_000_000
-HAIKU_INPUT_PER_TOKEN = 1.00 / 1_000_000
-HAIKU_OUTPUT_PER_TOKEN = 5.00 / 1_000_000
-WEB_SEARCH_PER_USE = 0.01
+# =============================================================================
+# Pydantic schemas — mirror the YAML structure exactly
+# =============================================================================
 
-# Canonical model IDs (centralised so model swaps are one-line)
-MODEL_OPUS = "claude-opus-4-7"
-MODEL_SONNET = "claude-sonnet-4-6"
-MODEL_HAIKU = "claude-haiku-4-5-20251001"
+class _StrictModel(BaseModel):
+    """Forbid extra keys. Typos in YAML keys must fail loudly, not be silently
+    ignored. (Pydantic's default is permissive on extras; we override.)"""
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
-# (model_id_prefix, input_rate, output_rate)
-_AI_PRICING = (
-    ("opus",   OPUS_INPUT_PER_TOKEN,   OPUS_OUTPUT_PER_TOKEN),
-    ("sonnet", SONNET_INPUT_PER_TOKEN, SONNET_OUTPUT_PER_TOKEN),
-    ("haiku",  HAIKU_INPUT_PER_TOKEN,  HAIKU_OUTPUT_PER_TOKEN),
-)
 
+class DataConfig(_StrictModel):
+    fmp_base_url: str
+    default_lookback_days: int
+
+
+class AIPricingConfig(_StrictModel):
+    opus_input_per_token: float
+    opus_output_per_token: float
+    sonnet_input_per_token: float
+    sonnet_output_per_token: float
+    haiku_input_per_token: float
+    haiku_output_per_token: float
+    web_search_per_use: float
+
+
+class AIModelsConfig(_StrictModel):
+    opus: str
+    sonnet: str
+    haiku: str
+
+
+class ConvictionConfig(_StrictModel):
+    dip_marginal: float = Field(gt=0.0, lt=1.0)
+    rally_conditional: float = Field(gt=0.0, lt=1.0)
+    ev_hurdle_bps_of_dip: float = Field(ge=0.0)
+
+
+class HorizonConfig(_StrictModel):
+    default_days: int = Field(gt=0)
+    default_mc_paths: int = Field(gt=0)
+    deep_dip_autoscale_threshold: float = Field(gt=0.0, lt=1.0)
+    deep_dip_autoscale_paths: int = Field(gt=0)
+
+
+class GridConfig(_StrictModel):
+    dip_step_dollars: float = Field(gt=0.0)
+    rally_step_dollars: float = Field(gt=0.0)
+    dip_max_depth_pct: float = Field(gt=0.0, lt=1.0)
+    rally_max_reach_pct: float = Field(gt=0.0)
+    panic_floor_pct: float = Field(gt=0.0, lt=1.0)
+
+
+class MethodToleranceConfig(_StrictModel):
+    marginal_floor_pp: float = Field(ge=0.0)
+    marginal_multiplier: float = Field(ge=0.0)
+    first_passage_floor_pp: float = Field(ge=0.0)
+    first_passage_multiplier: float = Field(ge=0.0)
+    refusal_multiplier: float = Field(gt=1.0)
+
+
+class BacktestConfig(_StrictModel):
+    min_samples: int = Field(ge=1)
+
+
+class FactorWeightsConfig(_StrictModel):
+    high: int = Field(ge=1)
+    med: int = Field(ge=1)
+    low: int = Field(ge=1)
+
+
+class FactorArithmeticConfig(_StrictModel):
+    weights: FactorWeightsConfig
+    net_threshold: int = Field(ge=0)
+    tail_bias: float = Field(ge=0.0)
+
+
+class CatalystConfig(_StrictModel):
+    z_threshold: float = Field(gt=0.0)
+
+
+class VolScheduleMultipliersConfig(_StrictModel):
+    self_earnings_day: float = Field(gt=0.0)
+    self_earnings_pre_post: float = Field(gt=0.0)
+    self_earnings_window_days: int = Field(ge=0)
+    peer_earnings_day: float = Field(gt=0.0)
+    peer_earnings_pre_post: float = Field(gt=0.0)
+    peer_earnings_window_days: int = Field(ge=0)
+    macro_event_day: float = Field(gt=0.0)
+
+
+class AICacheConfig(_StrictModel):
+    spot_move_invalidation_pct: float = Field(gt=0.0, lt=1.0)
+
+
+class V3ReviewCriteriaConfig(_StrictModel):
+    n_days_min: int = Field(ge=1)
+    calibration_dip_target: tuple[float, float]
+    calibration_rally_cond_target: tuple[float, float]
+    ai_pass2_critique_rate_min: float = Field(ge=0.0, le=1.0)
+    catalyst_signal_correlation_min: float = Field(ge=-1.0, le=1.0)
+    bag_hold_rate_target: tuple[float, float]
+
+
+class DiprallyConfig(_StrictModel):
+    version: str
+    data: DataConfig
+    ai_pricing: AIPricingConfig
+    ai_models: AIModelsConfig
+    blend_weights_v1: dict[str, float]
+    blend_weights_v2: dict[str, float]
+    confidence_to_se: dict[str, float]
+    conviction: ConvictionConfig
+    horizon: HorizonConfig
+    grid: GridConfig
+    ai_vol_regime_multipliers: dict[str, float]
+    narrative_drift_adjustment: dict[str, float]
+    factor_arithmetic: FactorArithmeticConfig
+    catalyst: CatalystConfig
+    vol_schedule_multipliers: VolScheduleMultipliersConfig
+    method_tolerance: MethodToleranceConfig
+    backtest: BacktestConfig
+    analyst_outlier_threshold: float = Field(gt=0.0)
+    phantom_signal_se: float = Field(gt=0.0, le=1.0)
+    ai_cache: AICacheConfig
+    bag_hold_terminal_assumption: str
+    v3_review_criteria: V3ReviewCriteriaConfig
+
+
+# =============================================================================
+# Load + validate
+# =============================================================================
+
+CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "diprally.yaml"
+
+
+def _load_config(path: Path = CONFIG_PATH) -> DiprallyConfig:
+    """Load and validate the YAML config. Raises pydantic.ValidationError on
+    schema violations (typos, missing keys, out-of-range values, type errors).
+    Module-level call — engine cannot start if config is malformed.
+    """
+    with open(path) as f:
+        raw = yaml.safe_load(f)
+    return DiprallyConfig(**raw)
+
+
+_CONFIG: DiprallyConfig = _load_config()
+
+
+def reload_config(path: Path = CONFIG_PATH) -> DiprallyConfig:
+    """Reload config from disk. Useful for tests that perturb the YAML
+    to verify behavior change without code edits (sacred-#17 acceptance)."""
+    global _CONFIG
+    _CONFIG = _load_config(path)
+    _rebind_module_constants()
+    return _CONFIG
+
+
+# =============================================================================
+# Backwards-compatible module-level constants
+# Every existing `from src.config import X` import keeps working.
+# The values are now sourced from YAML but exposed under the same names.
+# =============================================================================
+
+def _rebind_module_constants() -> None:
+    """Rebind all module-level constants from _CONFIG. Called at import time
+    and again by reload_config() so tests can perturb the YAML and observe
+    behavior change with no code edits.
+    """
+    g = globals()
+
+    # Version + bag hold
+    g["V2_VERSION"] = _CONFIG.version
+    g["BAG_HOLD_TERMINAL_ASSUMPTION"] = _CONFIG.bag_hold_terminal_assumption
+
+    # Data
+    g["FMP_BASE"] = _CONFIG.data.fmp_base_url
+    g["DEFAULT_LOOKBACK_DAYS"] = _CONFIG.data.default_lookback_days
+
+    # AI pricing
+    g["OPUS_INPUT_PER_TOKEN"] = _CONFIG.ai_pricing.opus_input_per_token
+    g["OPUS_OUTPUT_PER_TOKEN"] = _CONFIG.ai_pricing.opus_output_per_token
+    g["SONNET_INPUT_PER_TOKEN"] = _CONFIG.ai_pricing.sonnet_input_per_token
+    g["SONNET_OUTPUT_PER_TOKEN"] = _CONFIG.ai_pricing.sonnet_output_per_token
+    g["HAIKU_INPUT_PER_TOKEN"] = _CONFIG.ai_pricing.haiku_input_per_token
+    g["HAIKU_OUTPUT_PER_TOKEN"] = _CONFIG.ai_pricing.haiku_output_per_token
+    g["WEB_SEARCH_PER_USE"] = _CONFIG.ai_pricing.web_search_per_use
+
+    # AI models
+    g["MODEL_OPUS"] = _CONFIG.ai_models.opus
+    g["MODEL_SONNET"] = _CONFIG.ai_models.sonnet
+    g["MODEL_HAIKU"] = _CONFIG.ai_models.haiku
+
+    # Pricing dispatch tuple
+    g["_AI_PRICING"] = (
+        ("opus",   _CONFIG.ai_pricing.opus_input_per_token,   _CONFIG.ai_pricing.opus_output_per_token),
+        ("sonnet", _CONFIG.ai_pricing.sonnet_input_per_token, _CONFIG.ai_pricing.sonnet_output_per_token),
+        ("haiku",  _CONFIG.ai_pricing.haiku_input_per_token,  _CONFIG.ai_pricing.haiku_output_per_token),
+    )
+
+    # Blend weights
+    g["BLEND_WEIGHTS"] = dict(_CONFIG.blend_weights_v1)
+    g["BLEND_WEIGHTS_V2"] = dict(_CONFIG.blend_weights_v2)
+    g["CONFIDENCE_TO_SE"] = dict(_CONFIG.confidence_to_se)
+
+    # Conviction
+    g["DEFAULT_CONVICTION_DIP"] = _CONFIG.conviction.dip_marginal
+    g["DEFAULT_CONVICTION_RALLY_COND"] = _CONFIG.conviction.rally_conditional
+    g["EV_HURDLE_BPS_OF_DIP"] = _CONFIG.conviction.ev_hurdle_bps_of_dip
+
+    # Horizon
+    g["DEFAULT_HORIZON_DAYS"] = _CONFIG.horizon.default_days
+    g["DEFAULT_MC_PATHS"] = _CONFIG.horizon.default_mc_paths
+    g["DEEP_DIP_AUTOSCALE_THRESHOLD"] = _CONFIG.horizon.deep_dip_autoscale_threshold
+    g["DEEP_DIP_AUTOSCALE_PATHS"] = _CONFIG.horizon.deep_dip_autoscale_paths
+
+    # Grid
+    g["DIP_GRID_STEP"] = _CONFIG.grid.dip_step_dollars
+    g["RALLY_GRID_STEP"] = _CONFIG.grid.rally_step_dollars
+    g["DIP_GRID_MAX_DEPTH_PCT"] = _CONFIG.grid.dip_max_depth_pct
+    g["RALLY_GRID_MAX_REACH_PCT"] = _CONFIG.grid.rally_max_reach_pct
+    g["PANIC_FLOOR_PCT"] = _CONFIG.grid.panic_floor_pct
+
+    # AI vol regime + narrative
+    g["AI_VOL_REGIME_MULTIPLIERS"] = dict(_CONFIG.ai_vol_regime_multipliers)
+    g["NARRATIVE_DRIFT_ADJUSTMENT"] = dict(_CONFIG.narrative_drift_adjustment)
+
+    # Factor arithmetic
+    g["FACTOR_WEIGHTS"] = {
+        "high": _CONFIG.factor_arithmetic.weights.high,
+        "med": _CONFIG.factor_arithmetic.weights.med,
+        "low": _CONFIG.factor_arithmetic.weights.low,
+    }
+    g["FACTOR_NET_THRESHOLD"] = _CONFIG.factor_arithmetic.net_threshold
+    g["FACTOR_TAIL_BIAS"] = _CONFIG.factor_arithmetic.tail_bias
+
+    # Catalyst
+    g["CATALYST_Z_THRESHOLD"] = _CONFIG.catalyst.z_threshold
+
+    # Vol schedule
+    vsm = _CONFIG.vol_schedule_multipliers
+    g["VOL_SCHEDULE_MULTIPLIERS"] = {
+        "self_earnings_day": vsm.self_earnings_day,
+        "self_earnings_pre_post": vsm.self_earnings_pre_post,
+        "self_earnings_window_days": vsm.self_earnings_window_days,
+        "peer_earnings_day": vsm.peer_earnings_day,
+        "peer_earnings_pre_post": vsm.peer_earnings_pre_post,
+        "peer_earnings_window_days": vsm.peer_earnings_window_days,
+        "macro_event_day": vsm.macro_event_day,
+    }
+
+    # Method tolerance
+    g["METHOD_AGREEMENT_FLOOR_PP"] = _CONFIG.method_tolerance.marginal_floor_pp
+    g["METHOD_AGREEMENT_MULTIPLIER"] = _CONFIG.method_tolerance.marginal_multiplier
+    g["METHOD_AGREEMENT_FIRST_PASSAGE_FLOOR_PP"] = _CONFIG.method_tolerance.first_passage_floor_pp
+    g["METHOD_AGREEMENT_FIRST_PASSAGE_MULTIPLIER"] = _CONFIG.method_tolerance.first_passage_multiplier
+    g["METHOD_REFUSAL_MULTIPLIER"] = _CONFIG.method_tolerance.refusal_multiplier
+    # Legacy aliases (deprecate in W3)
+    g["METHOD_AGREEMENT_TOLERANCE_PP_MARGINAL"] = _CONFIG.method_tolerance.marginal_multiplier * 1.0
+    g["METHOD_AGREEMENT_TOLERANCE_PP_FIRST_PASSAGE"] = _CONFIG.method_tolerance.first_passage_multiplier * 1.0
+    g["METHOD_AGREEMENT_TOLERANCE_PP"] = g["METHOD_AGREEMENT_TOLERANCE_PP_FIRST_PASSAGE"]
+
+    # Backtest
+    g["BACKTEST_MIN_SAMPLES"] = _CONFIG.backtest.min_samples
+
+    # Outlier gate + phantom SE
+    g["ANALYST_EXTREME_DRIFT_THRESHOLD"] = _CONFIG.analyst_outlier_threshold
+    g["PHANTOM_SIGNAL_SE_CONFIG"] = _CONFIG.phantom_signal_se  # signals.py reads PHANTOM_SIGNAL_SE locally
+
+    # AI cache
+    g["AI_CACHE_SPOT_MOVE_INVALIDATION_PCT"] = _CONFIG.ai_cache.spot_move_invalidation_pct
+
+    # v3 review criteria
+    v3 = _CONFIG.v3_review_criteria
+    g["V3_REVIEW_CRITERIA"] = {
+        "n_days_min": v3.n_days_min,
+        "calibration_dip_target": v3.calibration_dip_target,
+        "calibration_rally_cond_target": v3.calibration_rally_cond_target,
+        "ai_pass2_critique_rate_min": v3.ai_pass2_critique_rate_min,
+        "catalyst_signal_correlation_min": v3.catalyst_signal_correlation_min,
+        "bag_hold_rate_target": v3.bag_hold_rate_target,
+    }
+
+
+# Bind on import so all `from src.config import X` calls work.
+_rebind_module_constants()
+
+
+# =============================================================================
+# Public helpers (unchanged signatures)
+# =============================================================================
 
 def pricing_for_model(model_id: str) -> tuple[float, float]:
     """Return (input_per_token, output_per_token) for the given model ID.
@@ -45,104 +320,10 @@ def pricing_for_model(model_id: str) -> tuple[float, float]:
     rather than understates).
     """
     lower = (model_id or "").lower()
-    for prefix, in_rate, out_rate in _AI_PRICING:
+    for prefix, in_rate, out_rate in _AI_PRICING:  # noqa: F821 (set by _rebind)
         if prefix in lower:
             return in_rate, out_rate
-    return OPUS_INPUT_PER_TOKEN, OPUS_OUTPUT_PER_TOKEN
-
-
-# -----------------------------------------------------------
-# v1 blend weights — kept for any v1-style callers; v2 uses BLEND_WEIGHTS_V2
-# -----------------------------------------------------------
-BLEND_WEIGHTS = {
-    "historical":         0.10,
-    "analyst":            0.15,
-    "sector":             0.08,
-    "macro":              0.07,
-    "insider":            0.05,
-    "ai":                 0.30,
-    "short_interest":     0.05,
-    "peer_rs":            0.10,
-    "sector_decoupling":  0.10,
-}
-
-
-# Standard error mapping per confidence tier (decimal annualised return).
-CONFIDENCE_TO_SE = {"HIGH": 0.05, "MEDIUM": 0.10, "LOW": 0.20}
-
-
-# =============================================================================
-# v2 LOCKED CONFIGURATION
-# =============================================================================
-
-V2_VERSION = "DIPNRALLY-v1.0"
-DEFAULT_CONVICTION_DIP = 0.65          # P(touch dip) marginal — LOCKED
-DEFAULT_CONVICTION_RALLY_COND = 0.75   # P(rally | dip) conditional — LOCKED
-DEFAULT_HORIZON_DAYS = 60
-DEFAULT_MC_PATHS = 100_000             # 200k auto-scale when P(dip) < 40%
-DEEP_DIP_AUTOSCALE_THRESHOLD = 0.40
-DEEP_DIP_AUTOSCALE_PATHS = 200_000
-
-# Asymmetric grid resolution: tighter near spot, coarser at extremes
-DIP_GRID_STEP = 10.0    # dollar step for dip scan
-RALLY_GRID_STEP = 10.0  # dollar step for rally scan
-DIP_GRID_MAX_DEPTH_PCT = 0.40   # scan down to spot * (1 - 0.40) = 60% of spot
-RALLY_GRID_MAX_REACH_PCT = 0.60 # scan up to spot * (1 + 0.60) = 160% of spot
-
-# Path-metrics panic floor (W3 will class-vary it; W0 keeps the v2 30% literal
-# but lifted out of compute_path_metrics so it stops looking ticker-specific).
-PANIC_FLOOR_PCT = 0.30
-
-# AI vol_regime → vol_mult mapping
-AI_VOL_REGIME_MULTIPLIERS = {
-    "HIGH": 1.15,
-    "MEDIUM": 1.00,
-    "LOW": 0.90,
-}
-
-# Structural narrative score → drift adjustment (annualised pp)
-NARRATIVE_DRIFT_ADJUSTMENT = {
-    "strong": 0.05,
-    "neutral": 0.00,
-    "weak": -0.05,
-}
-
-# Bull/bear factor arithmetic weights
-FACTOR_WEIGHTS = {"high": 3, "med": 2, "low": 1}
-FACTOR_NET_THRESHOLD = 4
-FACTOR_TAIL_BIAS = 0.05
-
-# Catalyst Z-score threshold (pattern from src/sentiment.py:112)
-CATALYST_Z_THRESHOLD = 3.0
-
-# Vol schedule multipliers around catalysts
-VOL_SCHEDULE_MULTIPLIERS = {
-    "self_earnings_day": 3.0,
-    "self_earnings_pre_post": 1.5,
-    "self_earnings_window_days": 2,
-    "peer_earnings_day": 1.8,
-    "peer_earnings_pre_post": 1.3,
-    "peer_earnings_window_days": 1,
-    "macro_event_day": 1.5,
-}
-
-# Three-method agreement tolerance — σ-SCALED.
-# The Brownian bridge correction on the MC has an irreducible residual that
-# scales with σ: at σ=30% it's ~0.3-0.8pp, at σ=100% it's ~2-3pp, at σ=150%
-# it can reach 3-5pp. A constant threshold is wrong for any ticker outside
-# the σ-class it was tuned against. The σ-scaled functions below give:
-#   σ=0.30 (MID INTC):    flag 2.0pp, refuse 3.6pp
-#   σ=1.00 (EXTREME SNDK): flag 3.0pp, refuse 5.4pp
-#   σ=1.50 (high LWLG-like): flag 4.5pp, refuse 8.1pp
-# W10 will calibrate these multipliers empirically from realized residuals.
-METHOD_AGREEMENT_FLOOR_PP = 2.0      # tolerance never drops below this at low σ
-METHOD_AGREEMENT_MULTIPLIER = 3.0    # tolerance ~= 3.0 × σ_effective at high σ
-METHOD_AGREEMENT_FIRST_PASSAGE_FLOOR_PP = 3.0
-METHOD_AGREEMENT_FIRST_PASSAGE_MULTIPLIER = 4.0
-# Refusal threshold = REFUSAL_MULT × flag-threshold. Sacred decision #16
-# enforced as a hard gate: MC vs PDE/closed-form diverge beyond this →
-# refuse to recommend.
-METHOD_REFUSAL_MULTIPLIER = 1.8
+    return OPUS_INPUT_PER_TOKEN, OPUS_OUTPUT_PER_TOKEN  # noqa: F821
 
 
 def method_tolerance_pp(sigma_effective: float, kind: str = "marginal") -> float:
@@ -150,70 +331,12 @@ def method_tolerance_pp(sigma_effective: float, kind: str = "marginal") -> float
     Marginal = P(touch ever). First-passage = P(dip first | rally first).
     """
     if kind == "first_passage":
-        return max(METHOD_AGREEMENT_FIRST_PASSAGE_FLOOR_PP,
-                   METHOD_AGREEMENT_FIRST_PASSAGE_MULTIPLIER * sigma_effective)
-    return max(METHOD_AGREEMENT_FLOOR_PP,
-               METHOD_AGREEMENT_MULTIPLIER * sigma_effective)
+        return max(METHOD_AGREEMENT_FIRST_PASSAGE_FLOOR_PP,  # noqa: F821
+                   METHOD_AGREEMENT_FIRST_PASSAGE_MULTIPLIER * sigma_effective)  # noqa: F821
+    return max(METHOD_AGREEMENT_FLOOR_PP,  # noqa: F821
+               METHOD_AGREEMENT_MULTIPLIER * sigma_effective)  # noqa: F821
 
 
 def method_refusal_pp(sigma_effective: float, kind: str = "marginal") -> float:
     """Hard refusal threshold (pp). Triggers the sacred-decision-#16 gate."""
-    return METHOD_REFUSAL_MULTIPLIER * method_tolerance_pp(sigma_effective, kind)
-
-
-# Legacy constants kept temporarily for backwards-compatible imports.
-# Anyone still reading these gets the value at σ=1.0 (the most common case
-# in the seed's SNDK-tuned regime). Deprecate-and-remove in W3.
-METHOD_AGREEMENT_TOLERANCE_PP_MARGINAL = METHOD_AGREEMENT_MULTIPLIER * 1.0
-METHOD_AGREEMENT_TOLERANCE_PP_FIRST_PASSAGE = METHOD_AGREEMENT_FIRST_PASSAGE_MULTIPLIER * 1.0
-METHOD_AGREEMENT_TOLERANCE_PP = METHOD_AGREEMENT_TOLERANCE_PP_FIRST_PASSAGE
-
-BAG_HOLD_TERMINAL_ASSUMPTION = "median_terminal_dip_paths"
-
-# Backtest gate
-BACKTEST_MIN_SAMPLES = 30
-
-# Sacred decision #13 — EV-hurdle gate.
-# "Refuse to recommend if EV < +50 bps of dip after friction."
-# Net expected $/trade divided by capital = EV % of dip (see derivation in
-# engine.py). When that ratio falls below this threshold (expressed in bps),
-# the engine refuses the recommendation regardless of conviction thresholds
-# being met. Marginal positive-EV trades at extreme valuation contexts must
-# not be authorized as clean recommendations.
-EV_HURDLE_BPS_OF_DIP = 50
-
-# Analyst signal extreme-outlier threshold (D-W2-13).
-# When |implied_drift| > this value, the analyst signal's confidence gets
-# downgraded one notch (HIGH → MEDIUM → LOW). Catches data-quality issues
-# (wrong-ticker, stale, sparse-coverage) before they drive the blend.
-# Surfaced by MOG-A smoke (2026-05-22): FMP returned -58.9% implied drift
-# HIGH conf on a $10B defense industrial up only +27% YTD — either genuine
-# deep-sell consensus or bad data. Either way, |drift| > 0.50/yr deserves
-# scrutiny, not full HIGH-conf weight in the blend.
-ANALYST_EXTREME_DRIFT_THRESHOLD = 0.50
-
-# v2 blend weights — 10 signals
-BLEND_WEIGHTS_V2 = {
-    "historical":          0.05,
-    "analyst":             0.15,
-    "sector":              0.04,
-    "macro":               0.07,
-    "insider":             0.02,
-    "short_interest":      0.02,
-    "peer_rs":             0.10,
-    "sector_decoupling":   0.10,
-    "ai":                  0.25,
-    "catalyst_proximity":  0.10,
-    "narrative":           0.10,
-}
-
-
-# v3 review criteria — LOCKED at v2 ship, executed at 30 days of runtime data
-V3_REVIEW_CRITERIA = {
-    "n_days_min": 30,
-    "calibration_dip_target": (0.60, 0.70),
-    "calibration_rally_cond_target": (0.70, 0.80),
-    "ai_pass2_critique_rate_min": 0.20,
-    "catalyst_signal_correlation_min": 0.10,
-    "bag_hold_rate_target": (0.10, 0.20),
-}
+    return METHOD_REFUSAL_MULTIPLIER * method_tolerance_pp(sigma_effective, kind)  # noqa: F821

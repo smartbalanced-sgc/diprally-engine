@@ -467,8 +467,9 @@ _AI_DERIVED_SIGNAL_NAMES = ("ai", "catalyst_proximity", "narrative")
 # correct expression of "we are less certain when forward-looking synthesis
 # is unavailable" rather than the previous behavior where dropping AI made
 # the std artificially TIGHTER (because AI's between-signal disagreement
-# also disappeared from between_var).
-PHANTOM_SIGNAL_SE = 0.20
+# also disappeared from between_var). Sourced from config/diprally.yaml
+# via src.config — sacred decision #17.
+from src.config import PHANTOM_SIGNAL_SE_CONFIG as PHANTOM_SIGNAL_SE  # noqa: E402
 
 
 def blend_with_uncertainty(signals, weights_dict=None):
