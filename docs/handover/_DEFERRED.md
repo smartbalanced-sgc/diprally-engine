@@ -394,17 +394,21 @@ PR #29 — Budget broker greedy-allocator (T3→T2→T1 within $2/day);
         broker_preview.py CLI for dry-runs
 PR #30 — Engine emits qualifies_for_t2_plus (sacred T2+ gate);
         --emit-snapshot prints BrokerSnapshot JSON for orchestrator
-        consumption (this PR)
+        consumption
 
-W5 prerequisites (unblocked by W4):
-  - Orchestrator can call `python tools/run.py <ticker> --tier T0 --emit-snapshot`
-    for each configured ticker, parse the BROKER_SNAPSHOT_JSON= lines, hand
-    them to `src.broker.allocate()`, then re-run each ticker at its assigned
-    tier (with same-day cache hits making the second pass cheap on T0 cost
-    but enabling the AI calls at the broker-chosen tier).
-  - Or simpler / colder: run each ticker once at the broker-assigned tier
-    after a separate snapshot-collection pass. Either is workable; the
-    orchestrator authors pick.
+## W5 (orchestrator + cron + dashboard)  [WAVE CLOSED — PRs #31-#32]
+
+PR #31 — Multi-ticker orchestrator (subprocess-based, two-phase):
+        Phase 1 T0 snapshot collection, broker allocates, Phase 2 AI
+        dispatch at assigned tiers. src/orchestrator.py library +
+        tools/orchestrate.py CLI shim. Per-ticker logs in
+        output/orchestrator_<ts>/. Summary table at completion.
+PR #32 — Aggregate dashboard: output/index.html (stable bookmark) +
+        output/orchestrator_<ts>/index.html (audit copy). Sortable
+        per-ticker table: ticker / σ-class / tier / ambiguity /
+        verdict / spot / dip / rally / P(RT) / EV bps / status.
+        Cron docs in docs/cron.md with sample crontab + log
+        rotation + flock budget-guard pattern.
 
 ## To W5 / W6 (AI quality — catalyst verification)
 

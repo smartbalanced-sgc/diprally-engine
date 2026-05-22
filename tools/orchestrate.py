@@ -30,7 +30,12 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from src.broker import allocate, format_allocation
-from src.orchestrator import format_summary, run_phase1, run_phase2
+from src.orchestrator import (
+    format_summary,
+    generate_aggregate_dashboard,
+    run_phase1,
+    run_phase2,
+)
 from src.registry import list_universe
 
 
@@ -91,7 +96,13 @@ def main():
     print(summary)
     summary_path = run_dir / "SUMMARY.txt"
     summary_path.write_text(summary + "\n")
-    print(f"\nFull logs + summary saved to: {run_dir}")
+
+    # Aggregate dashboard (W5 PR #32). Writes both a run-dir audit copy
+    # and a stable output/index.html the operator bookmarks.
+    dashboard_path = generate_aggregate_dashboard(results, allocation, run_dir)
+    print(f"\nAggregate dashboard: {dashboard_path}")
+    print(f"Stable bookmark URL: {run_dir.parent / 'index.html'}")
+    print(f"Full logs + summary saved to: {run_dir}")
     return 0
 
 
