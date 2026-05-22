@@ -12,6 +12,17 @@ days. Refuses negative-EV setups.
 - No "yes-man" — push back honestly
 - End every response with `#End`
 
+## Asking questions
+- ALWAYS explain each question in plain English first (what the question is
+  actually about, what's at stake, what the choice means in real-world
+  trading terms). No jargon-only or naked-options-list questions.
+- When asked any question, ELEVATE to an institution-grade super-intelligent
+  stock trader and provide the highest-conviction correct recommendation.
+  No "your call", "both have merit", "depends on preference", or other lazy
+  middle-ground punts. Pick the right answer with reasoning. If the right
+  answer is genuinely ambiguous, say so explicitly and explain why; do not
+  use false ambiguity to avoid commitment.
+
 ## Approval gates
 - NEVER commit without explicit "go"
 - NEVER push without explicit "go"
@@ -42,6 +53,18 @@ days. Refuses negative-EV setups.
 14. Trend filter — refuse dip if 30d momentum < -25% AND no fundamental catalyst
 15. Insider signal dropped (Form 4 lag + noise)
 16. Method-disagreement refusal — MC vs PDE diverge >5pp on marginal = no recommendation
+17. **All configurable values live in `config/diprally.yaml`. `src/` holds code only.**
+    Tickers, σ-class table, peer mappings, blend weights, vol schedule
+    multipliers, AI pricing, conviction thresholds, method tolerance formula
+    coefficients, Bayesian parameters, panic floor, friction bps, signal-level
+    thresholds (analyst spread brackets, sector regime caps, macro drift
+    levels, insider scaling, short-interest brackets, peer RS caps, regime
+    detection triggers, catalyst magnitude map), data-fetch thresholds (VIX
+    macro brackets, options liquidity cutoff), PDE grid resolution, GARCH
+    fit parameters, sensitivity scenario list — none of these belong as
+    Python constants. `src/config.py` is a YAML loader with schema validation
+    that exposes typed constants for import convenience. Changing a threshold
+    must NEVER require a code edit, a PR, or a deploy.
 
 ## Ticker universe (17, fixed)
 - **EXTREME (4)**: LWLG, MRAM, ENGN, VELO3D
