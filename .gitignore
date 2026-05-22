@@ -7,6 +7,7 @@ venv/
 .env.*
 output/*
 !output/.gitkeep
+output/_ai_cache/
 .DS_Store
 *.egg-info/
 .pytest_cache/

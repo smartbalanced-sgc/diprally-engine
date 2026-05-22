@@ -18,6 +18,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from src import ai_cache
 from src.ai_layer import (
     build_ai_pass1_prompt,
     build_ai_pass2_prompt,
@@ -707,10 +708,38 @@ def run_pipeline(args) -> int:
                                                             lookback_days=30, ticker=ticker),
     }
 
-    # --- 4. AI Pass 1 ---
+    # --- 4. AI Pass 1 (cache-aware) ---
+    # Same-day cache: if today's run for this ticker already exists and spot
+    # has moved < 1%, replay the cached AI outputs with cost = $0.00. Cache
+    # invalidation triggers a fresh run. Sacred decision #11 extension.
     pass1 = None
     pass1_cost_charged = 0.0
-    if args.no_ai:
+    pass2 = None
+    pass2_cost_charged = 0.0
+    cached_stress_results = None  # set on cache hit, used in step 13
+    cached_stress_cost = 0.0
+    cache_hit = False
+
+    # Raw outputs accumulated for end-of-pipeline cache write (miss path only).
+    pass1_raw_for_cache = None
+    pass1_sources_for_cache = 0
+    pass2_raw_for_cache = None
+
+    cache_payload = None if args.no_ai else ai_cache.get_cached(ticker, spot)
+    if cache_payload:
+        print(f"   AI cache HIT for {ticker} ({cache_payload.get('date')}, "
+              f"spot ${cache_payload.get('spot'):.2f}) — Pass 1/2/stress replayed at $0.00")
+        cache_hit = True
+        p1_raw = cache_payload.get("pass1_raw")
+        p1_sources = int(cache_payload.get("pass1_sources", 0))
+        if p1_raw:
+            pass1 = parse_ai_pass1(p1_raw, p1_sources, 0.0)  # cost=0.00 on cache hit
+        p2_raw = cache_payload.get("pass2_raw")
+        if p2_raw and pass1:
+            pass2 = parse_ai_pass2(p2_raw, pass1, 0.0)
+        cached_stress_results = cache_payload.get("stress_results") or []
+        cached_stress_cost = 0.0
+    elif args.no_ai:
         print("AI Pass 1 skipped (--no-ai)")
     else:
         print("AI Pass 1 (data gathering + multi-hypothesis catalysts)...")
@@ -725,14 +754,18 @@ def run_pipeline(args) -> int:
         )
         pass1 = parse_ai_pass1(pass1_raw, pass1_sources, pass1_cost) if pass1_raw else None
         pass1_cost_charged = pass1_cost
+        pass1_raw_for_cache = pass1_raw
+        pass1_sources_for_cache = pass1_sources
 
     # --- 5. AI Pass 2 (adversarial critique). Runs BEFORE the AI-derived
     #        signals so Pass 2's revised vol_regime / narrative / catalysts
     #        drive those signals, not Pass 1's. Sacred decision #7 in full.
-    pass2 = None
-    pass2_cost_charged = 0.0
-    if args.no_ai:
+    if cache_hit:
+        # pass2 already loaded from cache_payload above
+        pass2_raw_for_cache = cache_payload.get("pass2_raw") if cache_payload else None
+    elif args.no_ai:
         print("AI Pass 2 skipped (--no-ai)")
+        pass2_raw_for_cache = None
     elif pass1:
         print("AI Pass 2 (adversarial critique — revises drift / vol_regime / narrative / catalysts)...")
         T_years = horizon_days / 252.0
@@ -760,8 +793,11 @@ def run_pipeline(args) -> int:
             model=MODEL_SONNET, web_search_max_uses=0,
         )
         pass2_cost_charged = pass2_cost
+        pass2_raw_for_cache = pass2_raw
         if pass2_raw:
             pass2 = parse_ai_pass2(pass2_raw, pass1, pass2_cost)
+    else:
+        pass2_raw_for_cache = None
 
     # The "Pass 2 wins" projection: every downstream consumer reads from
     # `effective_ai`. Pass 2 if it ran and parsed; otherwise Pass 1. None
@@ -911,12 +947,38 @@ def run_pipeline(args) -> int:
     #          when available (effective_ai), else Pass 1's. Sacred #7.
     catalyst_stress_results = []
     catalyst_stress_cost = 0.0
-    if not args.no_ai and effective_ai and best:
+    if cache_hit and cached_stress_results is not None:
+        # Replay from cache. Cost = $0.00.
+        catalyst_stress_results = cached_stress_results
+        catalyst_stress_cost = 0.0
+    elif not args.no_ai and effective_ai and best:
         print("AI catalyst impact stress test...")
         catalyst_stress_results, catalyst_stress_cost = call_ai_catalyst_stress_test(
             ticker, spot, best.dip_price, best.rally_price,
             effective_ai.catalysts, horizon_days,
         )
+
+    # Write the AI cache for this ticker-date AFTER all AI work is complete.
+    # On cache miss we save everything we computed; on cache hit we skip the
+    # write (cache file already exists and is correct).
+    if not cache_hit and not args.no_ai and pass1_raw_for_cache:
+        try:
+            ai_cache.save(ticker, spot, {
+                "pass1_raw": pass1_raw_for_cache,
+                "pass1_cost": pass1_cost_charged,
+                "pass1_sources": pass1_sources_for_cache,
+                "pass2_raw": pass2_raw_for_cache,
+                "pass2_cost": pass2_cost_charged,
+                "stress_results": catalyst_stress_results,
+                "stress_cost": catalyst_stress_cost,
+                "models_used": {
+                    "pass1": MODEL_OPUS,
+                    "pass2": MODEL_SONNET,
+                    "stress": "claude-haiku-4-5-20251001",  # MODEL_HAIKU
+                },
+            })
+        except Exception as e:
+            print(f"   WARNING: ai_cache.save failed (run still succeeds): {e}")
 
     # --- 14. Three-method math cross-check ---
     print("Three-method math cross-check...")
