@@ -33,6 +33,7 @@ from src.config import (
     BACKTEST_MIN_SAMPLES,
     BLEND_WEIGHTS_V2,
     EV_HURDLE_BPS_OF_DIP,
+    TREND_FILTER_MOM_30D_THRESHOLD,
     DEFAULT_HORIZON_DAYS,
     DEFAULT_LOOKBACK_DAYS,
     DEFAULT_MC_PATHS,
@@ -179,6 +180,38 @@ class JointConditionalResult:
 # =============================================================================
 # Signal dict → display list adapter
 # =============================================================================
+
+def _has_supporting_catalyst(effective_ai, horizon_days: int) -> bool:
+    """Sacred decision #14 helper: returns True iff Pass 1/Pass 2 surfaced at
+    least one in-horizon catalyst with direction_risk in (bullish, two-sided).
+
+    Bearish-only catalysts do NOT rescue a falling knife — they confirm it.
+    A two-sided catalyst counts because it provides a real event that could
+    re-rate the stock either direction; the trader's thesis becomes 'will
+    the dip be exhausted before the event resolves.'
+
+    In --no-ai mode effective_ai is None → False (no catalysts known →
+    can't disprove falling-knife → strict reading refuses).
+    """
+    if not effective_ai or not effective_ai.catalysts:
+        return False
+    from datetime import datetime as _dt, timedelta as _td
+    from src.signals import parse_catalyst_date
+    today = _dt.now().date()
+    horizon_end = today + _td(days=horizon_days)
+    for c in effective_ai.catalysts:
+        if not isinstance(c, dict):
+            continue
+        dir_risk = str(c.get("direction_risk", "")).lower()
+        if dir_risk not in ("bullish", "two-sided"):
+            continue
+        cdate = parse_catalyst_date(c.get("date_or_window", ""))
+        if cdate is None:
+            continue
+        if today <= cdate <= horizon_end:
+            return True
+    return False
+
 
 def _signals_dict_to_display_list(signals_dict, weights, blend=None):
     """Convert v1 signal dict format → list[DriftSignal] for display.
@@ -1058,6 +1091,26 @@ def run_pipeline(args) -> int:
                   f"< required {EV_HURDLE_BPS_OF_DIP}bps")
             met_threshold_strict = False  # cascade — no clean-recommendation headline
 
+    # --- 11c. Sacred decision #14 — trend filter (D-W2-15).
+    # Refuse to recommend a dip buy when mom_30d is below threshold AND no
+    # in-horizon catalyst (bullish or two-sided) was surfaced by AI. The
+    # idea: don't catch falling knives without a thesis. A stock down >25%
+    # in 30 days entered at the dip without verifiable catalyst support is
+    # empirically negative-EV — institutional discipline says pass.
+    #
+    # In --no-ai mode no catalysts are known, so strict reading: refuse.
+    # The operator can lift the threshold via YAML or pass --no-ai with
+    # the understanding that the trend filter will fire on every dip-momentum
+    # name without AI-sourced catalyst verification.
+    trend_filter_refused = False
+    if best is not None and snapshot.mom_30d < TREND_FILTER_MOM_30D_THRESHOLD:
+        if not _has_supporting_catalyst(effective_ai, horizon_days):
+            trend_filter_refused = True
+            print(f"⛔ Sacred #14 trend-filter refusal: mom_30d = "
+                  f"{snapshot.mom_30d*100:+.1f}% < {TREND_FILTER_MOM_30D_THRESHOLD*100:+.0f}%, "
+                  f"no in-horizon bullish/two-sided catalyst")
+            met_threshold_strict = False
+
     # --- 13. AI catalyst stress test — uses Pass 2's revised catalyst list
     #          when available (effective_ai), else Pass 1's. Sacred #7.
     catalyst_stress_results = []
@@ -1192,6 +1245,7 @@ def run_pipeline(args) -> int:
         path_metrics=path_metrics,
         ev_hurdle_refused=ev_hurdle_refused,
         ev_pct_of_dip=ev_pct_of_dip,
+        trend_filter_refused=trend_filter_refused,
     )
     print(report)
 

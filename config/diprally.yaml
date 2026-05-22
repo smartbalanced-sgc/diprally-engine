@@ -176,6 +176,21 @@ backtest:
 analyst_outlier_threshold: 0.50
 
 # -----------------------------------------------------------
+# Sacred decision #14 — trend filter.
+# Refuse dip if 30d momentum < this threshold AND no in-horizon catalyst
+# with direction_risk in (bullish, two-sided). The idea: don't catch
+# falling knives without a thesis. A stock down >25% in 30 days is in
+# falling-knife territory; entering its dip without a verifiable bullish
+# or balanced catalyst is empirically negative-EV.
+#
+# In --no-ai mode there are no catalysts to evaluate — strict reading
+# refuses when mom_30d below threshold (we can't verify there's no
+# falling-knife risk, so default to safe).
+# -----------------------------------------------------------
+trend_filter:
+  mom_30d_threshold: -0.25
+
+# -----------------------------------------------------------
 # Phantom-signal std accounting (W1).
 # When AI-derived signals (ai, catalyst_proximity, narrative) drop with
 # NONE_FOUND status, their nominal weight contributes to within_var via
