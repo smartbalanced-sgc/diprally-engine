@@ -62,7 +62,7 @@ def format_report(
         from src.config import EV_HURDLE_BPS_OF_DIP
         ev_bps_str = f"{ev_pct_of_dip * 10000.0:.1f}bps" if ev_pct_of_dip is not None else "n/a"
         lines.append(f"  ⛔ REFUSED — EV-hurdle gate (sacred decision #13).")
-        lines.append(f"  Best-EV pair was found ($1{best.dip_price:,.0f}/${best.rally_price:,.0f} would have")
+        lines.append(f"  Best-EV pair was found (${best.dip_price:,.0f}/${best.rally_price:,.0f} would have")
         lines.append(f"  qualified on conviction thresholds) but expected return is too marginal:")
         lines.append(f"     EV/dip = {ev_bps_str}  <  required {EV_HURDLE_BPS_OF_DIP}bps")
         lines.append(f"  Marginal positive-EV trades at this magnitude don't survive realistic")

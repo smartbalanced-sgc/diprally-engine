@@ -247,6 +247,76 @@ def test_ev_hurdle_passes_at_60bps():
     assert ev_pct_of_dip >= threshold, "60bps must pass the 50bps gate"
 
 
+def test_ev_hurdle_refusal_headline_shows_correct_prices():
+    """Regression guard for the hotfix-3 typo bug. When the EV-hurdle gate
+    fires, the refusal headline must render the dip and rally prices correctly,
+    not with a stray '$1' prefix that turned $1,467 into $11,467 in the
+    post-PR-#8 SNDK smoke."""
+    from datetime import datetime
+    from src.engine import (
+        DriftSignal,
+        JointConditionalResult,
+        MarketSnapshot,
+        VolatilityProfile,
+    )
+    from src.reporter import format_report
+
+    # Minimal synthetic inputs
+    snapshot = MarketSnapshot(
+        ticker="TEST", timestamp=datetime(2026, 5, 22, 18, 52), spot=1510.0,
+        market_cap=1e11, sector="Tech", industry="X",
+        rsi=63.0, mom_5d=0.07, mom_30d=0.77, ytd_return=4.5,
+        price_history=None,
+    )
+    vol_profile = VolatilityProfile(
+        garch_sigma=0.97, garch_alpha=0.07, garch_beta=0.907,
+        garch_alpha_plus_beta=0.977, realized_30d=0.95, realized_60d=0.97,
+        realized_90d=0.97, options_iv=0.95, options_dte=56,
+        blended_sigma=0.96, anchors_count=5, divergence_pp=2.5,
+        near_unit_root=False,
+    )
+    best = JointConditionalResult(
+        dip_price=1467.0, rally_price=1656.0,
+        p_dip_touched=0.741, p_rally_given_dip=0.756,
+        p_round_trip=0.56, p_bag_hold=0.18, p_no_trade_rally_first=0.26,
+        p_neither=0.0,
+        expected_days_to_dip=0.0, expected_days_dip_to_rally=11.0,
+        expected_gain_per_share=185.0, expected_bag_hold_loss=540.0,
+        net_expected_value=46.5,
+    )
+    method_check = {"table": [], "flags": [], "refusals": [], "refused": False,
+                    "agreement_status": "✓", "pde_mass_conservation": 1.0,
+                    "pde_p_neither": 0.0,
+                    "tolerances": {"sigma_used": 0.96,
+                                   "first_passage_pp": 3.9, "marginal_pp": 2.9,
+                                   "refuse_first_passage_pp": 6.9,
+                                   "refuse_marginal_pp": 5.2}}
+    backtest = {"n_samples": 0, "sufficient_data": False,
+                "message": "no history yet"}
+    posterior = {"prior_mu": 0.0, "prior_std": 0.15,
+                 "today_mu": 0.17, "today_std": 0.24,
+                 "post_mu": 0.17, "post_std": 0.24,
+                 "prior_weight": 0.0, "today_weight": 1.0,
+                 "phantom_signals": [], "phantom_std_inflation": 0.0}
+
+    report = format_report(
+        snapshot, vol_profile, [], None, None, posterior,
+        best, method_check, [], backtest,
+        0.65, 0.75, 60, 10000.0, 0.0, 30.0,
+        met_threshold_strict=False,
+        ev_hurdle_refused=True,
+        ev_pct_of_dip=0.00465,  # 46.5 bps
+    )
+
+    # Headline must show $1,467 (not $11,467) and $1,656 (not $11,656)
+    assert "$1,467" in report, "Dip price not rendered correctly in headline"
+    assert "$11,467" not in report, "Stray $1 prefix bug regressed"
+    assert "$1,656" in report, "Rally price not rendered correctly"
+    assert "$11,656" not in report
+    assert "REFUSED" in report
+    assert "46.5bps" in report
+
+
 # ---------- 6. Effective-weight via blend ----------
 
 def test_blend_weights_reflect_low_halving():
