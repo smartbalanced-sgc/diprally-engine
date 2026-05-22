@@ -980,7 +980,7 @@ def run_pipeline(args) -> int:
         except Exception as e:
             print(f"   WARNING: ai_cache.save failed (run still succeeds): {e}")
 
-    # --- 14. Three-method math cross-check ---
+    # --- 14. Three-method math cross-check + hard refusal gate (sacred #16) ---
     print("Three-method math cross-check...")
     if best:
         bridge_best_result = analyze_joint_conditional(
@@ -991,9 +991,23 @@ def run_pipeline(args) -> int:
             spot, effective_sigma, post_mu, horizon_days,
             best.dip_price, best.rally_price, bridge_best_result,
         )
+        # Sacred decision #16 — hard refusal when MC and PDE/closed-form
+        # diverge beyond the σ-scaled refusal threshold. Publishing a
+        # recommendation under method disagreement = publishing a number
+        # we can't ourselves verify. Suppress the dip/rally pair; keep
+        # the table so the user sees WHY we refused.
+        if method_check.get("refused"):
+            print(f"⛔ Method-disagreement refusal triggered: {'; '.join(method_check['refusals'])}")
+            best = None  # blocks recommendation; report prints refusal headline
+            met_threshold_strict = False
     else:
-        method_check = {"table": [], "flags": [], "agreement_status": "n/a — no pair found",
-                        "pde_mass_conservation": 1.0, "pde_p_neither": 0.0}
+        # No qualifying pair — no PDE run. Use None for pde_mass_conservation
+        # so the reporter prints "n/a" instead of a misleading 1.00000 default.
+        # (D-W3-2 in the deferred log; cheap to fix here while we're in this
+        # neighborhood. The full three-method-on-no-pair fix is still W3.)
+        method_check = {"table": [], "flags": [], "refusals": [], "refused": False,
+                        "agreement_status": "n/a — no pair found",
+                        "pde_mass_conservation": None, "pde_p_neither": None}
 
     # --- 14b. Sensitivity table ---
     sensitivity = None

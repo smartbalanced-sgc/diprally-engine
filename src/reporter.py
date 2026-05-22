@@ -52,7 +52,16 @@ def format_report(
 
     # HEADLINE RECOMMENDATION
     lines.append(hr("ROUND-TRIP RECOMMENDATION"))
-    if best is None:
+    if best is None and method_check.get("refused"):
+        # Sacred decision #16 hard refusal — math layer can't agree.
+        lines.append("  ⛔ REFUSED — three-method math disagreement exceeds the σ-scaled refusal threshold.")
+        lines.append("  Publishing a recommendation under method disagreement would mean publishing")
+        lines.append("  a number the system itself cannot verify. Refusal reasons:")
+        for r in method_check.get("refusals", []):
+            lines.append(f"     • {r}")
+        lines.append("  Action: investigate the math layer (likely σ outlier, drift extremum, or")
+        lines.append("  bridge-correction edge case). Re-run when inputs change materially.")
+    elif best is None:
         lines.append("  No dip/rally pair meets the conviction thresholds at current spot/vol/drift.")
         lines.append("  Action: WAIT — re-run after next close.")
     else:
@@ -90,7 +99,18 @@ def format_report(
     if method_check["flags"]:
         for flag in method_check["flags"]:
             lines.append(f"  ⚠ {flag}")
-    lines.append(f"  PDE mass conservation: {method_check['pde_mass_conservation']:.5f} (should be ~1.0)")
+    for refusal in method_check.get("refusals", []):
+        lines.append(f"  ⛔ {refusal}")
+    pde_mass = method_check.get("pde_mass_conservation")
+    if pde_mass is None:
+        lines.append("  PDE mass conservation: n/a (PDE not run)")
+    else:
+        lines.append(f"  PDE mass conservation: {pde_mass:.5f} (should be ~1.0)")
+    tols = method_check.get("tolerances")
+    if tols:
+        lines.append(f"  Tolerances at σ={tols['sigma_used']*100:.0f}%: "
+                     f"first-passage {tols['first_passage_pp']:.1f}pp / refuse {tols['refuse_first_passage_pp']:.1f}pp · "
+                     f"marginal {tols['marginal_pp']:.1f}pp / refuse {tols['refuse_marginal_pp']:.1f}pp")
 
     # UNUSUAL MOVE Z-SCORE
     if unusual_move:

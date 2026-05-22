@@ -18,10 +18,10 @@ from scipy.stats import norm
 
 from src.config import (
     DEFAULT_MC_PATHS,
-    METHOD_AGREEMENT_TOLERANCE_PP_FIRST_PASSAGE,
-    METHOD_AGREEMENT_TOLERANCE_PP_MARGINAL,
     PANIC_FLOOR_PCT,
     VOL_SCHEDULE_MULTIPLIERS,
+    method_refusal_pp,
+    method_tolerance_pp,
 )
 
 
@@ -479,14 +479,41 @@ def three_method_cross_check(
     diff_touch_dip = abs(pp(p_touch_dip_marginal_mc) - pp(p_touch_dip_closed))
     diff_touch_rally = abs(pp(p_touch_rally_marginal_mc) - pp(p_touch_rally_closed))
 
-    if diff_dip_first > METHOD_AGREEMENT_TOLERANCE_PP_FIRST_PASSAGE:
-        flags.append(f"MC vs PDE disagree on P(dip first) by {diff_dip_first:.1f}pp")
-    if diff_rally_first > METHOD_AGREEMENT_TOLERANCE_PP_FIRST_PASSAGE:
-        flags.append(f"MC vs PDE disagree on P(rally first) by {diff_rally_first:.1f}pp")
-    if diff_touch_dip > METHOD_AGREEMENT_TOLERANCE_PP_MARGINAL:
-        flags.append(f"MC vs closed-form disagree on marginal P(touch dip) by {diff_touch_dip:.1f}pp")
-    if diff_touch_rally > METHOD_AGREEMENT_TOLERANCE_PP_MARGINAL:
-        flags.append(f"MC vs closed-form disagree on marginal P(touch rally) by {diff_touch_rally:.1f}pp")
+    # σ-scaled tolerances (irreducible bridge residual grows with σ)
+    tol_fp = method_tolerance_pp(sigma, "first_passage")
+    tol_marg = method_tolerance_pp(sigma, "marginal")
+    refuse_fp = method_refusal_pp(sigma, "first_passage")
+    refuse_marg = method_refusal_pp(sigma, "marginal")
+
+    if diff_dip_first > tol_fp:
+        flags.append(f"MC vs PDE disagree on P(dip first) by {diff_dip_first:.1f}pp (tol {tol_fp:.1f})")
+    if diff_rally_first > tol_fp:
+        flags.append(f"MC vs PDE disagree on P(rally first) by {diff_rally_first:.1f}pp (tol {tol_fp:.1f})")
+    if diff_touch_dip > tol_marg:
+        flags.append(f"MC vs closed-form disagree on marginal P(touch dip) by {diff_touch_dip:.1f}pp (tol {tol_marg:.1f})")
+    if diff_touch_rally > tol_marg:
+        flags.append(f"MC vs closed-form disagree on marginal P(touch rally) by {diff_touch_rally:.1f}pp (tol {tol_marg:.1f})")
+
+    # Hard-refusal gate (sacred decision #16). Triggered when any disagreement
+    # exceeds the refusal threshold (1.8× the flag tolerance). Refusal means
+    # the math layer can't agree on the probabilities the recommendation
+    # depends on — publishing a recommendation would be irresponsible.
+    refusals = []
+    if diff_dip_first > refuse_fp:
+        refusals.append(f"P(dip first): {diff_dip_first:.1f}pp > refuse {refuse_fp:.1f}pp")
+    if diff_rally_first > refuse_fp:
+        refusals.append(f"P(rally first): {diff_rally_first:.1f}pp > refuse {refuse_fp:.1f}pp")
+    if diff_touch_dip > refuse_marg:
+        refusals.append(f"P(touch dip): {diff_touch_dip:.1f}pp > refuse {refuse_marg:.1f}pp")
+    if diff_touch_rally > refuse_marg:
+        refusals.append(f"P(touch rally): {diff_touch_rally:.1f}pp > refuse {refuse_marg:.1f}pp")
+
+    if refusals:
+        status = "⛔ REFUSED — method disagreement exceeds refusal threshold"
+    elif flags:
+        status = "⚠ disagreement flagged (within refusal tolerance)"
+    else:
+        status = "✓ all methods agree within tolerance"
 
     return {
         "table": [
@@ -496,9 +523,14 @@ def three_method_cross_check(
             ("P(touch rally ever)", pp(p_touch_rally_marginal_mc), pp(p_touch_rally_closed), diff_touch_rally),
         ],
         "flags": flags,
+        "refusals": refusals,
+        "refused": bool(refusals),
+        "tolerances": {"first_passage_pp": tol_fp, "marginal_pp": tol_marg,
+                       "refuse_first_passage_pp": refuse_fp, "refuse_marginal_pp": refuse_marg,
+                       "sigma_used": sigma},
         "pde_p_neither": pde["p_neither"],
         "pde_mass_conservation": pde["total"],
-        "agreement_status": "✓ all methods agree within tolerance" if not flags else "⚠ disagreement flagged",
+        "agreement_status": status,
     }
 
 

@@ -126,9 +126,46 @@ VOL_SCHEDULE_MULTIPLIERS = {
     "macro_event_day": 1.5,
 }
 
-# Three-method agreement tolerance.
-METHOD_AGREEMENT_TOLERANCE_PP_MARGINAL = 3.0       # P(touch ever)
-METHOD_AGREEMENT_TOLERANCE_PP_FIRST_PASSAGE = 4.0  # P(dip first), P(rally first)
+# Three-method agreement tolerance — σ-SCALED.
+# The Brownian bridge correction on the MC has an irreducible residual that
+# scales with σ: at σ=30% it's ~0.3-0.8pp, at σ=100% it's ~2-3pp, at σ=150%
+# it can reach 3-5pp. A constant threshold is wrong for any ticker outside
+# the σ-class it was tuned against. The σ-scaled functions below give:
+#   σ=0.30 (MID INTC):    flag 2.0pp, refuse 3.6pp
+#   σ=1.00 (EXTREME SNDK): flag 3.0pp, refuse 5.4pp
+#   σ=1.50 (high LWLG-like): flag 4.5pp, refuse 8.1pp
+# W10 will calibrate these multipliers empirically from realized residuals.
+METHOD_AGREEMENT_FLOOR_PP = 2.0      # tolerance never drops below this at low σ
+METHOD_AGREEMENT_MULTIPLIER = 3.0    # tolerance ~= 3.0 × σ_effective at high σ
+METHOD_AGREEMENT_FIRST_PASSAGE_FLOOR_PP = 3.0
+METHOD_AGREEMENT_FIRST_PASSAGE_MULTIPLIER = 4.0
+# Refusal threshold = REFUSAL_MULT × flag-threshold. Sacred decision #16
+# enforced as a hard gate: MC vs PDE/closed-form diverge beyond this →
+# refuse to recommend.
+METHOD_REFUSAL_MULTIPLIER = 1.8
+
+
+def method_tolerance_pp(sigma_effective: float, kind: str = "marginal") -> float:
+    """σ-scaled flag tolerance (pp). kind in {'marginal', 'first_passage'}.
+    Marginal = P(touch ever). First-passage = P(dip first | rally first).
+    """
+    if kind == "first_passage":
+        return max(METHOD_AGREEMENT_FIRST_PASSAGE_FLOOR_PP,
+                   METHOD_AGREEMENT_FIRST_PASSAGE_MULTIPLIER * sigma_effective)
+    return max(METHOD_AGREEMENT_FLOOR_PP,
+               METHOD_AGREEMENT_MULTIPLIER * sigma_effective)
+
+
+def method_refusal_pp(sigma_effective: float, kind: str = "marginal") -> float:
+    """Hard refusal threshold (pp). Triggers the sacred-decision-#16 gate."""
+    return METHOD_REFUSAL_MULTIPLIER * method_tolerance_pp(sigma_effective, kind)
+
+
+# Legacy constants kept temporarily for backwards-compatible imports.
+# Anyone still reading these gets the value at σ=1.0 (the most common case
+# in the seed's SNDK-tuned regime). Deprecate-and-remove in W3.
+METHOD_AGREEMENT_TOLERANCE_PP_MARGINAL = METHOD_AGREEMENT_MULTIPLIER * 1.0
+METHOD_AGREEMENT_TOLERANCE_PP_FIRST_PASSAGE = METHOD_AGREEMENT_FIRST_PASSAGE_MULTIPLIER * 1.0
 METHOD_AGREEMENT_TOLERANCE_PP = METHOD_AGREEMENT_TOLERANCE_PP_FIRST_PASSAGE
 
 BAG_HOLD_TERMINAL_ASSUMPTION = "median_terminal_dip_paths"
