@@ -122,6 +122,27 @@ class TrendFilterConfig(_StrictModel):
     mom_30d_threshold: float = Field(lt=0.0, gt=-1.0)
 
 
+class MacroRegimeConfig(_StrictModel):
+    """D-W2-8: macro regime detection thresholds (VIX + SPY-vs-MA50)."""
+    vix_risk_off_threshold: float = Field(gt=0.0)
+    vix_risk_on_threshold: float = Field(gt=0.0)
+    spy_risk_off_threshold: float = Field(lt=0.0)
+    spy_risk_on_threshold: float = Field(gt=0.0)
+    vix_default_fallback: float = Field(gt=0.0)
+
+
+class OptionsIVConfig(_StrictModel):
+    """D-W2-8: options IV liquidity gate."""
+    liquidity_max_bid_ask_pct: float = Field(gt=0.0, lt=1.0)
+    default_target_dte_days: int = Field(gt=0)
+    dte_window_min: int = Field(ge=0)
+    dte_window_max_multiplier: float = Field(gt=1.0)
+
+
+class SectorPerfConfig(_StrictModel):
+    default_lookback_days: int = Field(gt=0)
+
+
 class V3ReviewCriteriaConfig(_StrictModel):
     n_days_min: int = Field(ge=1)
     calibration_dip_target: tuple[float, float]
@@ -167,6 +188,9 @@ class DiprallyConfig(_StrictModel):
     backtest: BacktestConfig
     analyst_outlier_threshold: float = Field(gt=0.0)
     trend_filter: TrendFilterConfig
+    macro_regime: MacroRegimeConfig
+    options_iv: OptionsIVConfig
+    sector_perf: SectorPerfConfig
     phantom_signal_se: float = Field(gt=0.0, le=1.0)
     ai_cache: AICacheConfig
     bag_hold_terminal_assumption: str
@@ -313,6 +337,22 @@ def _rebind_module_constants() -> None:
     # Outlier gate + phantom SE
     g["ANALYST_EXTREME_DRIFT_THRESHOLD"] = _CONFIG.analyst_outlier_threshold
     g["TREND_FILTER_MOM_30D_THRESHOLD"] = _CONFIG.trend_filter.mom_30d_threshold
+
+    # Macro regime (D-W2-8)
+    g["VIX_RISK_OFF_THRESHOLD"] = _CONFIG.macro_regime.vix_risk_off_threshold
+    g["VIX_RISK_ON_THRESHOLD"] = _CONFIG.macro_regime.vix_risk_on_threshold
+    g["SPY_RISK_OFF_THRESHOLD"] = _CONFIG.macro_regime.spy_risk_off_threshold
+    g["SPY_RISK_ON_THRESHOLD"] = _CONFIG.macro_regime.spy_risk_on_threshold
+    g["VIX_DEFAULT_FALLBACK"] = _CONFIG.macro_regime.vix_default_fallback
+
+    # Options IV liquidity gate (D-W2-8)
+    g["OPTIONS_IV_LIQUIDITY_MAX_SPREAD"] = _CONFIG.options_iv.liquidity_max_bid_ask_pct
+    g["OPTIONS_IV_DEFAULT_TARGET_DTE_DAYS"] = _CONFIG.options_iv.default_target_dte_days
+    g["OPTIONS_IV_DTE_WINDOW_MIN"] = _CONFIG.options_iv.dte_window_min
+    g["OPTIONS_IV_DTE_WINDOW_MAX_MULTIPLIER"] = _CONFIG.options_iv.dte_window_max_multiplier
+
+    # Sector perf (D-W2-8)
+    g["SECTOR_PERF_DEFAULT_LOOKBACK_DAYS"] = _CONFIG.sector_perf.default_lookback_days
     g["PHANTOM_SIGNAL_SE_CONFIG"] = _CONFIG.phantom_signal_se  # signals.py reads PHANTOM_SIGNAL_SE locally
 
     # AI cache

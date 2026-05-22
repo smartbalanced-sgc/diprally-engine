@@ -254,8 +254,15 @@ def fetch_company_profile(ticker, api_key):
     return data[0]
 
 
-def fetch_sector_perf(sector, api_key, days=30, exchange_filter="NASDAQ"):
-    """FMP historical-sector-performance — filtered to one exchange, last-N unique dates."""
+def fetch_sector_perf(sector, api_key, days=None, exchange_filter="NASDAQ"):
+    """FMP historical-sector-performance — filtered to one exchange, last-N unique dates.
+
+    `days` defaults to config sector_perf.default_lookback_days (sacred #17,
+    D-W2-8). Callers can override via the argument.
+    """
+    if days is None:
+        from src.config import SECTOR_PERF_DEFAULT_LOOKBACK_DAYS
+        days = SECTOR_PERF_DEFAULT_LOOKBACK_DAYS
     if not sector:
         return None
     end = datetime.now().strftime("%Y-%m-%d")
@@ -375,10 +382,18 @@ def fetch_press_releases(ticker, api_key, limit=10):
 
 
 def fetch_macro_indicators(api_key):
-    """FMP VIX + SPY for risk-on/risk-off."""
+    """FMP VIX + SPY for risk-on/risk-off. Thresholds in config/diprally.yaml
+    under macro_regime (sacred #17, D-W2-8)."""
+    from src.config import (
+        SPY_RISK_OFF_THRESHOLD,
+        SPY_RISK_ON_THRESHOLD,
+        VIX_DEFAULT_FALLBACK,
+        VIX_RISK_OFF_THRESHOLD,
+        VIX_RISK_ON_THRESHOLD,
+    )
     vix_data = _fmp_get("quote", api_key, {"symbol": "^VIX"})
     spy_data = _fmp_get("quote", api_key, {"symbol": "SPY"})
-    vix = 18.0
+    vix = VIX_DEFAULT_FALLBACK
     spy_trend = 0.0
     if vix_data and isinstance(vix_data, list) and vix_data and vix_data[0].get("price"):
         vix = float(vix_data[0]["price"])
@@ -389,20 +404,29 @@ def fetch_macro_indicators(api_key):
                 spy_trend = (float(d["price"]) - float(d["priceAvg50"])) / float(d["priceAvg50"])
             except (ValueError, TypeError, ZeroDivisionError):
                 spy_trend = 0.0
-    if vix > 25 or spy_trend < -0.03:
+    if vix > VIX_RISK_OFF_THRESHOLD or spy_trend < SPY_RISK_OFF_THRESHOLD:
         regime = "risk_off"
-    elif vix < 15 and spy_trend > 0.02:
+    elif vix < VIX_RISK_ON_THRESHOLD and spy_trend > SPY_RISK_ON_THRESHOLD:
         regime = "risk_on"
     else:
         regime = "neutral"
     return {"vix": vix, "spy_trend": spy_trend, "regime": regime}
 
 
-def fetch_options_iv(ticker, target_dte_days=60):
+def fetch_options_iv(ticker, target_dte_days=None):
     """yfinance options chain → ATM straddle IV at ~target_dte_days expiry.
 
     Liquidity-gated: only returns IV if option chain is liquid enough.
+    Thresholds in config/diprally.yaml under options_iv (sacred #17, D-W2-8).
     """
+    from src.config import (
+        OPTIONS_IV_DEFAULT_TARGET_DTE_DAYS,
+        OPTIONS_IV_DTE_WINDOW_MAX_MULTIPLIER,
+        OPTIONS_IV_DTE_WINDOW_MIN,
+        OPTIONS_IV_LIQUIDITY_MAX_SPREAD,
+    )
+    if target_dte_days is None:
+        target_dte_days = OPTIONS_IV_DEFAULT_TARGET_DTE_DAYS
     try:
         import yfinance as yf
     except ImportError:
@@ -414,11 +438,12 @@ def fetch_options_iv(ticker, target_dte_days=60):
             return None
         today = datetime.now().date()
         candidates = []
+        dte_max = target_dte_days * OPTIONS_IV_DTE_WINDOW_MAX_MULTIPLIER
         for ex_str in expiries:
             try:
                 ex_date = datetime.strptime(ex_str, "%Y-%m-%d").date()
                 dte = (ex_date - today).days
-                if 7 <= dte <= target_dte_days * 2:
+                if OPTIONS_IV_DTE_WINDOW_MIN <= dte <= dte_max:
                     candidates.append((abs(dte - target_dte_days), dte, ex_str))
             except ValueError:
                 continue
@@ -449,7 +474,7 @@ def fetch_options_iv(ticker, target_dte_days=60):
         call_spread = spread_pct(atm_call.iloc[0])
         put_spread = spread_pct(atm_put.iloc[0])
         avg_spread = (call_spread + put_spread) / 2
-        is_liquid = avg_spread < 0.10
+        is_liquid = avg_spread < OPTIONS_IV_LIQUIDITY_MAX_SPREAD
         call_iv = float(atm_call.iloc[0]["impliedVolatility"])
         put_iv = float(atm_put.iloc[0]["impliedVolatility"])
         avg_iv = (call_iv + put_iv) / 2
