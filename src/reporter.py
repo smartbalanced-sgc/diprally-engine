@@ -129,9 +129,15 @@ def format_report(
     # SIGMA TRIANGULATION
     lines.append(hr(f"SIGMA TRIANGULATION ({vol_profile.anchors_count} anchors)"))
     if vol_profile.garch_alpha_plus_beta > 0:
+        # When α+β > 0.95 we're near the IGARCH boundary — 3-decimal display
+        # rounds across the 0.98 near-unit-root threshold (e.g. 0.9799 displays
+        # as 0.980 same as 0.9805, but only one triggers the near-IGARCH flag).
+        # 4 decimals at the danger zone makes the boundary visible.
+        ab = vol_profile.garch_alpha_plus_beta
+        ab_fmt = f"{ab:.4f}" if ab > 0.95 else f"{ab:.3f}"
         alpha_beta_str = (
             f"α={vol_profile.garch_alpha:.3f}, β={vol_profile.garch_beta:.3f}, "
-            f"α+β={vol_profile.garch_alpha_plus_beta:.3f}"
+            f"α+β={ab_fmt}"
         )
     else:
         alpha_beta_str = "α+β fit failed"
@@ -276,12 +282,14 @@ def format_report(
     lines.append(f"  Math methods agreement: {method_check['agreement_status']}")
     lines.append(f"  σ anchors: {vol_profile.anchors_count}/5 (divergence {vol_profile.divergence_pp:.1f}pp)")
     if vol_profile.garch_alpha_plus_beta > 0:
+        ab = vol_profile.garch_alpha_plus_beta
         ab_label = (
             "(NEAR UNIT-ROOT)" if vol_profile.near_unit_root
-            else "(high persistence)" if vol_profile.garch_alpha_plus_beta > 0.95
+            else "(high persistence)" if ab > 0.95
             else "(stable)"
         )
-        lines.append(f"  GARCH α+β: {vol_profile.garch_alpha_plus_beta:.3f} {ab_label}")
+        ab_fmt = f"{ab:.4f}" if ab > 0.95 else f"{ab:.3f}"
+        lines.append(f"  GARCH α+β: {ab_fmt} {ab_label}")
     else:
         lines.append(f"  GARCH α+β: fit failed")
     lines.append(f"  Drift signals active: {sum(1 for s in base_signals if s.confidence != 'LOW')}/{len(base_signals)} non-LOW")
