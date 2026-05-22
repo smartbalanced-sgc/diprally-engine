@@ -33,6 +33,7 @@ def test_t0_is_math_only():
     assert spec.pass1_model is None
     assert spec.pass2_model is None
     assert spec.stress_model is None
+    assert spec.catalyst_verification_model is None
     assert spec.estimated_cost_usd == 0.0
     assert spec.runs_ai is False
 
@@ -42,25 +43,31 @@ def test_t1_is_haiku_pass1_only():
     assert spec.pass1_model == MODEL_HAIKU
     assert spec.pass2_model is None
     assert spec.stress_model is None
+    # W6 PR #33: T1's single Pass-1 web_search call rarely surfaces
+    # catalysts specific enough to warrant verification.
+    assert spec.catalyst_verification_model is None
     assert spec.pass1_web_search_max == 1
     assert spec.runs_ai is True
 
 
-def test_t2_is_sonnet_pass1_plus_pass2():
+def test_t2_is_sonnet_pass1_plus_pass2_with_verification():
     spec = resolve_tier("T2")
     assert spec.pass1_model == MODEL_SONNET
     assert spec.pass2_model == MODEL_SONNET
     assert spec.stress_model is None
+    # W6 PR #33: catalyst verification runs at T2+.
+    assert spec.catalyst_verification_model == MODEL_HAIKU
     assert spec.runs_ai is True
 
 
-def test_t3_is_opus_sonnet_haiku_full_stack():
-    """T3 must match the pre-W4 single-ticker hardcoded behavior:
-    Opus Pass 1 (web_search 5), Sonnet Pass 2, Haiku stress."""
+def test_t3_is_opus_sonnet_haiku_full_stack_with_verification():
+    """T3 must match the pre-W4 single-ticker hardcoded behavior plus
+    W6 PR #33 catalyst verification."""
     spec = resolve_tier("T3")
     assert spec.pass1_model == MODEL_OPUS
     assert spec.pass2_model == MODEL_SONNET
     assert spec.stress_model == MODEL_HAIKU
+    assert spec.catalyst_verification_model == MODEL_HAIKU
     assert spec.pass1_web_search_max == 5
     assert spec.runs_ai is True
 

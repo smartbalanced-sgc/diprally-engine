@@ -344,6 +344,186 @@ Return ONLY valid JSON list.
 
 
 # =============================================================================
+# Catalyst verification (W6 PR #33, closes D-W5-1)
+# =============================================================================
+# Pass 1's web_search surface produces high-fluency catalyst summaries that
+# sometimes fabricate structure around real underlying themes (e.g. the
+# RKLB-convertible "Q2 conversion window" — see D-W5-1 in
+# docs/handover/_DEFERRED.md). Pass 2's adversarial critique catches
+# reasoning errors but doesn't verify factual specifics. A Haiku-constrained
+# verification call after Pass 2 grounds each catalyst against primary
+# sources before its magnitude feeds the drift blend.
+#
+# Verification verdicts:
+#   VERIFIED   — primary source confirms the catalyst exists with the
+#                stated date/window/direction; magnitude unchanged.
+#   UNVERIFIED — couldn't find primary-source corroboration; downgrade
+#                magnitude to "low" (still surfaced, but contribution
+#                shrinks).
+#   REFUTED    — primary source directly contradicts the catalyst
+#                (e.g. "M&A close already happened in Q1"); catalyst
+#                dropped entirely from the signal blend.
+
+VERIFICATION_VERDICTS = {"VERIFIED", "UNVERIFIED", "REFUTED"}
+
+
+def call_ai_catalyst_verification(ticker: str, catalysts: list, horizon_days: int,
+                                   verification_model: str):
+    """Verify top-3 catalysts against primary sources via Haiku.
+
+    Returns (verifications, cost_usd). verifications is a list aligned
+    1:1 with the top-3 input catalysts (in order), each entry a dict:
+        {"catalyst_name": ..., "verdict": "VERIFIED|UNVERIFIED|REFUTED",
+         "reasoning": ..., "supporting_url": ... or null}
+
+    On model error / parse failure, returns ([], 0.0) — caller treats
+    this as "verification not run" and leaves catalysts untouched.
+
+    Cost: ~$0.005 × 3 catalysts ≈ $0.015. The verification prompt
+    constrains web_search to authoritative domains (SEC, IR, wire
+    services) — adds 3-6 web calls × $0.01 = ~$0.03-0.06. Plus model
+    tokens; total expected $0.02-0.05 per ticker.
+    """
+    client = _anthropic_client()
+    if client is None or not catalysts:
+        return [], 0.0
+    top = [c for c in catalysts[:3] if isinstance(c, dict)]
+    if not top:
+        return [], 0.0
+
+    catalyst_lines = "\n".join(
+        f'  {i+1}. {c.get("name", "?")} (type={c.get("type", "?")}, '
+        f'date_or_window={c.get("date_or_window", "?")}, '
+        f'direction={c.get("direction_risk", "?")}, '
+        f'magnitude={c.get("magnitude", "?")})'
+        for i, c in enumerate(top)
+    )
+    prompt = f"""Verify the following catalysts for {ticker} against PRIMARY sources only.
+
+Catalysts to verify (top-{len(top)} from Pass 2):
+{catalyst_lines}
+
+For each catalyst, search authoritative primary sources to determine if
+the SPECIFIC details (date/window, direction, structure) are corroborated:
+  - Earnings dates → SEC 8-K filings, company IR earnings-calendar
+  - Convertible / debt terms → SEC 10-K/10-Q footnotes, indenture filings
+  - M&A close dates → SEC 8-K, company press releases, wire services
+  - Government contract awards → SAM.gov, DoD comptroller, company IR
+  - FDA / regulatory milestones → FDA.gov, ClinicalTrials.gov, company IR
+  - Guidance / capital markets days → company IR investor calendar
+
+Return one verdict per catalyst:
+  VERIFIED   — primary source confirms the specific date/window AND direction
+  UNVERIFIED — couldn't corroborate the specific details (theme may be
+               real but the structure Pass 1 framed isn't supported)
+  REFUTED    — primary source directly contradicts the catalyst
+               (already happened, different direction, not real)
+
+Return ONLY valid JSON list, one entry per catalyst in the SAME ORDER:
+[
+  {{"catalyst_name": "...", "verdict": "VERIFIED|UNVERIFIED|REFUTED",
+    "reasoning": "1-sentence primary-source citation",
+    "supporting_url": "https://..." or null}},
+  ...
+]
+"""
+    try:
+        # Constrain web_search to authoritative domains.
+        tools = [{
+            "type": "web_search_20250305",
+            "name": "web_search",
+            "max_uses": 6,
+            "allowed_domains": [
+                "sec.gov", "ir.com", "investorrelations.com",
+                "sam.gov", "fda.gov", "clinicaltrials.gov",
+                "wsj.com", "reuters.com", "bloomberg.com",
+                "businesswire.com", "prnewswire.com", "globenewswire.com",
+            ],
+        }]
+        response = client.messages.create(
+            model=verification_model,
+            max_tokens=2000,
+            tools=tools,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text_parts = [b.text for b in response.content if hasattr(b, "text")]
+        raw = "\n".join(text_parts).strip()
+        # Strip code fences if present.
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
+        cost = compute_ai_cost(response, model_id=verification_model,
+                                had_web_search=True)
+        parsed = json.loads(raw)
+        if not isinstance(parsed, list):
+            return [], cost
+        # Validate verdicts; coerce unknowns to UNVERIFIED (defensive).
+        clean = []
+        for entry in parsed:
+            if not isinstance(entry, dict):
+                continue
+            verdict = str(entry.get("verdict", "UNVERIFIED")).upper()
+            if verdict not in VERIFICATION_VERDICTS:
+                verdict = "UNVERIFIED"
+            clean.append({
+                "catalyst_name": str(entry.get("catalyst_name", "")),
+                "verdict": verdict,
+                "reasoning": str(entry.get("reasoning", "")),
+                "supporting_url": entry.get("supporting_url"),
+            })
+        return clean, cost
+    except Exception as e:
+        print(f"⚠️  Catalyst verification failed: {e}")
+        return [], 0.0
+
+
+def apply_catalyst_verification(catalysts: list, verifications: list) -> list:
+    """Filter + downgrade an input catalyst list based on verification
+    results. Pure function — does not mutate inputs.
+
+    - REFUTED catalysts are dropped entirely.
+    - UNVERIFIED catalysts have their magnitude forced to "low".
+    - VERIFIED catalysts pass through unchanged.
+    - Catalysts beyond the top-3 (no verification entry) pass through
+      unchanged — they didn't reach the verification threshold but
+      weren't tested either.
+
+    Each kept catalyst gets a `verification_verdict` field appended so
+    downstream code (reporter, dashboard) can surface it.
+    """
+    if not catalysts:
+        return []
+    if not verifications:
+        # Verification didn't run / failed; return unchanged.
+        return list(catalysts)
+    # Match by index — verification entries are aligned 1:1 with top-N catalysts.
+    out = []
+    for i, c in enumerate(catalysts):
+        if not isinstance(c, dict):
+            out.append(c)
+            continue
+        if i >= len(verifications):
+            # Beyond verified-top-N; pass through.
+            out.append(dict(c))
+            continue
+        v = verifications[i]
+        verdict = v.get("verdict", "UNVERIFIED")
+        if verdict == "REFUTED":
+            continue  # drop entirely
+        new_c = dict(c)
+        new_c["verification_verdict"] = verdict
+        new_c["verification_reasoning"] = v.get("reasoning", "")
+        new_c["verification_url"] = v.get("supporting_url")
+        if verdict == "UNVERIFIED":
+            new_c["magnitude"] = "low"
+            new_c["magnitude_pre_verification"] = c.get("magnitude")
+        out.append(new_c)
+    return out
+
+
+# =============================================================================
 # Parsers — JSON → dataclass.
 # These import the dataclass from engine.py to keep the dataclass alongside
 # its other engine-side users; we resolve circularity by deferring the import.

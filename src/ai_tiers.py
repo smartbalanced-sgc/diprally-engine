@@ -30,12 +30,15 @@ class ResolvedTier:
 
     A None model field means "skip this pass entirely." pass2_model is
     None for T1 (Pass 1 only, no critique). stress_model is None for
-    T0/T1/T2 (only T3 runs catalyst stress).
+    T0/T1/T2 (only T3 runs catalyst stress). catalyst_verification_model
+    is None for T0/T1 (T0 has no AI, T1's single Pass-1 call rarely
+    surfaces specific catalysts worth verifying).
     """
     name: str
     pass1_model: Optional[str]
     pass2_model: Optional[str]
     stress_model: Optional[str]
+    catalyst_verification_model: Optional[str]
     pass1_web_search_max: int
     pass1_max_tokens: int
     pass2_max_tokens: int
@@ -82,6 +85,7 @@ def resolve_tier(tier_name: str) -> ResolvedTier:
         pass1_model=_resolve_model(spec.pass1_model),
         pass2_model=_resolve_model(spec.pass2_model),
         stress_model=_resolve_model(spec.stress_model),
+        catalyst_verification_model=_resolve_model(spec.catalyst_verification_model),
         pass1_web_search_max=spec.pass1_web_search_max,
         pass1_max_tokens=spec.pass1_max_tokens,
         pass2_max_tokens=spec.pass2_max_tokens,

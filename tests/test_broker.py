@@ -107,8 +107,9 @@ def test_deterministic_ordering():
 def test_ties_broken_alphabetically():
     """Equal ambiguity → alphabetical ordering wins for T3 slot priority."""
     snaps = [_snap("ZEBRA", 0.80, True), _snap("ALPHA", 0.80, True)]
-    # With a budget that fits exactly one T3:
-    alloc = allocate(snaps, budget_usd=0.31)
+    # Budget that fits exactly one T3 (cost per resolve_tier).
+    t3_cost = resolve_tier("T3").estimated_cost_usd
+    alloc = allocate(snaps, budget_usd=t3_cost + 0.005)
     assert alloc.assignments["ALPHA"] == "T3"
     # Zebra fell back — should be T2 if it fits, else T0.
     assert alloc.assignments["ZEBRA"] in {"T0", "T2"}

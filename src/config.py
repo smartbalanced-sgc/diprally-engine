@@ -65,10 +65,15 @@ class AIBrokerConfig(_StrictModel):
 class AITierConfig(_StrictModel):
     """W4 PR #27: one row in the AI tier ladder. pass1/pass2/stress
     model fields are keys into AIModelsConfig (opus/sonnet/haiku) or
-    null to disable that pass. T0 has all three null (math only)."""
+    null to disable that pass. T0 has all three null (math only).
+
+    W6 PR #33: catalyst_verification_model added — Haiku-constrained
+    primary-source lookup that runs after Pass 2 and tags each
+    surfaced catalyst VERIFIED / UNVERIFIED / REFUTED."""
     pass1_model: Optional[str] = None
     pass2_model: Optional[str] = None
     stress_model: Optional[str] = None
+    catalyst_verification_model: Optional[str] = None
     pass1_web_search_max: int = Field(ge=0)
     pass1_max_tokens: int = Field(ge=0)
     pass2_max_tokens: int = Field(ge=0)
@@ -423,16 +428,19 @@ def _load_config(path: Path = CONFIG_PATH) -> DiprallyConfig:
         )
     valid_model_keys = {"opus", "sonnet", "haiku"}
     for tier_name, spec in config.ai_tiers.items():
-        for field_name in ("pass1_model", "pass2_model", "stress_model"):
+        for field_name in ("pass1_model", "pass2_model", "stress_model",
+                            "catalyst_verification_model"):
             v = getattr(spec, field_name)
             if v is not None and v not in valid_model_keys:
                 raise ValueError(
                     f"ai_tiers.{tier_name}.{field_name}={v!r} is not a known "
                     f"ai_models key (expected one of {valid_model_keys} or null)"
                 )
-    # T0 must be pure math — all three models null.
+    # T0 must be pure math — all four model fields null.
     t0 = config.ai_tiers["T0"]
-    if t0.pass1_model is not None or t0.pass2_model is not None or t0.stress_model is not None:
+    if any(getattr(t0, f) is not None for f in
+           ("pass1_model", "pass2_model", "stress_model",
+            "catalyst_verification_model")):
         raise ValueError("ai_tiers.T0 must have all model fields null (math-only tier)")
     # W4 PR #29: t3 threshold strictly higher than ai_min (T3 must require
     # MORE uncertainty than the bare minimum to spend ANY AI tokens).

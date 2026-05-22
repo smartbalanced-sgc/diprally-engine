@@ -28,9 +28,11 @@ from src.sigma_classifier import (
     reconcile_with_registry,
 )
 from src.ai_layer import (
+    apply_catalyst_verification,
     build_ai_pass1_prompt,
     build_ai_pass2_prompt,
     call_ai_catalyst_stress_test,
+    call_ai_catalyst_verification,
     call_ai_pass,
     parse_ai_pass1,
     parse_ai_pass2,
@@ -1014,6 +1016,35 @@ def run_pipeline(args) -> int:
     # in --no-ai or full AI failure.
     effective_ai = pass2 if pass2 else pass1
 
+    # --- 5a. Catalyst verification (W6 PR #33, closes D-W5-1).
+    # Haiku-constrained primary-source check on top-3 catalysts.
+    # UNVERIFIED → magnitude downgrade to "low"; REFUTED → drop. Same-day
+    # cache replays the verification result with $0 cost.
+    catalyst_verifications = []
+    verification_cost = 0.0
+    if cache_hit and cache_payload is not None:
+        catalyst_verifications = cache_payload.get("catalyst_verifications") or []
+    elif (tier.catalyst_verification_model is not None
+          and effective_ai and effective_ai.catalysts):
+        print(f"AI catalyst verification (model={tier.catalyst_verification_model})...")
+        catalyst_verifications, verification_cost = call_ai_catalyst_verification(
+            ticker, effective_ai.catalysts, horizon_days,
+            verification_model=tier.catalyst_verification_model,
+        )
+    if catalyst_verifications and effective_ai:
+        before = len(effective_ai.catalysts)
+        effective_ai.catalysts = apply_catalyst_verification(
+            effective_ai.catalysts, catalyst_verifications,
+        )
+        n_refuted = sum(1 for v in catalyst_verifications if v.get("verdict") == "REFUTED")
+        n_unverified = sum(1 for v in catalyst_verifications if v.get("verdict") == "UNVERIFIED")
+        n_verified = sum(1 for v in catalyst_verifications if v.get("verdict") == "VERIFIED")
+        print(
+            f"   Verification: {n_verified} VERIFIED, {n_unverified} UNVERIFIED "
+            f"(magnitude → low), {n_refuted} REFUTED (dropped). "
+            f"Catalysts: {before} → {len(effective_ai.catalysts)}"
+        )
+
     # --- 5b. AI-derived signals (catalyst_proximity, narrative, factor bias)
     #          built from Pass 2's revised values when available.
     catalyst_mu, catalyst_conf, catalyst_rat = (0.0, "LOW", "no AI catalysts")
@@ -1238,6 +1269,8 @@ def run_pipeline(args) -> int:
                 "pass1_sources": pass1_sources_for_cache,
                 "pass2_raw": pass2_raw_for_cache,
                 "pass2_cost": pass2_cost_charged,
+                "catalyst_verifications": catalyst_verifications,
+                "verification_cost": verification_cost,
                 "stress_results": catalyst_stress_results,
                 "stress_cost": catalyst_stress_cost,
                 "models_used": {
@@ -1346,7 +1379,8 @@ def run_pipeline(args) -> int:
     backtest = run_backtest_layer(history_path, spot)
 
     # --- 16. Persist CSV row ---
-    total_ai_cost = pass1_cost_charged + pass2_cost_charged + catalyst_stress_cost
+    total_ai_cost = (pass1_cost_charged + pass2_cost_charged
+                     + verification_cost + catalyst_stress_cost)
     csv_row = {
         "date": datetime.now().strftime("%Y-%m-%d"),
         "spot": f"{spot:.2f}",
