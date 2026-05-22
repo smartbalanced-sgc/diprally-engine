@@ -14,12 +14,41 @@ DEFAULT_LOOKBACK_DAYS = 730
 
 
 # -----------------------------------------------------------
-# Opus 4.7 pricing
-# Verify against https://docs.anthropic.com/en/api/pricing before W1 ships
+# Anthropic pricing — Opus 4.7, Sonnet 4.6, Haiku 4.5
+# Verify against https://docs.anthropic.com/en/api/pricing before each wave ships
 # -----------------------------------------------------------
 OPUS_INPUT_PER_TOKEN = 15.00 / 1_000_000
 OPUS_OUTPUT_PER_TOKEN = 75.00 / 1_000_000
+SONNET_INPUT_PER_TOKEN = 3.00 / 1_000_000
+SONNET_OUTPUT_PER_TOKEN = 15.00 / 1_000_000
+HAIKU_INPUT_PER_TOKEN = 1.00 / 1_000_000
+HAIKU_OUTPUT_PER_TOKEN = 5.00 / 1_000_000
 WEB_SEARCH_PER_USE = 0.01
+
+# Canonical model IDs (centralised so model swaps are one-line)
+MODEL_OPUS = "claude-opus-4-7"
+MODEL_SONNET = "claude-sonnet-4-6"
+MODEL_HAIKU = "claude-haiku-4-5-20251001"
+
+# (model_id_prefix, input_rate, output_rate)
+_AI_PRICING = (
+    ("opus",   OPUS_INPUT_PER_TOKEN,   OPUS_OUTPUT_PER_TOKEN),
+    ("sonnet", SONNET_INPUT_PER_TOKEN, SONNET_OUTPUT_PER_TOKEN),
+    ("haiku",  HAIKU_INPUT_PER_TOKEN,  HAIKU_OUTPUT_PER_TOKEN),
+)
+
+
+def pricing_for_model(model_id: str) -> tuple[float, float]:
+    """Return (input_per_token, output_per_token) for the given model ID.
+    Matches by case-insensitive substring on the canonical family name.
+    Defaults to Opus pricing for unknown IDs (conservative — overstates cost
+    rather than understates).
+    """
+    lower = (model_id or "").lower()
+    for prefix, in_rate, out_rate in _AI_PRICING:
+        if prefix in lower:
+            return in_rate, out_rate
+    return OPUS_INPUT_PER_TOKEN, OPUS_OUTPUT_PER_TOKEN
 
 
 # -----------------------------------------------------------
@@ -97,9 +126,46 @@ VOL_SCHEDULE_MULTIPLIERS = {
     "macro_event_day": 1.5,
 }
 
-# Three-method agreement tolerance.
-METHOD_AGREEMENT_TOLERANCE_PP_MARGINAL = 3.0       # P(touch ever)
-METHOD_AGREEMENT_TOLERANCE_PP_FIRST_PASSAGE = 4.0  # P(dip first), P(rally first)
+# Three-method agreement tolerance — σ-SCALED.
+# The Brownian bridge correction on the MC has an irreducible residual that
+# scales with σ: at σ=30% it's ~0.3-0.8pp, at σ=100% it's ~2-3pp, at σ=150%
+# it can reach 3-5pp. A constant threshold is wrong for any ticker outside
+# the σ-class it was tuned against. The σ-scaled functions below give:
+#   σ=0.30 (MID INTC):    flag 2.0pp, refuse 3.6pp
+#   σ=1.00 (EXTREME SNDK): flag 3.0pp, refuse 5.4pp
+#   σ=1.50 (high LWLG-like): flag 4.5pp, refuse 8.1pp
+# W10 will calibrate these multipliers empirically from realized residuals.
+METHOD_AGREEMENT_FLOOR_PP = 2.0      # tolerance never drops below this at low σ
+METHOD_AGREEMENT_MULTIPLIER = 3.0    # tolerance ~= 3.0 × σ_effective at high σ
+METHOD_AGREEMENT_FIRST_PASSAGE_FLOOR_PP = 3.0
+METHOD_AGREEMENT_FIRST_PASSAGE_MULTIPLIER = 4.0
+# Refusal threshold = REFUSAL_MULT × flag-threshold. Sacred decision #16
+# enforced as a hard gate: MC vs PDE/closed-form diverge beyond this →
+# refuse to recommend.
+METHOD_REFUSAL_MULTIPLIER = 1.8
+
+
+def method_tolerance_pp(sigma_effective: float, kind: str = "marginal") -> float:
+    """σ-scaled flag tolerance (pp). kind in {'marginal', 'first_passage'}.
+    Marginal = P(touch ever). First-passage = P(dip first | rally first).
+    """
+    if kind == "first_passage":
+        return max(METHOD_AGREEMENT_FIRST_PASSAGE_FLOOR_PP,
+                   METHOD_AGREEMENT_FIRST_PASSAGE_MULTIPLIER * sigma_effective)
+    return max(METHOD_AGREEMENT_FLOOR_PP,
+               METHOD_AGREEMENT_MULTIPLIER * sigma_effective)
+
+
+def method_refusal_pp(sigma_effective: float, kind: str = "marginal") -> float:
+    """Hard refusal threshold (pp). Triggers the sacred-decision-#16 gate."""
+    return METHOD_REFUSAL_MULTIPLIER * method_tolerance_pp(sigma_effective, kind)
+
+
+# Legacy constants kept temporarily for backwards-compatible imports.
+# Anyone still reading these gets the value at σ=1.0 (the most common case
+# in the seed's SNDK-tuned regime). Deprecate-and-remove in W3.
+METHOD_AGREEMENT_TOLERANCE_PP_MARGINAL = METHOD_AGREEMENT_MULTIPLIER * 1.0
+METHOD_AGREEMENT_TOLERANCE_PP_FIRST_PASSAGE = METHOD_AGREEMENT_FIRST_PASSAGE_MULTIPLIER * 1.0
 METHOD_AGREEMENT_TOLERANCE_PP = METHOD_AGREEMENT_TOLERANCE_PP_FIRST_PASSAGE
 
 BAG_HOLD_TERMINAL_ASSUMPTION = "median_terminal_dip_paths"

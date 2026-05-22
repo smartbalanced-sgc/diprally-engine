@@ -18,6 +18,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from src import ai_cache
 from src.ai_layer import (
     build_ai_pass1_prompt,
     build_ai_pass2_prompt,
@@ -35,6 +36,8 @@ from src.config import (
     DEFAULT_MC_PATHS,
     DIP_GRID_MAX_DEPTH_PCT,
     DIP_GRID_STEP,
+    MODEL_OPUS,
+    MODEL_SONNET,
     RALLY_GRID_MAX_REACH_PCT,
     RALLY_GRID_STEP,
 )
@@ -566,6 +569,13 @@ def run_pipeline(args) -> int:
         print(f"ERROR: failed to fetch history for {ticker}")
         return 1
     spot = float(history_df["Close"].iloc[-1])
+    # Debug spot override (W1) — lets the cache-invalidation smoke test
+    # simulate a spot move without waiting for the live price to change.
+    # Removed/refactored in W2.
+    override = getattr(args, "debug_spot_override", None)
+    if override is not None and override > 0:
+        print(f"   ⚠ DEBUG spot override: ${spot:.2f} → ${override:.2f}")
+        spot = float(override)
     closes_series = history_df["Close"]
     closes = closes_series.values
     returns = np.log(closes_series / closes_series.shift(1)).dropna()
@@ -691,6 +701,25 @@ def run_pipeline(args) -> int:
         except Exception:
             pass
 
+    # Peer earnings within horizon — fed into the catalyst-aware vol_schedule.
+    # Previously this was left empty, meaning MU/WDC/competitor earnings in
+    # SNDK's horizon never spiked SNDK's σ. Sacred decision #9 (bridge MC)
+    # depends on vol_schedule being accurate; passing [] was degrading bridge
+    # fidelity on every full-AI run with peer earnings in window.
+    peer_earnings_dts = []
+    for p in peer_tickers:
+        try:
+            pe = fetch_next_earnings(p, api_key)
+            if pe and pe.get("date"):
+                dt = datetime.strptime(pe["date"][:10], "%Y-%m-%d")
+                # Only include if within horizon window
+                days_away = (dt.date() - datetime.now().date()).days
+                if 0 <= days_away <= horizon_days:
+                    peer_earnings_dts.append(dt)
+                    print(f"   Peer earnings in horizon: {p} on {pe['date']} ({days_away}d)")
+        except Exception as e:
+            print(f"   WARNING: peer earnings fetch failed for {p}: {e}")
+
     signals_dict = {
         "historical": signal_from_historical(mu_effective_historical, mu_hist, blended_sigma),
         "analyst": signal_from_analyst_targets(targets, spot,
@@ -705,10 +734,38 @@ def run_pipeline(args) -> int:
                                                             lookback_days=30, ticker=ticker),
     }
 
-    # --- 4. AI Pass 1 ---
+    # --- 4. AI Pass 1 (cache-aware) ---
+    # Same-day cache: if today's run for this ticker already exists and spot
+    # has moved < 1%, replay the cached AI outputs with cost = $0.00. Cache
+    # invalidation triggers a fresh run. Sacred decision #11 extension.
     pass1 = None
     pass1_cost_charged = 0.0
-    if args.no_ai:
+    pass2 = None
+    pass2_cost_charged = 0.0
+    cached_stress_results = None  # set on cache hit, used in step 13
+    cached_stress_cost = 0.0
+    cache_hit = False
+
+    # Raw outputs accumulated for end-of-pipeline cache write (miss path only).
+    pass1_raw_for_cache = None
+    pass1_sources_for_cache = 0
+    pass2_raw_for_cache = None
+
+    cache_payload = None if args.no_ai else ai_cache.get_cached(ticker, spot)
+    if cache_payload:
+        print(f"   AI cache HIT for {ticker} ({cache_payload.get('date')}, "
+              f"spot ${cache_payload.get('spot'):.2f}) — Pass 1/2/stress replayed at $0.00")
+        cache_hit = True
+        p1_raw = cache_payload.get("pass1_raw")
+        p1_sources = int(cache_payload.get("pass1_sources", 0))
+        if p1_raw:
+            pass1 = parse_ai_pass1(p1_raw, p1_sources, 0.0)  # cost=0.00 on cache hit
+        p2_raw = cache_payload.get("pass2_raw")
+        if p2_raw and pass1:
+            pass2 = parse_ai_pass2(p2_raw, pass1, 0.0)
+        cached_stress_results = cache_payload.get("stress_results") or []
+        cached_stress_cost = 0.0
+    elif args.no_ai:
         print("AI Pass 1 skipped (--no-ai)")
     else:
         print("AI Pass 1 (data gathering + multi-hypothesis catalysts)...")
@@ -717,58 +774,26 @@ def run_pipeline(args) -> int:
             ticker, snapshot, vol_profile, horizon_days, display_signals_for_prompt,
             self_earnings_dt, peer_tickers,
         )
-        pass1_raw, pass1_cost, pass1_sources = call_ai_pass(pass1_prompt, max_tokens=8000, pass_label="Pass 1")
+        pass1_raw, pass1_cost, pass1_sources = call_ai_pass(
+            pass1_prompt, max_tokens=8000, pass_label="Pass 1",
+            model=MODEL_OPUS, web_search_max_uses=5,
+        )
         pass1 = parse_ai_pass1(pass1_raw, pass1_sources, pass1_cost) if pass1_raw else None
         pass1_cost_charged = pass1_cost
+        pass1_raw_for_cache = pass1_raw
+        pass1_sources_for_cache = pass1_sources
 
-    # --- 5. AI-derived signals ---
-    catalyst_mu, catalyst_conf, catalyst_rat = (0.0, "LOW", "no AI catalysts")
-    narrative_mu, narrative_conf, narrative_rat = (0.0, "LOW", "no AI narrative")
-    factor_bias, factor_rat = (0.0, "no factor analysis")
-    if pass1:
-        catalyst_mu, catalyst_conf, catalyst_rat = signal_from_catalyst_proximity(
-            pass1.catalysts, horizon_days,
-        )
-        evidence_count = sum(
-            1 for c in pass1.catalysts
-            if c.get("sources") and len(c.get("sources", [])) >= 2
-        )
-        narrative_mu, narrative_conf, narrative_rat = signal_from_structural_narrative(
-            pass1.narrative_score, evidence_count,
-        )
-        factor_bias, factor_rat = apply_bull_bear_arithmetic(pass1.bull_factors, pass1.bear_factors)
-
-    signals_dict["catalyst_proximity"] = {
-        "drift": catalyst_mu, "confidence": catalyst_conf,
-        "source_quality": "PRIMARY",
-        "sources_count": len(pass1.catalysts) if pass1 else 0,
-        "notes": catalyst_rat,
-    }
-    signals_dict["narrative"] = {
-        "drift": narrative_mu, "confidence": narrative_conf,
-        "source_quality": "PRIMARY",
-        "sources_count": 0,
-        "notes": narrative_rat,
-    }
-
-    if pass1:
-        signals_dict["ai"] = {
-            "drift": pass1.drift_estimate,
-            "confidence": pass1.confidence,
-            "source_quality": "REPUTABLE",
-            "sources_count": pass1.raw_sources_cited,
-            "notes": f"Pass 1 estimate ({pass1.raw_sources_cited} sources)",
-        }
-    else:
-        signals_dict["ai"] = _none_signal("AI Pass 1 failed")
-
-    # --- 5b. AI Pass 2 (adversarial critique) ---
-    pass2 = None
-    pass2_cost_charged = 0.0
-    if args.no_ai:
+    # --- 5. AI Pass 2 (adversarial critique). Runs BEFORE the AI-derived
+    #        signals so Pass 2's revised vol_regime / narrative / catalysts
+    #        drive those signals, not Pass 1's. Sacred decision #7 in full.
+    if cache_hit:
+        # pass2 already loaded from cache_payload above
+        pass2_raw_for_cache = cache_payload.get("pass2_raw") if cache_payload else None
+    elif args.no_ai:
         print("AI Pass 2 skipped (--no-ai)")
+        pass2_raw_for_cache = None
     elif pass1:
-        print("AI Pass 2 (adversarial critique — runs before final MC so Pass 2 drives the math)...")
+        print("AI Pass 2 (adversarial critique — revises drift / vol_regime / narrative / catalysts)...")
         T_years = horizon_days / 252.0
         prelim_mu_for_closed = float(pass1.drift_estimate)
         try:
@@ -785,17 +810,92 @@ def run_pipeline(args) -> int:
             ticker, snapshot, pass1, mc_marginal_summary, sigma_summary,
             None,
         )
-        pass2_raw, pass2_cost, _ = call_ai_pass(pass2_prompt, max_tokens=3000, pass_label="Pass 2")
+        # Pass 2 critique uses Sonnet 4.6 (structured-output JSON critique,
+        # doesn't need Opus depth) with no web_search (relies on Pass 1's
+        # sourced material + math context embedded in the prompt). Saves
+        # ~$0.40-0.50 per full-AI run vs Opus+web.
+        pass2_raw, pass2_cost, _ = call_ai_pass(
+            pass2_prompt, max_tokens=3000, pass_label="Pass 2",
+            model=MODEL_SONNET, web_search_max_uses=0,
+        )
         pass2_cost_charged = pass2_cost
+        pass2_raw_for_cache = pass2_raw
         if pass2_raw:
-            pass2 = parse_ai_pass2(pass2_raw, pass1.drift_estimate, pass2_cost)
+            pass2 = parse_ai_pass2(pass2_raw, pass1, pass2_cost)
+    else:
+        pass2_raw_for_cache = None
+
+    # The "Pass 2 wins" projection: every downstream consumer reads from
+    # `effective_ai`. Pass 2 if it ran and parsed; otherwise Pass 1. None
+    # in --no-ai or full AI failure.
+    effective_ai = pass2 if pass2 else pass1
+
+    # --- 5b. AI-derived signals (catalyst_proximity, narrative, factor bias)
+    #          built from Pass 2's revised values when available.
+    catalyst_mu, catalyst_conf, catalyst_rat = (0.0, "LOW", "no AI catalysts")
+    narrative_mu, narrative_conf, narrative_rat = (0.0, "LOW", "no AI narrative")
+    factor_bias, factor_rat = (0.0, "no factor analysis")
+    if effective_ai:
+        catalyst_mu, catalyst_conf, catalyst_rat = signal_from_catalyst_proximity(
+            effective_ai.catalysts, horizon_days,
+        )
+        evidence_count = sum(
+            1 for c in effective_ai.catalysts
+            if isinstance(c, dict) and c.get("sources") and len(c.get("sources", [])) >= 2
+        )
+        narrative_mu, narrative_conf, narrative_rat = signal_from_structural_narrative(
+            effective_ai.narrative_score, evidence_count,
+        )
+        # Bull/bear factor arithmetic stays sourced from Pass 1 only — Pass 2
+        # is a critique not a re-extraction. If Pass 2 disagreed it would be
+        # via revised_drift / revised_confidence, both already captured.
+        if pass1:
+            factor_bias, factor_rat = apply_bull_bear_arithmetic(
+                pass1.bull_factors, pass1.bear_factors,
+            )
+
+    if effective_ai:
+        signals_dict["catalyst_proximity"] = {
+            "drift": catalyst_mu, "confidence": catalyst_conf,
+            "source_quality": "PRIMARY",
+            "sources_count": len(effective_ai.catalysts),
+            "notes": catalyst_rat,
+        }
+        signals_dict["narrative"] = {
+            "drift": narrative_mu, "confidence": narrative_conf,
+            "source_quality": "PRIMARY",
+            "sources_count": 0,
+            "notes": narrative_rat,
+        }
+    else:
+        # No AI ran (--no-ai or Pass 1 failed). catalyst_proximity and
+        # narrative are AI-DERIVED — without AI they are genuinely MISSING,
+        # not "active at zero." Mark as NONE_FOUND so blend_with_uncertainty's
+        # phantom-signal std accounting captures all three AI-derived weights
+        # (ai 25% + catalyst_proximity 10% + narrative 10% = 45% total
+        # phantom contribution to within_var).
+        signals_dict["catalyst_proximity"] = _none_signal("AI absent — no catalyst extraction")
+        signals_dict["narrative"] = _none_signal("AI absent — no narrative synthesis")
+
+    if effective_ai:
+        if pass2:
             signals_dict["ai"] = {
                 "drift": pass2.drift_estimate,
                 "confidence": pass2.confidence,
                 "source_quality": "REPUTABLE",
-                "sources_count": pass1.raw_sources_cited,
+                "sources_count": pass1.raw_sources_cited if pass1 else 0,
                 "notes": f"Pass 2 revised ({pass2.revision_from_prior_pass:+.1%} vs Pass 1)",
             }
+        else:
+            signals_dict["ai"] = {
+                "drift": pass1.drift_estimate,
+                "confidence": pass1.confidence,
+                "source_quality": "REPUTABLE",
+                "sources_count": pass1.raw_sources_cited,
+                "notes": f"Pass 1 estimate ({pass1.raw_sources_cited} sources)",
+            }
+    else:
+        signals_dict["ai"] = _none_signal("AI Pass 1 failed")
 
     # --- 6. Blend ---
     print(f"Blending {len(signals_dict)} signals + bull/bear arithmetic...")
@@ -833,23 +933,28 @@ def run_pipeline(args) -> int:
         "today_mu": today_mu, "today_std": today_std,
         "post_mu": post_mu, "post_std": post_std,
         "prior_weight": prior_weight,
+        "phantom_signals": blend.get("phantom_signals", []) if blend else [],
+        "phantom_std_inflation": blend.get("phantom_std_inflation", 0.0) if blend else 0.0,
         "today_weight": 1 - prior_weight,
     }
 
     base_signals = _signals_dict_to_display_list(signals_dict, BLEND_WEIGHTS_V2)
 
-    # --- 8. Vol schedule ---
+    # --- 8. Vol schedule (catalyst-aware) ---
+    # peer_earnings_dts populated at fetch time (step 3.5). macro_event_dates
+    # still empty — populated in W4/W5 alongside the FOMC/CPI calendar.
     vol_schedule = build_catalyst_vol_schedule(
         base_vol=blended_sigma,
         horizon_days=horizon_days,
         self_earnings_date=self_earnings_dt,
-        peer_earnings_dates=[],
+        peer_earnings_dates=peer_earnings_dts,
         macro_event_dates=[],
     )
 
-    # --- 9. Apply AI vol_regime multiplier ---
-    if pass1:
-        vol_mult = AI_VOL_REGIME_MULTIPLIERS.get(pass1.vol_regime, 1.0)
+    # --- 9. Apply AI vol_regime multiplier (uses Pass 2's revised regime
+    #         when available — Pass 2 wins, sacred decision #7).
+    if effective_ai:
+        vol_mult = AI_VOL_REGIME_MULTIPLIERS.get(effective_ai.vol_regime, 1.0)
         effective_sigma = blended_sigma * vol_mult
     else:
         effective_sigma = blended_sigma
@@ -878,16 +983,44 @@ def run_pipeline(args) -> int:
         vol_schedule=vol_schedule,
     )
 
-    # --- 13. AI catalyst stress test ---
+    # --- 13. AI catalyst stress test — uses Pass 2's revised catalyst list
+    #          when available (effective_ai), else Pass 1's. Sacred #7.
     catalyst_stress_results = []
     catalyst_stress_cost = 0.0
-    if not args.no_ai and pass1 and best:
+    if cache_hit and cached_stress_results is not None:
+        # Replay from cache. Cost = $0.00.
+        catalyst_stress_results = cached_stress_results
+        catalyst_stress_cost = 0.0
+    elif not args.no_ai and effective_ai and best:
         print("AI catalyst impact stress test...")
         catalyst_stress_results, catalyst_stress_cost = call_ai_catalyst_stress_test(
-            ticker, spot, best.dip_price, best.rally_price, pass1.catalysts, horizon_days,
+            ticker, spot, best.dip_price, best.rally_price,
+            effective_ai.catalysts, horizon_days,
         )
 
-    # --- 14. Three-method math cross-check ---
+    # Write the AI cache for this ticker-date AFTER all AI work is complete.
+    # On cache miss we save everything we computed; on cache hit we skip the
+    # write (cache file already exists and is correct).
+    if not cache_hit and not args.no_ai and pass1_raw_for_cache:
+        try:
+            ai_cache.save(ticker, spot, {
+                "pass1_raw": pass1_raw_for_cache,
+                "pass1_cost": pass1_cost_charged,
+                "pass1_sources": pass1_sources_for_cache,
+                "pass2_raw": pass2_raw_for_cache,
+                "pass2_cost": pass2_cost_charged,
+                "stress_results": catalyst_stress_results,
+                "stress_cost": catalyst_stress_cost,
+                "models_used": {
+                    "pass1": MODEL_OPUS,
+                    "pass2": MODEL_SONNET,
+                    "stress": "claude-haiku-4-5-20251001",  # MODEL_HAIKU
+                },
+            })
+        except Exception as e:
+            print(f"   WARNING: ai_cache.save failed (run still succeeds): {e}")
+
+    # --- 14. Three-method math cross-check + hard refusal gate (sacred #16) ---
     print("Three-method math cross-check...")
     if best:
         bridge_best_result = analyze_joint_conditional(
@@ -898,9 +1031,23 @@ def run_pipeline(args) -> int:
             spot, effective_sigma, post_mu, horizon_days,
             best.dip_price, best.rally_price, bridge_best_result,
         )
+        # Sacred decision #16 — hard refusal when MC and PDE/closed-form
+        # diverge beyond the σ-scaled refusal threshold. Publishing a
+        # recommendation under method disagreement = publishing a number
+        # we can't ourselves verify. Suppress the dip/rally pair; keep
+        # the table so the user sees WHY we refused.
+        if method_check.get("refused"):
+            print(f"⛔ Method-disagreement refusal triggered: {'; '.join(method_check['refusals'])}")
+            best = None  # blocks recommendation; report prints refusal headline
+            met_threshold_strict = False
     else:
-        method_check = {"table": [], "flags": [], "agreement_status": "n/a — no pair found",
-                        "pde_mass_conservation": 1.0, "pde_p_neither": 0.0}
+        # No qualifying pair — no PDE run. Use None for pde_mass_conservation
+        # so the reporter prints "n/a" instead of a misleading 1.00000 default.
+        # (D-W3-2 in the deferred log; cheap to fix here while we're in this
+        # neighborhood. The full three-method-on-no-pair fix is still W3.)
+        method_check = {"table": [], "flags": [], "refusals": [], "refused": False,
+                        "agreement_status": "n/a — no pair found",
+                        "pde_mass_conservation": None, "pde_p_neither": None}
 
     # --- 14b. Sensitivity table ---
     sensitivity = None
@@ -946,8 +1093,8 @@ def run_pipeline(args) -> int:
         "net_expected_value": f"{best.net_expected_value:.2f}" if best else "",
         "ai_drift_pass1": f"{pass1.drift_estimate:.4f}" if pass1 else "",
         "ai_drift_pass2": f"{pass2.drift_estimate:.4f}" if pass2 else "",
-        "ai_vol_regime": pass1.vol_regime if pass1 else "",
-        "narrative_score": pass1.narrative_score if pass1 else "",
+        "ai_vol_regime": effective_ai.vol_regime if effective_ai else "",
+        "narrative_score": effective_ai.narrative_score if effective_ai else "",
         "catalyst_proximity_drift": f"{catalyst_mu:.4f}",
         "garch_alpha_plus_beta": f"{vol_profile.garch_alpha_plus_beta:.4f}",
         "horizon_days": str(horizon_days),

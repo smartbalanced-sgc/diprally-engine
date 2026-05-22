@@ -52,7 +52,16 @@ def format_report(
 
     # HEADLINE RECOMMENDATION
     lines.append(hr("ROUND-TRIP RECOMMENDATION"))
-    if best is None:
+    if best is None and method_check.get("refused"):
+        # Sacred decision #16 hard refusal — math layer can't agree.
+        lines.append("  ⛔ REFUSED — three-method math disagreement exceeds the σ-scaled refusal threshold.")
+        lines.append("  Publishing a recommendation under method disagreement would mean publishing")
+        lines.append("  a number the system itself cannot verify. Refusal reasons:")
+        for r in method_check.get("refusals", []):
+            lines.append(f"     • {r}")
+        lines.append("  Action: investigate the math layer (likely σ outlier, drift extremum, or")
+        lines.append("  bridge-correction edge case). Re-run when inputs change materially.")
+    elif best is None:
         lines.append("  No dip/rally pair meets the conviction thresholds at current spot/vol/drift.")
         lines.append("  Action: WAIT — re-run after next close.")
     else:
@@ -90,7 +99,18 @@ def format_report(
     if method_check["flags"]:
         for flag in method_check["flags"]:
             lines.append(f"  ⚠ {flag}")
-    lines.append(f"  PDE mass conservation: {method_check['pde_mass_conservation']:.5f} (should be ~1.0)")
+    for refusal in method_check.get("refusals", []):
+        lines.append(f"  ⛔ {refusal}")
+    pde_mass = method_check.get("pde_mass_conservation")
+    if pde_mass is None:
+        lines.append("  PDE mass conservation: n/a (PDE not run)")
+    else:
+        lines.append(f"  PDE mass conservation: {pde_mass:.5f} (should be ~1.0)")
+    tols = method_check.get("tolerances")
+    if tols:
+        lines.append(f"  Tolerances at σ={tols['sigma_used']*100:.0f}%: "
+                     f"first-passage {tols['first_passage_pp']:.1f}pp / refuse {tols['refuse_first_passage_pp']:.1f}pp · "
+                     f"marginal {tols['marginal_pp']:.1f}pp / refuse {tols['refuse_marginal_pp']:.1f}pp")
 
     # UNUSUAL MOVE Z-SCORE
     if unusual_move:
@@ -139,6 +159,11 @@ def format_report(
     lines.append(f"  Today's blend:              mu={posterior.get('today_mu', 0):+.1%}/yr, std={posterior.get('today_std', 0.20)*100:.1f}pp")
     lines.append(f"  Posterior (used in MC):     mu={posterior.get('post_mu', 0):+.1%}/yr, std={posterior.get('post_std', 0.10)*100:.1f}pp")
     lines.append(f"  Prior weight: {posterior.get('prior_weight', 0):.0%}, today weight: {posterior.get('today_weight', 0):.0%}")
+    phantom = posterior.get("phantom_signals") or []
+    if phantom:
+        inflation_pp = posterior.get("phantom_std_inflation", 0.0) * 100
+        lines.append(f"  ⚠ AI signals absent ({', '.join(phantom)}): today_std inflated +{inflation_pp:.2f}pp")
+        lines.append(f"    (phantom-signal accounting — forward-looking synthesis missing → wider band)")
 
     # SENSITIVITY TABLE
     if sensitivity and best:
@@ -175,7 +200,7 @@ def format_report(
             )
 
     # AI SYNTHESIS
-    lines.append(hr("AI TWO-PASS SYNTHESIS (Claude Opus 4.7)"))
+    lines.append(hr("AI TWO-PASS SYNTHESIS (Pass 1: Opus 4.7 · Pass 2: Sonnet 4.6 · Stress: Haiku 4.5)"))
     if pass1:
         lines.append(f"  PASS 1: drift={pass1.drift_estimate:+.1%}/yr  conf={pass1.confidence}  vol_regime={pass1.vol_regime}  narrative={pass1.narrative_score}  sources={pass1.raw_sources_cited}  cost=${pass1.cost_usd:.2f}")
         lines.append(f"    Catalysts identified: {len(pass1.catalysts)}")
@@ -192,9 +217,25 @@ def format_report(
         rev = pass2.revision_from_prior_pass
         rev_str = f"({rev:+.1%} from Pass 1)" if rev is not None else ""
         lines.append(f"  PASS 2: drift={pass2.drift_estimate:+.1%}/yr  conf={pass2.confidence}  {rev_str}  cost=${pass2.cost_usd:.2f}")
+        # Pass 2 revisions of vol_regime / narrative / catalysts (sacred #7).
+        # Show only the deltas — concurrence is implicit.
+        if pass1:
+            if pass2.vol_regime != pass1.vol_regime:
+                lines.append(f"    vol_regime: {pass1.vol_regime} → {pass2.vol_regime}")
+            if pass2.narrative_score != pass1.narrative_score:
+                lines.append(f"    narrative: {pass1.narrative_score} → {pass2.narrative_score}")
+            p1_names = {(c.get('name') if isinstance(c, dict) else str(c)) for c in pass1.catalysts}
+            p2_names = {(c.get('name') if isinstance(c, dict) else str(c)) for c in pass2.catalysts}
+            added = p2_names - p1_names
+            dropped = p1_names - p2_names
+            if added:
+                lines.append(f"    catalysts +{len(added)}: {', '.join(list(added)[:3])}")
+            if dropped:
+                lines.append(f"    catalysts -{len(dropped)}: {', '.join(list(dropped)[:3])}")
         if pass2.key_risks:
             for risk in pass2.key_risks[:3]:
-                lines.append(f"    → {risk}")
+                if risk:
+                    lines.append(f"    → {risk}")
     else:
         lines.append("  PASS 2: failed or skipped")
 
