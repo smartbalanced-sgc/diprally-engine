@@ -51,21 +51,40 @@ def format_report(
     lines.append(f"  Spot: ${snapshot.spot:.2f}   Market cap: ${snapshot.market_cap/1e9:.1f}B")
     lines.append(f"  Sector / Industry: {snapshot.sector} / {snapshot.industry}")
     lines.append(f"  RSI: {snapshot.rsi:.1f}   5d mom: {snapshot.mom_5d:+.1%}   30d mom: {snapshot.mom_30d:+.1%}   YTD: {snapshot.ytd_return:+.1%}")
+    lines.append(f"  Horizon: {horizon_days} trading days   (sacred #6: trader sizes externally)")
+
+    # σ-CLASS FIT-FOR-PURPOSE PROFILE (W3 close-out, PR #26).
+    # One block, all class-keyed levers visible at a glance — trader can
+    # tell at-a-read whether the engine is operating with EXTREME-name
+    # latitude or MID-name precision, and which knobs that pulled in.
     if sigma_class is not None:
         from src.config import SIGMA_CLASSES
-        class_entry = SIGMA_CLASSES[sigma_class]
+        ce = SIGMA_CLASSES[sigma_class]
+        lines.append(hr(f"σ-CLASS PROFILE — {sigma_class}"))
         lines.append(
-            f"  σ-class: {sigma_class}  (auto-detected from blended σ = "
-            f"{vol_profile.blended_sigma*100:.1f}%)"
-        )
-        lines.append(
-            f"  Class friction: {class_entry.friction_bps_round_trip:.0f} bps RT"
-            f"  (applied to avg leg notional)"
+            f"  Auto-detected from blended σ = {vol_profile.blended_sigma*100:.1f}% annualised "
+            f"(GARCH + realized 30/60/90d + options IV)"
         )
         if sigma_class_mismatch:
-            lines.append(f"    ⚠ {sigma_class_mismatch}")
-    lines.append(f"  Conviction thresholds: dip {conviction_dip:.0%} marginal, rally-cond {conviction_rally_cond:.0%}")
-    lines.append(f"  Horizon: {horizon_days} trading days   (sacred #6: trader sizes externally)")
+            lines.append(f"  ⚠ {sigma_class_mismatch}")
+        lines.append(
+            f"  Conviction:  dip ≥ {ce.conviction.dip:.0%} marginal · "
+            f"rally|dip ≥ {ce.conviction.rally_conditional:.0%} conditional"
+        )
+        lines.append(
+            f"  Grid scan:   dip step {ce.grid.dip_step_pct*100:.2f}% × depth {ce.grid.dip_max_depth_pct*100:.0f}%  ·  "
+            f"rally step {ce.grid.rally_step_pct*100:.2f}% × reach {ce.grid.rally_max_reach_pct*100:.0f}%"
+        )
+        lines.append(
+            f"  Friction:    {ce.friction_bps_round_trip:.0f} bps RT (applied to (dip+rally)/2)"
+        )
+        lines.append(
+            f"  Panic floor: {ce.panic_floor_pct*100:.0f}% below spot  ·  "
+            f"AI vol_mult H/M/L = "
+            f"{ce.ai_vol_regime_multipliers['HIGH']:.2f}/"
+            f"{ce.ai_vol_regime_multipliers['MEDIUM']:.2f}/"
+            f"{ce.ai_vol_regime_multipliers['LOW']:.2f}"
+        )
 
     # HEADLINE RECOMMENDATION
     lines.append(hr("ROUND-TRIP RECOMMENDATION"))

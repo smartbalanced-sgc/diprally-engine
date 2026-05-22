@@ -328,7 +328,7 @@ Each of these is a tunable buried inside a function. Lift to YAML under a
 
 ---
 
-## To W3 (σ-class auto-detection + class-specific defaults)
+## To W3 (σ-class auto-detection + class-specific defaults)  [WAVE CLOSED — all items shipped in PRs #21–#26]
 
 ### D-W3-1. Grid step must be percent-based, not absolute dollars  [CLOSED in W3 PR #22]
 - **Discovered**: LWLG W0 smoke run, 2026-05-22 12:31
