@@ -31,8 +31,18 @@ from src.ai_layer import (
 from src.config import (
     AI_VOL_REGIME_MULTIPLIERS,
     BACKTEST_MIN_SAMPLES,
+    BAYESIAN_DEFAULT_PRIOR_STD,
+    BAYESIAN_DEFAULT_TODAY_STD,
+    BAYESIAN_STD_FLOOR,
     BLEND_WEIGHTS_V2,
+    DRIFT_CAP,
     EV_HURDLE_BPS_OF_DIP,
+    GARCH_FALLBACK_SIGMA,
+    GRID_PREFILTER_LOOSENESS,
+    MEAN_REVERSION_ANCHOR_PCT_BELOW_SPOT,
+    PASS2_CLOSED_FORM_BRACKET_PCT,
+    SENSITIVITY_SCENARIOS,
+    SPREAD_PER_SHARE_ROUND_TRIP,
     TREND_FILTER_MOM_30D_THRESHOLD,
     DEFAULT_HORIZON_DAYS,
     DEFAULT_LOOKBACK_DAYS,
@@ -299,7 +309,7 @@ def scan_dip_rally_grid(
     paths,
     conviction_dip,
     conviction_rally_cond,
-    spread_per_share_round_trip=2.0,
+    spread_per_share_round_trip=None,
     vol_schedule=None,
 ):
     """Scan (dip × rally) grid with Brownian bridge correction.
@@ -310,6 +320,8 @@ def scan_dip_rally_grid(
     a percent of dip-entry price. The trader sizes externally; engine is
     a recommendation tool, not a position-sizer.
     """
+    if spread_per_share_round_trip is None:
+        spread_per_share_round_trip = SPREAD_PER_SHARE_ROUND_TRIP
     n_paths, n_days = paths.shape
     dip_min = S0 * (1.0 - DIP_GRID_MAX_DEPTH_PCT)
     dip_max = S0 * 0.99
@@ -339,9 +351,9 @@ def scan_dip_rally_grid(
             p_dip = result["p_dip_touched_marginal"]
             p_rally_cond = result["p_rally_given_dip_conditional"]
 
-            if p_dip < conviction_dip - 0.08:
+            if p_dip < conviction_dip - GRID_PREFILTER_LOOSENESS:
                 continue
-            if p_rally_cond < conviction_rally_cond - 0.08:
+            if p_rally_cond < conviction_rally_cond - GRID_PREFILTER_LOOSENESS:
                 continue
 
             gain_per_share = float(rally) - float(dip) - spread_per_share_round_trip
@@ -392,17 +404,25 @@ def scan_dip_rally_grid(
 def compute_sensitivity_table(
     S0, base_sigma, base_mu, horizon_days,
     dip_price, rally_price,
-    spread_per_share_round_trip,
-    catalyst_shocks, vol_schedule_base=None, n_paths_sensitivity=10_000,
+    spread_per_share_round_trip=None,
+    catalyst_shocks=None, vol_schedule_base=None, n_paths_sensitivity=10_000,
 ):
-    """Small MCs with shifted (drift, sigma) for each scenario."""
+    """Small MCs with shifted (drift, sigma) for each scenario.
+
+    Scenario list sourced from config sensitivity_scenarios (sacred #17,
+    D-W2-7). Researchers can add/remove/re-parameterize rows via YAML
+    without code edits. Per-catalyst stress shocks from AI continue to
+    append after these baseline scenarios.
+    """
+    if spread_per_share_round_trip is None:
+        spread_per_share_round_trip = SPREAD_PER_SHARE_ROUND_TRIP
+    if catalyst_shocks is None:
+        catalyst_shocks = []
     scenarios = [
-        ("Baseline (current)",            base_mu,         base_sigma),
-        ("Drift -15pp",                   base_mu - 0.15,  base_sigma),
-        ("Drift +15pp",                   base_mu + 0.15,  base_sigma),
-        ("σ -20%",                        base_mu,         base_sigma * 0.80),
-        ("σ +20%",                        base_mu,         base_sigma * 1.20),
-        ("Hostile (Δ-15, σ+20)",          base_mu - 0.15,  base_sigma * 1.20),
+        (s["label"],
+         base_mu + s["drift_offset"],
+         base_sigma * s["sigma_multiplier"])
+        for s in SENSITIVITY_SCENARIOS
     ]
     for shock in catalyst_shocks[:3]:
         try:
@@ -535,7 +555,7 @@ def load_prior_posterior(history_path):
             return None
         return {
             "mu": float(mu_raw),
-            "std": float(last.get("drift_posterior_std") or 0.15),
+            "std": float(last.get("drift_posterior_std") or BAYESIAN_DEFAULT_PRIOR_STD),
             "date": last_date_str,
         }
     except Exception:
@@ -723,7 +743,7 @@ def run_pipeline(args) -> int:
     if garch["fit_ok"] and garch["forecast_variance"] > 0:
         garch_sigma = float(np.sqrt(garch["forecast_variance"] * 252))
     else:
-        garch_sigma = float(returns.tail(90).std() * np.sqrt(252)) if len(returns) >= 90 else 0.30
+        garch_sigma = float(returns.tail(90).std() * np.sqrt(252)) if len(returns) >= 90 else GARCH_FALLBACK_SIGMA
     alpha_plus_beta = float(garch["alpha"] + garch["beta"])
 
     realized_vol_dict = compute_realized_vol(returns, windows=(30, 60, 90))
@@ -760,7 +780,7 @@ def run_pipeline(args) -> int:
 
     # --- 3. Drift base + 8 signals ---
     print("Computing 8 base drift signals...")
-    DRIFT_CAP = 1.0
+    # DRIFT_CAP imported from config (sacred #17 — D-W2-5).
     mu_hist = float(returns.mean() * 252)
     mu_capped = max(-DRIFT_CAP, min(DRIFT_CAP, mu_hist))
     enr = enrichment_drift(rsi, mom_5d)
@@ -903,14 +923,19 @@ def run_pipeline(args) -> int:
         T_years = horizon_days / 252.0
         prelim_mu_for_closed = float(pass1.drift_estimate)
         try:
-            p_up_10 = closed_touch_up(spot, spot * 1.10, T_years, prelim_mu_for_closed, blended_sigma)
-            p_down_10 = closed_touch_down(spot, spot * 0.90, T_years, prelim_mu_for_closed, blended_sigma)
+            bracket = PASS2_CLOSED_FORM_BRACKET_PCT
+            p_up_10 = closed_touch_up(spot, spot * (1.0 + bracket), T_years, prelim_mu_for_closed, blended_sigma)
+            p_down_10 = closed_touch_down(spot, spot * (1.0 - bracket), T_years, prelim_mu_for_closed, blended_sigma)
             mc_marginal_summary = {
-                "p_up_10pct": f"{p_up_10*100:.0f}%",
-                "p_down_10pct": f"{p_down_10*100:.0f}%",
+                "p_up": f"{p_up_10*100:.0f}%",
+                "p_down": f"{p_down_10*100:.0f}%",
+                "bracket_pct_str": f"{bracket*100:.0f}%",
             }
         except Exception:
-            mc_marginal_summary = {"p_up_10pct": "n/a", "p_down_10pct": "n/a"}
+            mc_marginal_summary = {
+                "p_up": "n/a", "p_down": "n/a",
+                "bracket_pct_str": f"{PASS2_CLOSED_FORM_BRACKET_PCT*100:.0f}%",
+            }
         sigma_summary = {"blended": blended_sigma, "divergence": divergence_pp}
         pass2_prompt = build_ai_pass2_prompt(
             ticker, snapshot, pass1, mc_marginal_summary, sigma_summary,
@@ -1011,15 +1036,15 @@ def run_pipeline(args) -> int:
         today_std = float(blend.get("std", 0.20))
     else:
         today_mu = mu_effective_historical + factor_bias
-        today_std = 0.25
+        today_std = BAYESIAN_DEFAULT_TODAY_STD
 
     # --- 7. Bayesian smoothing ---
     prior_v2 = load_prior_posterior(history_path)
     if prior_v2:
         prior_age_days = max(1, (datetime.now().date() -
                                   datetime.strptime(prior_v2["date"][:10], "%Y-%m-%d").date()).days)
-        prior_std_safe = max(0.05, float(prior_v2.get("std") or 0.15))
-        today_std_safe = max(0.05, float(today_std))
+        prior_std_safe = max(BAYESIAN_STD_FLOOR, float(prior_v2.get("std") or BAYESIAN_DEFAULT_PRIOR_STD))
+        today_std_safe = max(BAYESIAN_STD_FLOOR, float(today_std))
         prior_blend_v1_fmt = {"blended": prior_v2["mu"], "std": prior_std_safe}
         today_blend_v1_fmt = {"blended": today_mu, "std": today_std_safe}
         bayesian = bayesian_update(prior_blend_v1_fmt, today_blend_v1_fmt,
@@ -1035,7 +1060,7 @@ def run_pipeline(args) -> int:
 
     posterior_summary = {
         "prior_mu": prior_v2["mu"] if prior_v2 else 0.0,
-        "prior_std": prior_v2["std"] if prior_v2 else 0.15,
+        "prior_std": prior_v2["std"] if prior_v2 else BAYESIAN_DEFAULT_PRIOR_STD,
         "today_mu": today_mu, "today_std": today_std,
         "post_mu": post_mu, "post_std": post_std,
         "prior_weight": prior_weight,
@@ -1075,7 +1100,7 @@ def run_pipeline(args) -> int:
         n_paths=DEFAULT_MC_PATHS,
         vol_schedule=vol_schedule,
         mean_reversion_strength=args.mean_reversion,
-        mean_reversion_anchor=spot * 0.95 if args.mean_reversion > 0 else None,
+        mean_reversion_anchor=spot * (1.0 - MEAN_REVERSION_ANCHOR_PCT_BELOW_SPOT) if args.mean_reversion > 0 else None,
     )
 
     # --- 11. Scan grid ---

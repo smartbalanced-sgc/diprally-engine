@@ -582,12 +582,16 @@ def bayesian_update(prior_blend, today_blend, prior_age_days=1):
                 "prior_weight": 0.0, "obs_weight": 1.0,
                 "note": "no prior available — using today's blend"}
 
+    from src.config import (
+        BAYESIAN_DEFAULT_PRIOR_STD,
+        BAYESIAN_PRIOR_AGE_INFLATION_PER_DAY,
+    )
     prior_mu = prior_blend["blended"]
-    prior_std = prior_blend.get("std", 0.15)
+    prior_std = prior_blend.get("std", BAYESIAN_DEFAULT_PRIOR_STD)
     obs_mu = today_blend["blended"]
     obs_std = today_blend["std"]
 
-    inflation = 1.0 + 0.2 * max(0, prior_age_days - 1)
+    inflation = 1.0 + BAYESIAN_PRIOR_AGE_INFLATION_PER_DAY * max(0, prior_age_days - 1)
     prior_var = (prior_std * inflation) ** 2
     obs_var = obs_std ** 2
 

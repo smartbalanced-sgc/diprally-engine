@@ -169,8 +169,8 @@ PASS 1 PRODUCED:
 INDEPENDENT MATH LAYER SAYS:
 - σ blended (5-anchor): {sigma_triangulation_summary['blended']:.1%}
 - σ divergence: {sigma_triangulation_summary['divergence']:.1f}pp ({'tight' if sigma_triangulation_summary['divergence'] < 5 else 'wide'})
-- Closed-form P(touch +10% from spot in horizon): {mc_marginal_summary.get('p_up_10pct', 'n/a')}
-- Closed-form P(touch -10% from spot in horizon): {mc_marginal_summary.get('p_down_10pct', 'n/a')}
+- Closed-form P(touch +{mc_marginal_summary.get('bracket_pct_str', '10%')} from spot in horizon): {mc_marginal_summary.get('p_up', 'n/a')}
+- Closed-form P(touch -{mc_marginal_summary.get('bracket_pct_str', '10%')} from spot in horizon): {mc_marginal_summary.get('p_down', 'n/a')}
 - Prior posterior drift (yesterday): {prior_str}
 
 YOUR JOB: critique Pass 1 across ALL its outputs, not just drift. Sacred
