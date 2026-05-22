@@ -54,6 +54,14 @@ class AIModelsConfig(_StrictModel):
     haiku: str
 
 
+class AIBrokerConfig(_StrictModel):
+    """W4 PR #29: broker ambiguity gates. INDEPENDENT of the sacred
+    T2+ pre-EV / conviction gates — both must pass for a ticker to be
+    eligible for that tier."""
+    ai_min_ambiguity: float = Field(ge=0.0, le=1.0)
+    t3_min_ambiguity: float = Field(ge=0.0, le=1.0)
+
+
 class AITierConfig(_StrictModel):
     """W4 PR #27: one row in the AI tier ladder. pass1/pass2/stress
     model fields are keys into AIModelsConfig (opus/sonnet/haiku) or
@@ -340,6 +348,7 @@ class DiprallyConfig(_StrictModel):
     ai_models: AIModelsConfig
     ai_tiers: dict[str, AITierConfig]
     ai_daily_budget_cap_usd: float = Field(gt=0.0)
+    ai_broker: AIBrokerConfig
     blend_weights_v1: dict[str, float]
     blend_weights_v2: dict[str, float]
     confidence_to_se: dict[str, float]
@@ -425,6 +434,13 @@ def _load_config(path: Path = CONFIG_PATH) -> DiprallyConfig:
     t0 = config.ai_tiers["T0"]
     if t0.pass1_model is not None or t0.pass2_model is not None or t0.stress_model is not None:
         raise ValueError("ai_tiers.T0 must have all model fields null (math-only tier)")
+    # W4 PR #29: t3 threshold strictly higher than ai_min (T3 must require
+    # MORE uncertainty than the bare minimum to spend ANY AI tokens).
+    if config.ai_broker.t3_min_ambiguity <= config.ai_broker.ai_min_ambiguity:
+        raise ValueError(
+            f"ai_broker.t3_min_ambiguity ({config.ai_broker.t3_min_ambiguity}) "
+            f"must be > ai_min_ambiguity ({config.ai_broker.ai_min_ambiguity})"
+        )
     return config
 
 
@@ -478,6 +494,8 @@ def _rebind_module_constants() -> None:
     # W4 PR #27: AI tier ladder + daily budget cap.
     g["AI_TIERS"] = dict(_CONFIG.ai_tiers)
     g["AI_DAILY_BUDGET_CAP_USD"] = _CONFIG.ai_daily_budget_cap_usd
+    # W4 PR #29: broker ambiguity gates.
+    g["AI_BROKER"] = _CONFIG.ai_broker
 
     # Pricing dispatch tuple
     g["_AI_PRICING"] = (

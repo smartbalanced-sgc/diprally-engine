@@ -90,6 +90,20 @@ ai_tiers:
 # beyond this even if every ticker has high ambiguity.
 ai_daily_budget_cap_usd: 2.00
 
+# Budget broker (W4 PR #29). Ambiguity gates for AI spend.
+# Sacred constraint: T2+ also requires pre-AI conviction met AND pre-AI
+# net EV positive — those are gates on the ticker's math state, not on
+# ambiguity. The two thresholds below gate AI eligibility on the
+# uncertainty signal independently of qualification:
+#   ambig < ai_min_ambiguity              → T0 (math decisive, AI wasted)
+#   ai_min ≤ ambig < t3_min, qualified    → T2
+#   ai_min ≤ ambig < t3_min, NOT qualified→ T1 (cheap diagnostic)
+#   ambig ≥ t3_min, qualified             → T3
+#   ambig ≥ t3_min, NOT qualified         → T1 (T1 ceiling without qual)
+ai_broker:
+  ai_min_ambiguity: 0.20   # below this, any AI spend is wasteful
+  t3_min_ambiguity: 0.50   # T3 (~$0.30) reserved for high-ambiguity setups
+
 # -----------------------------------------------------------
 # Blend weights. Sum need not equal 1.0 — blend_with_uncertainty normalizes.
 # -----------------------------------------------------------
