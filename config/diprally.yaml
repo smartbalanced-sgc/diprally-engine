@@ -197,6 +197,34 @@ trend_filter:
   mom_30d_threshold: -0.25
 
 # -----------------------------------------------------------
+# Macro regime detection (data_fetch.fetch_macro_indicators).
+# Sourced from VIX level + SPY-vs-MA50 trend.
+# D-W2-8: lifted from inline literals in data_fetch.py.
+# -----------------------------------------------------------
+macro_regime:
+  vix_risk_off_threshold: 25.0      # VIX above → risk_off
+  vix_risk_on_threshold: 15.0       # VIX below + SPY > spy_risk_on → risk_on
+  spy_risk_off_threshold: -0.03     # SPY/MA50 below → risk_off
+  spy_risk_on_threshold: 0.02       # SPY/MA50 above + VIX < vix_risk_on → risk_on
+  vix_default_fallback: 18.0        # used when FMP quote endpoint returns nothing
+
+# -----------------------------------------------------------
+# Options IV liquidity gate (data_fetch.fetch_options_iv).
+# D-W2-8: lifted from inline literals.
+# -----------------------------------------------------------
+options_iv:
+  liquidity_max_bid_ask_pct: 0.10   # avg bid-ask spread above this → not liquid
+  default_target_dte_days: 60       # caller usually overrides with horizon_days
+  dte_window_min: 7                 # discard near-expiration noise
+  dte_window_max_multiplier: 2.0    # max DTE = target × this
+
+# -----------------------------------------------------------
+# Sector performance lookback (data_fetch.fetch_sector_perf).
+# -----------------------------------------------------------
+sector_perf:
+  default_lookback_days: 30
+
+# -----------------------------------------------------------
 # Phantom-signal std accounting (W1).
 # When AI-derived signals (ai, catalyst_proximity, narrative) drop with
 # NONE_FOUND status, their nominal weight contributes to within_var via
