@@ -159,6 +159,11 @@ def format_report(
     lines.append(f"  Today's blend:              mu={posterior.get('today_mu', 0):+.1%}/yr, std={posterior.get('today_std', 0.20)*100:.1f}pp")
     lines.append(f"  Posterior (used in MC):     mu={posterior.get('post_mu', 0):+.1%}/yr, std={posterior.get('post_std', 0.10)*100:.1f}pp")
     lines.append(f"  Prior weight: {posterior.get('prior_weight', 0):.0%}, today weight: {posterior.get('today_weight', 0):.0%}")
+    phantom = posterior.get("phantom_signals") or []
+    if phantom:
+        inflation_pp = posterior.get("phantom_std_inflation", 0.0) * 100
+        lines.append(f"  ⚠ AI signals absent ({', '.join(phantom)}): today_std inflated +{inflation_pp:.2f}pp")
+        lines.append(f"    (phantom-signal accounting — forward-looking synthesis missing → wider band)")
 
     # SENSITIVITY TABLE
     if sensitivity and best:

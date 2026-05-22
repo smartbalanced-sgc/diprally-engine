@@ -427,26 +427,63 @@ def vol_regime_advisory(sigma):
 # Blend + Bayesian update (v1)
 # =============================================================================
 
+# Signals whose drift comes from the AI layer. When ANY of these is dropped
+# (source_quality == NONE_FOUND), the blend loses forward-looking synthesis
+# capacity that the math signals can't substitute. The std must inflate to
+# reflect that — see PHANTOM_SIGNAL_SE below.
+_AI_DERIVED_SIGNAL_NAMES = ("ai", "catalyst_proximity", "narrative")
+
+# Standard error attributed to a missing AI-derived signal for purposes of
+# within_var inflation. 0.20 = LOW-confidence SE. The phantom signal's
+# weight (original weight from the table, e.g. 0.25 for `ai`) and this SE
+# combine in quadrature with the active signals' contributions. Result:
+# ~+5.7pp added to blend std when all three AI signals are missing — the
+# correct expression of "we are less certain when forward-looking synthesis
+# is unavailable" rather than the previous behavior where dropping AI made
+# the std artificially TIGHTER (because AI's between-signal disagreement
+# also disappeared from between_var).
+PHANTOM_SIGNAL_SE = 0.20
+
+
 def blend_with_uncertainty(signals, weights_dict=None):
     """Blend with confidence intervals via signal-weighted variance.
 
-    Quality gates: NONE_FOUND → drop; SPECULATIVE+single-source → halve;
-    LOW confidence → halve.
+    Quality gates:
+      - NONE_FOUND → drop from the active set.
+      - SPECULATIVE + single source → halve weight.
+      - LOW confidence → halve weight.
+
+    Phantom-signal std accounting:
+      AI-derived signals (ai, catalyst_proximity, narrative) that drop with
+      NONE_FOUND status are not silently absorbed by the proportional
+      renormalization of the remaining signals. Their original weights
+      contribute to within_var with a LOW-conf SE, inflating the posterior
+      std. This corrects the W0 bug where the blend reported TIGHTER
+      confidence with LESS information — the most-disagreeing signal (AI
+      typically diverges from math consensus) disappearing from between_var
+      compounded the error. Now: dropping AI widens the band ~5.7pp in std,
+      Bayesian smoothing then weighs the prior more heavily.
     """
     if weights_dict is None:
         weights_dict = BLEND_WEIGHTS
 
     effective = {}
+    phantom_weights = {}  # AI-derived signals that got dropped → contribute to within_var
     for name, info in signals.items():
+        original_w = weights_dict.get(name, 0.0)
         if info.get("drift") is None:
             effective[name] = 0.0
+            if name in _AI_DERIVED_SIGNAL_NAMES and original_w > 0:
+                phantom_weights[name] = original_w
             continue
-        w = weights_dict.get(name, 0.0)
+        w = original_w
         sq = info.get("source_quality", "REPUTABLE")
         sc = int(info.get("sources_count", 0))
         conf = info.get("confidence", "MEDIUM")
         if sq == "NONE_FOUND":
             w = 0.0
+            if name in _AI_DERIVED_SIGNAL_NAMES and original_w > 0:
+                phantom_weights[name] = original_w
         elif sq == "SPECULATIVE" and sc < 2:
             w *= 0.5
         if conf == "LOW":
@@ -458,7 +495,9 @@ def blend_with_uncertainty(signals, weights_dict=None):
         return {"blended": None, "std": None,
                 "lo68": None, "hi68": None, "lo95": None, "hi95": None,
                 "weights": effective, "fallback": True,
-                "dispersion_pp": 0.0, "n_active": 0}
+                "dispersion_pp": 0.0, "n_active": 0,
+                "phantom_signals": list(phantom_weights.keys()),
+                "phantom_std_inflation": 0.0}
 
     norm = {n: w/total for n, w in effective.items()}
 
@@ -474,8 +513,17 @@ def blend_with_uncertainty(signals, weights_dict=None):
         within_var += (norm[n] ** 2) * (se ** 2)
         between_var += norm[n] * (signals[n]["drift"] - blended) ** 2
 
-    total_var = within_var + between_var
+    # Phantom-signal within_var inflation. Each missing AI-derived signal
+    # contributes (original_weight)² × PHANTOM_SIGNAL_SE² as if it were a
+    # LOW-conf signal sitting at the blended drift (zero between-contribution,
+    # nonzero within-contribution).
+    phantom_within = sum(
+        (w ** 2) * (PHANTOM_SIGNAL_SE ** 2)
+        for w in phantom_weights.values()
+    )
+    total_var = within_var + between_var + phantom_within
     std = total_var ** 0.5
+    phantom_std_inflation = (total_var ** 0.5) - ((within_var + between_var) ** 0.5)
 
     active_drifts = [signals[n]["drift"] for n in signals
                      if norm[n] > 0 and signals[n]["drift"] is not None]
@@ -492,6 +540,8 @@ def blend_with_uncertainty(signals, weights_dict=None):
         "fallback": False,
         "dispersion_pp": float(dispersion),
         "n_active": sum(1 for w in effective.values() if w > 0),
+        "phantom_signals": list(phantom_weights.keys()),
+        "phantom_std_inflation": float(phantom_std_inflation),
     }
 
 

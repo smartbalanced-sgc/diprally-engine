@@ -897,6 +897,8 @@ def run_pipeline(args) -> int:
         "today_mu": today_mu, "today_std": today_std,
         "post_mu": post_mu, "post_std": post_std,
         "prior_weight": prior_weight,
+        "phantom_signals": blend.get("phantom_signals", []) if blend else [],
+        "phantom_std_inflation": blend.get("phantom_std_inflation", 0.0) if blend else 0.0,
         "today_weight": 1 - prior_weight,
     }
 
