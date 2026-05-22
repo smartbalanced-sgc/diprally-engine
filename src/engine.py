@@ -47,17 +47,14 @@ from src.config import (
     MEAN_REVERSION_ANCHOR_PCT_BELOW_SPOT,
     PASS2_CLOSED_FORM_BRACKET_PCT,
     SENSITIVITY_SCENARIOS,
+    SIGMA_CLASSES,
     SPREAD_PER_SHARE_ROUND_TRIP,
     TREND_FILTER_MOM_30D_THRESHOLD,
     DEFAULT_HORIZON_DAYS,
     DEFAULT_LOOKBACK_DAYS,
     DEFAULT_MC_PATHS,
-    DIP_GRID_MAX_DEPTH_PCT,
-    DIP_GRID_STEP,
     MODEL_OPUS,
     MODEL_SONNET,
-    RALLY_GRID_MAX_REACH_PCT,
-    RALLY_GRID_STEP,
 )
 from src.data_fetch import (
     FetchError,
@@ -314,12 +311,17 @@ def scan_dip_rally_grid(
     paths,
     conviction_dip,
     conviction_rally_cond,
+    sigma_class,
     spread_per_share_round_trip=None,
     vol_schedule=None,
 ):
     """Scan (dip × rally) grid with Brownian bridge correction.
 
     Returns (best, candidates, met_threshold_strict).
+
+    W3 PR #22 (D-W3-1): grid step + depth + reach come from the
+    per-σ-class table in config/diprally.yaml. Step is % of spot, so
+    the engine is price-agnostic across the universe.
 
     Sacred decision #6: no capital concept. EV is reported per-share + as
     a percent of dip-entry price. The trader sizes externally; engine is
@@ -328,13 +330,16 @@ def scan_dip_rally_grid(
     if spread_per_share_round_trip is None:
         spread_per_share_round_trip = SPREAD_PER_SHARE_ROUND_TRIP
     n_paths, n_days = paths.shape
-    dip_min = S0 * (1.0 - DIP_GRID_MAX_DEPTH_PCT)
+    class_grid = SIGMA_CLASSES[sigma_class].grid
+    dip_step = S0 * class_grid.dip_step_pct
+    rally_step = S0 * class_grid.rally_step_pct
+    dip_min = S0 * (1.0 - class_grid.dip_max_depth_pct)
     dip_max = S0 * 0.99
     rally_min = S0 * 1.01
-    rally_max = S0 * (1.0 + RALLY_GRID_MAX_REACH_PCT)
+    rally_max = S0 * (1.0 + class_grid.rally_max_reach_pct)
 
-    dip_grid = np.arange(dip_min, dip_max, DIP_GRID_STEP)
-    rally_grid = np.arange(rally_min, rally_max, RALLY_GRID_STEP)
+    dip_grid = np.arange(dip_min, dip_max, dip_step)
+    rally_grid = np.arange(rally_min, rally_max, rally_step)
 
     print(f"  Precomputing bridge-corrected first-touch days for {len(dip_grid)} dip × {len(rally_grid)} rally barriers...")
     dip_first_days_all = precompute_first_touch_days(
@@ -1134,6 +1139,7 @@ def run_pipeline(args) -> int:
         paths=paths,
         conviction_dip=conviction_dip,
         conviction_rally_cond=conviction_rally_cond,
+        sigma_class=sigma_class,
         vol_schedule=vol_schedule,
     )
 

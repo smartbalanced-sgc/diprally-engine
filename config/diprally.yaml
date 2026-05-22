@@ -100,22 +100,47 @@ sigma_class_boundaries:
   extreme_min: 0.95             # σ ≥ this → EXTREME
   high_min: 0.50                # this ≤ σ < extreme_min → HIGH; below → MID
 
-# Per-class threshold table. Other class-keyed config (grid, friction,
-# panic floor, AI vol_regime mult) lands in subsequent W3 PRs — kept
-# conviction-only here to keep PR #21 focused.
+# Per-class threshold table. Other class-keyed config (friction,
+# panic floor, AI vol_regime mult) lands in subsequent W3 PRs — this
+# block carries conviction (PR #21) and grid (PR #22).
+#
+# Grid sizing (PR #22, D-W3-1): step expressed as percent-of-spot so
+# the engine is price-agnostic across the universe (LWLG $13 ↔ ASTS
+# $40+ ↔ any future ticker). Step calibrated to match v2's SNDK
+# baseline cardinality (~3000-5000 candidate pairs per class) — fine
+# enough that the EV optimum isn't a discretisation artifact. Tighter
+# step on lower-vol names where EV gradients are shallower.
+#   EXTREME: 1.0% step  → 50 dip × 60 rally = 3000 pairs
+#   HIGH:    0.75% step → 47 dip × 67 rally ≈ 3149 pairs
+#   MID:     0.5% step  → 40 dip × 60 rally = 2400 pairs
 sigma_classes:
   EXTREME:
     conviction:
       dip: 0.60
       rally_conditional: 0.75
+    grid:
+      dip_step_pct: 0.010
+      rally_step_pct: 0.010
+      dip_max_depth_pct: 0.50
+      rally_max_reach_pct: 0.60
   HIGH:
     conviction:
       dip: 0.65
       rally_conditional: 0.75
+    grid:
+      dip_step_pct: 0.0075
+      rally_step_pct: 0.0075
+      dip_max_depth_pct: 0.35
+      rally_max_reach_pct: 0.50
   MID:
     conviction:
       dip: 0.65
       rally_conditional: 0.70
+    grid:
+      dip_step_pct: 0.005
+      rally_step_pct: 0.005
+      dip_max_depth_pct: 0.20
+      rally_max_reach_pct: 0.30
 
 # -----------------------------------------------------------
 # Horizon + MC paths
@@ -127,14 +152,17 @@ horizon:
   deep_dip_autoscale_paths: 200000
 
 # -----------------------------------------------------------
-# Grid scan (dip × rally) — D-W3-1 will σ-class the step in W3
+# Grid scan (dip × rally)
+#
+# D-W3-1 CLOSED in PR #22: step + depth + reach now live per-σ-class
+# under sigma_classes.<CLASS>.grid (price-agnostic, % of spot). The
+# legacy fixed-dollar/global-pct fields below are RETIRED and no
+# longer read by the engine — kept here only as a breadcrumb during
+# W3 in case YAML is reverted; safe to delete after W3 closes.
+# panic_floor_pct moves per-class in PR #24.
 # -----------------------------------------------------------
 grid:
-  dip_step_dollars: 10.0
-  rally_step_dollars: 10.0
-  dip_max_depth_pct: 0.40       # scan down to (1 - 0.40) × spot
-  rally_max_reach_pct: 0.60     # scan up to (1 + 0.60) × spot
-  panic_floor_pct: 0.30         # path-metrics panic floor (W3 σ-class varying)
+  panic_floor_pct: 0.30         # path-metrics panic floor (W3 PR #24 → per-class)
 
 # -----------------------------------------------------------
 # AI vol_regime → vol multiplier (drives effective σ in MC)

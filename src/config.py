@@ -72,10 +72,23 @@ class SigmaClassConvictionConfig(_StrictModel):
     rally_conditional: float = Field(gt=0.0, lt=1.0)
 
 
+class SigmaClassGridConfig(_StrictModel):
+    """Per-class dip/rally grid sizing (W3, PR #22). All fields are
+    fractions of spot — price-agnostic across the universe. dip steps
+    scan DOWN from spot; rally steps scan UP. max_depth/max_reach
+    bound the grid range."""
+    dip_step_pct: float = Field(gt=0.0, lt=1.0)
+    rally_step_pct: float = Field(gt=0.0, lt=1.0)
+    dip_max_depth_pct: float = Field(gt=0.0, lt=1.0)
+    rally_max_reach_pct: float = Field(gt=0.0)
+
+
 class SigmaClassThresholdConfig(_StrictModel):
-    """One row in the sigma_classes table. Conviction-only in PR #21;
-    grid/friction/panic/ai_vol_mult slot in via subsequent W3 PRs."""
+    """One row in the sigma_classes table. PR #21 added conviction;
+    PR #22 added grid; friction/panic/ai_vol_mult slot in via
+    subsequent W3 PRs."""
     conviction: SigmaClassConvictionConfig
+    grid: SigmaClassGridConfig
 
 
 class HorizonConfig(_StrictModel):
@@ -86,10 +99,9 @@ class HorizonConfig(_StrictModel):
 
 
 class GridConfig(_StrictModel):
-    dip_step_dollars: float = Field(gt=0.0)
-    rally_step_dollars: float = Field(gt=0.0)
-    dip_max_depth_pct: float = Field(gt=0.0, lt=1.0)
-    rally_max_reach_pct: float = Field(gt=0.0)
+    """Legacy global grid container — step/depth/reach moved to
+    sigma_classes.<CLASS>.grid in W3 PR #22. panic_floor stays here
+    until PR #24 moves it per-class."""
     panic_floor_pct: float = Field(gt=0.0, lt=1.0)
 
 
@@ -456,11 +468,8 @@ def _rebind_module_constants() -> None:
     g["DEEP_DIP_AUTOSCALE_THRESHOLD"] = _CONFIG.horizon.deep_dip_autoscale_threshold
     g["DEEP_DIP_AUTOSCALE_PATHS"] = _CONFIG.horizon.deep_dip_autoscale_paths
 
-    # Grid
-    g["DIP_GRID_STEP"] = _CONFIG.grid.dip_step_dollars
-    g["RALLY_GRID_STEP"] = _CONFIG.grid.rally_step_dollars
-    g["DIP_GRID_MAX_DEPTH_PCT"] = _CONFIG.grid.dip_max_depth_pct
-    g["RALLY_GRID_MAX_REACH_PCT"] = _CONFIG.grid.rally_max_reach_pct
+    # Grid — step/depth/reach now per-σ-class (W3 PR #22); only
+    # panic_floor remains global until PR #24.
     g["PANIC_FLOOR_PCT"] = _CONFIG.grid.panic_floor_pct
 
     # AI vol regime + narrative

@@ -109,3 +109,48 @@ def test_reconcile_unknown_ticker_no_mismatch():
     effective, note = reconcile_with_registry("NOTREAL", "HIGH")
     assert effective == "HIGH"
     assert note is None
+
+
+# =============================================================================
+# W3 PR #22 — per-class grid sizing (D-W3-1)
+# =============================================================================
+
+def test_per_class_grid_fields_present():
+    """Each class entry exposes the full grid sizing block."""
+    for cls in ("EXTREME", "HIGH", "MID"):
+        g = SIGMA_CLASSES[cls].grid
+        assert 0.0 < g.dip_step_pct < 1.0
+        assert 0.0 < g.rally_step_pct < 1.0
+        assert 0.0 < g.dip_max_depth_pct < 1.0
+        assert g.rally_max_reach_pct > 0.0
+
+
+def test_per_class_depth_widens_with_volatility():
+    """EXTREME class scans deeper than HIGH, which scans deeper than MID.
+    Sanity-check the σ-class hierarchy in the YAML — if Jesse retunes,
+    the relative ordering should still hold or this test must be
+    updated alongside it."""
+    extreme = SIGMA_CLASSES["EXTREME"].grid
+    high = SIGMA_CLASSES["HIGH"].grid
+    mid = SIGMA_CLASSES["MID"].grid
+    assert extreme.dip_max_depth_pct > high.dip_max_depth_pct > mid.dip_max_depth_pct
+    assert extreme.rally_max_reach_pct > high.rally_max_reach_pct > mid.rally_max_reach_pct
+    assert extreme.dip_step_pct > high.dip_step_pct > mid.dip_step_pct
+
+
+def test_per_class_grid_yields_tractable_point_count():
+    """Step + depth combination yields a tractable candidate-pair count.
+    Lower bound (≥30 cells per dimension) ensures a fine-enough EV
+    gradient that the optimum isn't a discretisation artifact (per
+    D-W3-1 acceptance criteria). Upper bound (≤200 cells per
+    dimension) guards against accidental grid explosion."""
+    for cls in ("EXTREME", "HIGH", "MID"):
+        g = SIGMA_CLASSES[cls].grid
+        n_dip_points = int(g.dip_max_depth_pct / g.dip_step_pct)
+        n_rally_points = int(g.rally_max_reach_pct / g.rally_step_pct)
+        assert 30 <= n_dip_points <= 200, (
+            f"{cls} dip grid yields {n_dip_points} points — out of safe range"
+        )
+        assert 30 <= n_rally_points <= 200, (
+            f"{cls} rally grid yields {n_rally_points} points — out of safe range"
+        )
