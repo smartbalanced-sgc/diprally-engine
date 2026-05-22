@@ -17,6 +17,7 @@ math_utils.py and add the ticker registry.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
@@ -51,6 +52,19 @@ class AIModelsConfig(_StrictModel):
     opus: str
     sonnet: str
     haiku: str
+
+
+class AITierConfig(_StrictModel):
+    """W4 PR #27: one row in the AI tier ladder. pass1/pass2/stress
+    model fields are keys into AIModelsConfig (opus/sonnet/haiku) or
+    null to disable that pass. T0 has all three null (math only)."""
+    pass1_model: Optional[str] = None
+    pass2_model: Optional[str] = None
+    stress_model: Optional[str] = None
+    pass1_web_search_max: int = Field(ge=0)
+    pass1_max_tokens: int = Field(ge=0)
+    pass2_max_tokens: int = Field(ge=0)
+    estimated_cost_usd: float = Field(ge=0.0)
 
 
 class ConvictionConfig(_StrictModel):
@@ -324,6 +338,8 @@ class DiprallyConfig(_StrictModel):
     data: DataConfig
     ai_pricing: AIPricingConfig
     ai_models: AIModelsConfig
+    ai_tiers: dict[str, AITierConfig]
+    ai_daily_budget_cap_usd: float = Field(gt=0.0)
     blend_weights_v1: dict[str, float]
     blend_weights_v2: dict[str, float]
     confidence_to_se: dict[str, float]
@@ -387,6 +403,28 @@ def _load_config(path: Path = CONFIG_PATH) -> DiprallyConfig:
         raise ValueError(
             f"sigma_classes table missing required classes: {missing}"
         )
+
+    # W4 PR #27: AI tier ladder must include all four tiers, and every
+    # non-null model field must resolve to a known ai_models key.
+    required_tiers = {"T0", "T1", "T2", "T3"}
+    missing_tiers = required_tiers - set(config.ai_tiers.keys())
+    if missing_tiers:
+        raise ValueError(
+            f"ai_tiers missing required tiers: {missing_tiers}"
+        )
+    valid_model_keys = {"opus", "sonnet", "haiku"}
+    for tier_name, spec in config.ai_tiers.items():
+        for field_name in ("pass1_model", "pass2_model", "stress_model"):
+            v = getattr(spec, field_name)
+            if v is not None and v not in valid_model_keys:
+                raise ValueError(
+                    f"ai_tiers.{tier_name}.{field_name}={v!r} is not a known "
+                    f"ai_models key (expected one of {valid_model_keys} or null)"
+                )
+    # T0 must be pure math — all three models null.
+    t0 = config.ai_tiers["T0"]
+    if t0.pass1_model is not None or t0.pass2_model is not None or t0.stress_model is not None:
+        raise ValueError("ai_tiers.T0 must have all model fields null (math-only tier)")
     return config
 
 
@@ -436,6 +474,10 @@ def _rebind_module_constants() -> None:
     g["MODEL_OPUS"] = _CONFIG.ai_models.opus
     g["MODEL_SONNET"] = _CONFIG.ai_models.sonnet
     g["MODEL_HAIKU"] = _CONFIG.ai_models.haiku
+
+    # W4 PR #27: AI tier ladder + daily budget cap.
+    g["AI_TIERS"] = dict(_CONFIG.ai_tiers)
+    g["AI_DAILY_BUDGET_CAP_USD"] = _CONFIG.ai_daily_budget_cap_usd
 
     # Pricing dispatch tuple
     g["_AI_PRICING"] = (

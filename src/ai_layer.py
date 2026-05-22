@@ -290,8 +290,15 @@ def call_ai_pass(prompt, max_tokens=3000, pass_label="Pass",
 
 
 def call_ai_catalyst_stress_test(ticker, spot, dip_price, rally_price,
-                                  catalysts, horizon_days):
-    """Top-3 catalyst impact: directional drift if disappoints by 20%."""
+                                  catalysts, horizon_days,
+                                  stress_model=None):
+    """Top-3 catalyst impact: directional drift if disappoints by 20%.
+
+    W4 PR #27: stress_model is parameterized by the AI tier. Defaults to
+    MODEL_HAIKU for backwards compat with any code path that doesn't
+    pass it explicitly (e.g. tests)."""
+    if stress_model is None:
+        stress_model = MODEL_HAIKU
     client = _anthropic_client()
     if client is None or not catalysts:
         return [], 0.0
@@ -315,7 +322,7 @@ Return ONLY valid JSON list.
 """
     try:
         response = client.messages.create(
-            model=MODEL_HAIKU,
+            model=stress_model,
             max_tokens=1500,
             messages=[{"role": "user", "content": prompt}],
         )

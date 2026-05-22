@@ -37,7 +37,13 @@ def main():
     p.add_argument("--mean-reversion", type=float, default=0.0,
                    help="Mean-reversion strength (default 0.0 = OFF; try 0.05/0.10/0.20 for sensitivity)")
     p.add_argument("--no-ai", action="store_true",
-                   help="Skip all AI calls (math + backtest only).")
+                   help="Skip all AI calls (math + backtest only). Equivalent to --tier T0.")
+    p.add_argument("--tier", choices=("T0", "T1", "T2", "T3"), default="T3",
+                   help="AI tier (W4 PR #27). T0=math only, T1=Haiku P1 only, "
+                        "T2=Sonnet P1+P2, T3=Opus P1+Sonnet P2+Haiku stress "
+                        "(default T3 — matches pre-W4 single-ticker behavior). "
+                        "Multi-ticker batches will set this per ticker via the "
+                        "broker (W4 PR #29).")
     p.add_argument("--peers", nargs="*", default=None,
                    help="Peer tickers for the peer-RS signal (e.g. --peers MU WDC). "
                         "When omitted, defaults to config/diprally.yaml's per-ticker "

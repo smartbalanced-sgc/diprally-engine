@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 
 from src import ai_cache
+from src.ai_tiers import resolve_tier, t0
 from src.registry import resolve_peers
 from src.sigma_classifier import (
     class_conviction,
@@ -691,6 +692,14 @@ def run_pipeline(args) -> int:
     cli_conviction_dip = args.conviction_dip
     cli_conviction_rally_cond = args.conviction_rally_cond
 
+    # W4 PR #27: resolve AI tier once. --no-ai forces T0 (math only);
+    # otherwise use the explicit --tier (defaults to T3 to preserve
+    # pre-W4 single-ticker behavior). The multi-ticker broker (PR #29)
+    # will override --tier per ticker under the $2/day cap.
+    tier_name = getattr(args, "tier", None) or "T3"
+    tier = t0() if args.no_ai else resolve_tier(tier_name)
+    print(f"AI tier: {tier.name}  (estimated cost ${tier.estimated_cost_usd:.2f})")
+
     output_dir = Path(__file__).resolve().parent.parent / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
     history_path = output_dir / f"round_trip_history_{ticker}.csv"
@@ -916,7 +925,7 @@ def run_pipeline(args) -> int:
     pass1_sources_for_cache = 0
     pass2_raw_for_cache = None
 
-    cache_payload = None if args.no_ai else ai_cache.get_cached(ticker, spot)
+    cache_payload = None if not tier.runs_ai else ai_cache.get_cached(ticker, spot)
     if cache_payload:
         print(f"   AI cache HIT for {ticker} ({cache_payload.get('date')}, "
               f"spot ${cache_payload.get('spot'):.2f}) — Pass 1/2/stress replayed at $0.00")
@@ -930,18 +939,18 @@ def run_pipeline(args) -> int:
             pass2 = parse_ai_pass2(p2_raw, pass1, 0.0)
         cached_stress_results = cache_payload.get("stress_results") or []
         cached_stress_cost = 0.0
-    elif args.no_ai:
-        print("AI Pass 1 skipped (--no-ai)")
+    elif not tier.runs_ai:
+        print(f"AI Pass 1 skipped (tier {tier.name})")
     else:
-        print("AI Pass 1 (data gathering + multi-hypothesis catalysts)...")
+        print(f"AI Pass 1 (data gathering + multi-hypothesis catalysts) — model={tier.pass1_model}, web_search≤{tier.pass1_web_search_max}")
         display_signals_for_prompt = _signals_dict_to_display_list(signals_dict, BLEND_WEIGHTS_V2)
         pass1_prompt = build_ai_pass1_prompt(
             ticker, snapshot, vol_profile, horizon_days, display_signals_for_prompt,
             self_earnings_dt, peer_tickers,
         )
         pass1_raw, pass1_cost, pass1_sources = call_ai_pass(
-            pass1_prompt, max_tokens=8000, pass_label="Pass 1",
-            model=MODEL_OPUS, web_search_max_uses=5,
+            pass1_prompt, max_tokens=tier.pass1_max_tokens, pass_label="Pass 1",
+            model=tier.pass1_model, web_search_max_uses=tier.pass1_web_search_max,
         )
         pass1 = parse_ai_pass1(pass1_raw, pass1_sources, pass1_cost) if pass1_raw else None
         pass1_cost_charged = pass1_cost
@@ -954,8 +963,11 @@ def run_pipeline(args) -> int:
     if cache_hit:
         # pass2 already loaded from cache_payload above
         pass2_raw_for_cache = cache_payload.get("pass2_raw") if cache_payload else None
-    elif args.no_ai:
-        print("AI Pass 2 skipped (--no-ai)")
+    elif not tier.runs_ai:
+        print(f"AI Pass 2 skipped (tier {tier.name})")
+        pass2_raw_for_cache = None
+    elif tier.pass2_model is None:
+        print(f"AI Pass 2 skipped (tier {tier.name} has no Pass 2)")
         pass2_raw_for_cache = None
     elif pass1:
         print("AI Pass 2 (adversarial critique — revises drift / vol_regime / narrative / catalysts)...")
@@ -985,8 +997,8 @@ def run_pipeline(args) -> int:
         # sourced material + math context embedded in the prompt). Saves
         # ~$0.40-0.50 per full-AI run vs Opus+web.
         pass2_raw, pass2_cost, _ = call_ai_pass(
-            pass2_prompt, max_tokens=3000, pass_label="Pass 2",
-            model=MODEL_SONNET, web_search_max_uses=0,
+            pass2_prompt, max_tokens=tier.pass2_max_tokens, pass_label="Pass 2",
+            model=tier.pass2_model, web_search_max_uses=0,
         )
         pass2_cost_charged = pass2_cost
         pass2_raw_for_cache = pass2_raw
@@ -1205,11 +1217,12 @@ def run_pipeline(args) -> int:
         # Replay from cache. Cost = $0.00.
         catalyst_stress_results = cached_stress_results
         catalyst_stress_cost = 0.0
-    elif not args.no_ai and effective_ai and best:
-        print("AI catalyst impact stress test...")
+    elif tier.stress_model is not None and effective_ai and best:
+        print(f"AI catalyst impact stress test (model={tier.stress_model})...")
         catalyst_stress_results, catalyst_stress_cost = call_ai_catalyst_stress_test(
             ticker, spot, best.dip_price, best.rally_price,
             effective_ai.catalysts, horizon_days,
+            stress_model=tier.stress_model,
         )
 
     # Write the AI cache for this ticker-date AFTER all AI work is complete.

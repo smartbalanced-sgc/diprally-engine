@@ -42,6 +42,55 @@ ai_models:
   haiku: "claude-haiku-4-5-20251001"
 
 # -----------------------------------------------------------
+# AI tier ladder (W4 PR #27). T0/T1/T2/T3 from CLAUDE.md sacred table.
+# Each ticker is assigned a tier by the budget broker (W4 PR #29) under
+# the $2/day hard cap. The single-ticker CLI defaults to T3 (full
+# diagnostic depth); the multi-ticker orchestrator (W5) will use the
+# broker to allocate T3→T2→T1 by ambiguity, T0 floor for the rest.
+#
+# pass1_model / pass2_model / stress_model are model-ID keys into the
+# ai_models block above; null disables that pass entirely. The tier
+# cost estimate is a planning figure used by the broker — actual cost
+# is metered from API responses, not derived from this number.
+ai_tiers:
+  T0:
+    pass1_model: null            # math only, no AI
+    pass2_model: null
+    stress_model: null
+    pass1_web_search_max: 0
+    pass1_max_tokens: 0
+    pass2_max_tokens: 0
+    estimated_cost_usd: 0.0
+  T1:
+    pass1_model: haiku           # mild trigger — quick single pass
+    pass2_model: null            # no critique
+    stress_model: null
+    pass1_web_search_max: 1
+    pass1_max_tokens: 4000
+    pass2_max_tokens: 0
+    estimated_cost_usd: 0.02
+  T2:
+    pass1_model: sonnet          # default "qualified" tier
+    pass2_model: sonnet
+    stress_model: null
+    pass1_web_search_max: 3
+    pass1_max_tokens: 8000
+    pass2_max_tokens: 4000
+    estimated_cost_usd: 0.10
+  T3:
+    pass1_model: opus            # deepest — current single-ticker default
+    pass2_model: sonnet
+    stress_model: haiku
+    pass1_web_search_max: 5
+    pass1_max_tokens: 8000
+    pass2_max_tokens: 4000
+    estimated_cost_usd: 0.30
+
+# Per-day total AI cost cap. Hard ceiling — broker refuses to allocate
+# beyond this even if every ticker has high ambiguity.
+ai_daily_budget_cap_usd: 2.00
+
+# -----------------------------------------------------------
 # Blend weights. Sum need not equal 1.0 — blend_with_uncertainty normalizes.
 # -----------------------------------------------------------
 # Sacred decision #15: insider signal dropped (Form 4 lag + noise).
