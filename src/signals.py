@@ -248,7 +248,7 @@ def signal_from_short_interest(short_data):
     }
 
 
-def signal_from_peer_rs(price_df, peer_dfs, lookback_days=60):
+def signal_from_peer_rs(price_df, peer_dfs, lookback_days=60, ticker="ticker"):
     """Relative strength vs peer median return over lookback_days."""
     if price_df is None or len(price_df) < lookback_days + 1:
         return _none_signal("insufficient price history for peer RS")
@@ -263,9 +263,9 @@ def signal_from_peer_rs(price_df, peer_dfs, lookback_days=60):
         except (IndexError, ValueError):
             return None
 
-    sndk_ret = n_day_return(price_df, lookback_days)
-    if sndk_ret is None:
-        return _none_signal("could not compute SNDK return")
+    own_ret = n_day_return(price_df, lookback_days)
+    if own_ret is None:
+        return _none_signal(f"could not compute {ticker} return")
 
     peer_rets = []
     for p, df in peer_dfs.items():
@@ -276,7 +276,7 @@ def signal_from_peer_rs(price_df, peer_dfs, lookback_days=60):
         return _none_signal("no peer returns computable")
 
     peer_median = float(np.median([r for _, r in peer_rets]))
-    rs = sndk_ret - peer_median
+    rs = own_ret - peer_median
     drift = rs * 252 / lookback_days
     drift = max(-0.30, min(0.30, drift))
 
@@ -295,12 +295,12 @@ def signal_from_peer_rs(price_df, peer_dfs, lookback_days=60):
     return {
         "drift": float(drift), "confidence": conf,
         "source_quality": "PRIMARY", "sources_count": len(peer_rets),
-        "notes": (f"SNDK {sndk_ret*100:+.0f}% vs peers [{peer_list}] over {lookback_days}d "
+        "notes": (f"{ticker} {own_ret*100:+.0f}% vs peers [{peer_list}] over {lookback_days}d "
                   f"-> RS {rs*100:+.0f}%, annualised tilt {drift*100:+.0f}%"),
     }
 
 
-def signal_from_sector_decoupling(price_df, sector_perf, lookback_days=30):
+def signal_from_sector_decoupling(price_df, sector_perf, lookback_days=30, ticker="ticker"):
     """Decoupling: is ticker moving WITH or AGAINST its sector recently?"""
     if price_df is None or len(price_df) < lookback_days + 1:
         return _none_signal("insufficient price history for decoupling")
@@ -308,13 +308,13 @@ def signal_from_sector_decoupling(price_df, sector_perf, lookback_days=30):
         return _none_signal("no sector data for decoupling")
 
     try:
-        sndk_ret = float(price_df["Close"].iloc[-1] /
-                          price_df["Close"].iloc[-lookback_days - 1] - 1.0)
+        own_ret = float(price_df["Close"].iloc[-1] /
+                         price_df["Close"].iloc[-lookback_days - 1] - 1.0)
     except (IndexError, ValueError):
-        return _none_signal("SNDK return calc failed")
+        return _none_signal(f"{ticker} return calc failed")
 
     sector_ret = sector_perf["cum_return_pct"] / 100.0
-    decoup = sndk_ret - sector_ret
+    decoup = own_ret - sector_ret
     drift = decoup * 252 / lookback_days
     drift = max(-0.20, min(0.20, drift))
 
@@ -331,7 +331,7 @@ def signal_from_sector_decoupling(price_df, sector_perf, lookback_days=30):
     return {
         "drift": float(drift), "confidence": conf,
         "source_quality": "PRIMARY", "sources_count": 1,
-        "notes": (f"SNDK {sndk_ret*100:+.0f}% vs sector {sector_ret*100:+.0f}% "
+        "notes": (f"{ticker} {own_ret*100:+.0f}% vs sector {sector_ret*100:+.0f}% "
                   f"over {lookback_days}d -> decouple {decoup*100:+.0f}% {note_extra}"),
     }
 

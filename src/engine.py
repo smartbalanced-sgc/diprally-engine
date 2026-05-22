@@ -700,9 +700,9 @@ def run_pipeline(args) -> int:
         "macro": signal_from_macro(macro),
         "insider": signal_from_insider(insider, market_cap_usd=market_cap),
         "short_interest": signal_from_short_interest(short_data),
-        "peer_rs": signal_from_peer_rs(history_df, peer_dfs, lookback_days=60),
+        "peer_rs": signal_from_peer_rs(history_df, peer_dfs, lookback_days=60, ticker=ticker),
         "sector_decoupling": signal_from_sector_decoupling(history_df, sector_perf,
-                                                            lookback_days=30),
+                                                            lookback_days=30, ticker=ticker),
     }
 
     # --- 4. AI Pass 1 ---

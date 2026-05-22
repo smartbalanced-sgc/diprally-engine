@@ -42,7 +42,7 @@ def format_report(
     path_metrics=None,
 ) -> str:
     lines: list[str] = []
-    lines.append(hr(f"SANDISK SWING TRADER ({V2_VERSION}) — {snapshot.timestamp:%Y-%m-%d %H:%M}"))
+    lines.append(hr(f"DIPRALLY ENGINE ({V2_VERSION}) — {snapshot.ticker} — {snapshot.timestamp:%Y-%m-%d %H:%M}"))
     lines.append(f"  Ticker: {snapshot.ticker}")
     lines.append(f"  Spot: ${snapshot.spot:.2f}   Market cap: ${snapshot.market_cap/1e9:.1f}B")
     lines.append(f"  Sector / Industry: {snapshot.sector} / {snapshot.industry}")
@@ -317,7 +317,7 @@ def generate_html_dashboard(
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>SanDisk Swing Trader — {snapshot.timestamp:%Y-%m-%d}</title>
+<title>DipRally Engine — {snapshot.ticker} — {snapshot.timestamp:%Y-%m-%d}</title>
 <style>
   body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
          margin: 0; background: #0f1115; color: #e5e7eb; line-height: 1.5; }}
@@ -354,7 +354,7 @@ def generate_html_dashboard(
 </head>
 <body>
 <div class="container">
-  <h1>SanDisk Swing Trader</h1>
+  <h1>DipRally Engine — {snapshot.ticker}</h1>
   <div class="meta">{snapshot.ticker} @ ${snapshot.spot:.2f} · {snapshot.timestamp:%Y-%m-%d %H:%M}
     · σ {vol_profile.blended_sigma:.0%} · YTD {snapshot.ytd_return:+.0%}
     · thresholds {conviction_dip:.0%}/{conviction_rally_cond:.0%}
@@ -387,7 +387,7 @@ def generate_html_dashboard(
   {ai_block}
 
   <div class="footer">
-    SanDisk Swing Trader v2 · branch: claude/analyze-sandisk-trading-6zYxn · not for production trading without risk management
+    DipRally Engine ({V2_VERSION}) · not for production trading without risk management
   </div>
 </div>
 </body>
