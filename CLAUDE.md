@@ -34,7 +34,9 @@ days. Refuses negative-EV setups.
 - Token discipline: AI allocated by budget broker, never sprayed
 - Same-day re-runs must not corrupt CSV or double-charge AI
 - No "capital" concept — recommendation tool, user sizes externally
-- 17-ticker universe (fixed)
+- Ticker universe is CONFIG (YAML), not code. Current roster is 17 names
+  but adding/removing is a YAML edit, not a code change. Engine must
+  handle any universe size without modification.
 
 ## Sacred decisions — NEVER violate
  1. No block bootstrap
@@ -66,7 +68,7 @@ days. Refuses negative-EV setups.
     that exposes typed constants for import convenience. Changing a threshold
     must NEVER require a code edit, a PR, or a deploy.
 
-## Ticker universe (17, fixed)
+## Ticker universe (current roster — adjust via YAML)
 - **EXTREME (4)**: LWLG, MRAM, ENGN, VELO3D
 - **HIGH (5)**: ASTS, RKLB, PL, SATS, GHM
 - **MID (8)**: INTC, IPGP, LITE, MU, STX, AMAT, MOG-A, GLW
