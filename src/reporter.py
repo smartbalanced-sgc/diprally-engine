@@ -192,9 +192,25 @@ def format_report(
         rev = pass2.revision_from_prior_pass
         rev_str = f"({rev:+.1%} from Pass 1)" if rev is not None else ""
         lines.append(f"  PASS 2: drift={pass2.drift_estimate:+.1%}/yr  conf={pass2.confidence}  {rev_str}  cost=${pass2.cost_usd:.2f}")
+        # Pass 2 revisions of vol_regime / narrative / catalysts (sacred #7).
+        # Show only the deltas — concurrence is implicit.
+        if pass1:
+            if pass2.vol_regime != pass1.vol_regime:
+                lines.append(f"    vol_regime: {pass1.vol_regime} → {pass2.vol_regime}")
+            if pass2.narrative_score != pass1.narrative_score:
+                lines.append(f"    narrative: {pass1.narrative_score} → {pass2.narrative_score}")
+            p1_names = {(c.get('name') if isinstance(c, dict) else str(c)) for c in pass1.catalysts}
+            p2_names = {(c.get('name') if isinstance(c, dict) else str(c)) for c in pass2.catalysts}
+            added = p2_names - p1_names
+            dropped = p1_names - p2_names
+            if added:
+                lines.append(f"    catalysts +{len(added)}: {', '.join(list(added)[:3])}")
+            if dropped:
+                lines.append(f"    catalysts -{len(dropped)}: {', '.join(list(dropped)[:3])}")
         if pass2.key_risks:
             for risk in pass2.key_risks[:3]:
-                lines.append(f"    → {risk}")
+                if risk:
+                    lines.append(f"    → {risk}")
     else:
         lines.append("  PASS 2: failed or skipped")
 

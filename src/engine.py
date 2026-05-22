@@ -726,54 +726,15 @@ def run_pipeline(args) -> int:
         pass1 = parse_ai_pass1(pass1_raw, pass1_sources, pass1_cost) if pass1_raw else None
         pass1_cost_charged = pass1_cost
 
-    # --- 5. AI-derived signals ---
-    catalyst_mu, catalyst_conf, catalyst_rat = (0.0, "LOW", "no AI catalysts")
-    narrative_mu, narrative_conf, narrative_rat = (0.0, "LOW", "no AI narrative")
-    factor_bias, factor_rat = (0.0, "no factor analysis")
-    if pass1:
-        catalyst_mu, catalyst_conf, catalyst_rat = signal_from_catalyst_proximity(
-            pass1.catalysts, horizon_days,
-        )
-        evidence_count = sum(
-            1 for c in pass1.catalysts
-            if c.get("sources") and len(c.get("sources", [])) >= 2
-        )
-        narrative_mu, narrative_conf, narrative_rat = signal_from_structural_narrative(
-            pass1.narrative_score, evidence_count,
-        )
-        factor_bias, factor_rat = apply_bull_bear_arithmetic(pass1.bull_factors, pass1.bear_factors)
-
-    signals_dict["catalyst_proximity"] = {
-        "drift": catalyst_mu, "confidence": catalyst_conf,
-        "source_quality": "PRIMARY",
-        "sources_count": len(pass1.catalysts) if pass1 else 0,
-        "notes": catalyst_rat,
-    }
-    signals_dict["narrative"] = {
-        "drift": narrative_mu, "confidence": narrative_conf,
-        "source_quality": "PRIMARY",
-        "sources_count": 0,
-        "notes": narrative_rat,
-    }
-
-    if pass1:
-        signals_dict["ai"] = {
-            "drift": pass1.drift_estimate,
-            "confidence": pass1.confidence,
-            "source_quality": "REPUTABLE",
-            "sources_count": pass1.raw_sources_cited,
-            "notes": f"Pass 1 estimate ({pass1.raw_sources_cited} sources)",
-        }
-    else:
-        signals_dict["ai"] = _none_signal("AI Pass 1 failed")
-
-    # --- 5b. AI Pass 2 (adversarial critique) ---
+    # --- 5. AI Pass 2 (adversarial critique). Runs BEFORE the AI-derived
+    #        signals so Pass 2's revised vol_regime / narrative / catalysts
+    #        drive those signals, not Pass 1's. Sacred decision #7 in full.
     pass2 = None
     pass2_cost_charged = 0.0
     if args.no_ai:
         print("AI Pass 2 skipped (--no-ai)")
     elif pass1:
-        print("AI Pass 2 (adversarial critique — runs before final MC so Pass 2 drives the math)...")
+        print("AI Pass 2 (adversarial critique — revises drift / vol_regime / narrative / catalysts)...")
         T_years = horizon_days / 252.0
         prelim_mu_for_closed = float(pass1.drift_estimate)
         try:
@@ -790,24 +751,79 @@ def run_pipeline(args) -> int:
             ticker, snapshot, pass1, mc_marginal_summary, sigma_summary,
             None,
         )
-        # Pass 2 critique uses Sonnet 4.6 (Pass 2 is structured-output JSON
-        # critique — doesn't need Opus depth) with no web_search (relies on
-        # Pass 1's sourced material + math context already in the prompt).
-        # Saves ~$0.40-0.50 per full-AI run vs Opus+web.
+        # Pass 2 critique uses Sonnet 4.6 (structured-output JSON critique,
+        # doesn't need Opus depth) with no web_search (relies on Pass 1's
+        # sourced material + math context embedded in the prompt). Saves
+        # ~$0.40-0.50 per full-AI run vs Opus+web.
         pass2_raw, pass2_cost, _ = call_ai_pass(
             pass2_prompt, max_tokens=3000, pass_label="Pass 2",
             model=MODEL_SONNET, web_search_max_uses=0,
         )
         pass2_cost_charged = pass2_cost
         if pass2_raw:
-            pass2 = parse_ai_pass2(pass2_raw, pass1.drift_estimate, pass2_cost)
+            pass2 = parse_ai_pass2(pass2_raw, pass1, pass2_cost)
+
+    # The "Pass 2 wins" projection: every downstream consumer reads from
+    # `effective_ai`. Pass 2 if it ran and parsed; otherwise Pass 1. None
+    # in --no-ai or full AI failure.
+    effective_ai = pass2 if pass2 else pass1
+
+    # --- 5b. AI-derived signals (catalyst_proximity, narrative, factor bias)
+    #          built from Pass 2's revised values when available.
+    catalyst_mu, catalyst_conf, catalyst_rat = (0.0, "LOW", "no AI catalysts")
+    narrative_mu, narrative_conf, narrative_rat = (0.0, "LOW", "no AI narrative")
+    factor_bias, factor_rat = (0.0, "no factor analysis")
+    if effective_ai:
+        catalyst_mu, catalyst_conf, catalyst_rat = signal_from_catalyst_proximity(
+            effective_ai.catalysts, horizon_days,
+        )
+        evidence_count = sum(
+            1 for c in effective_ai.catalysts
+            if isinstance(c, dict) and c.get("sources") and len(c.get("sources", [])) >= 2
+        )
+        narrative_mu, narrative_conf, narrative_rat = signal_from_structural_narrative(
+            effective_ai.narrative_score, evidence_count,
+        )
+        # Bull/bear factor arithmetic stays sourced from Pass 1 only — Pass 2
+        # is a critique not a re-extraction. If Pass 2 disagreed it would be
+        # via revised_drift / revised_confidence, both already captured.
+        if pass1:
+            factor_bias, factor_rat = apply_bull_bear_arithmetic(
+                pass1.bull_factors, pass1.bear_factors,
+            )
+
+    signals_dict["catalyst_proximity"] = {
+        "drift": catalyst_mu, "confidence": catalyst_conf,
+        "source_quality": "PRIMARY",
+        "sources_count": len(effective_ai.catalysts) if effective_ai else 0,
+        "notes": catalyst_rat,
+    }
+    signals_dict["narrative"] = {
+        "drift": narrative_mu, "confidence": narrative_conf,
+        "source_quality": "PRIMARY",
+        "sources_count": 0,
+        "notes": narrative_rat,
+    }
+
+    if effective_ai:
+        if pass2:
             signals_dict["ai"] = {
                 "drift": pass2.drift_estimate,
                 "confidence": pass2.confidence,
                 "source_quality": "REPUTABLE",
-                "sources_count": pass1.raw_sources_cited,
+                "sources_count": pass1.raw_sources_cited if pass1 else 0,
                 "notes": f"Pass 2 revised ({pass2.revision_from_prior_pass:+.1%} vs Pass 1)",
             }
+        else:
+            signals_dict["ai"] = {
+                "drift": pass1.drift_estimate,
+                "confidence": pass1.confidence,
+                "source_quality": "REPUTABLE",
+                "sources_count": pass1.raw_sources_cited,
+                "notes": f"Pass 1 estimate ({pass1.raw_sources_cited} sources)",
+            }
+    else:
+        signals_dict["ai"] = _none_signal("AI Pass 1 failed")
 
     # --- 6. Blend ---
     print(f"Blending {len(signals_dict)} signals + bull/bear arithmetic...")
@@ -859,9 +875,10 @@ def run_pipeline(args) -> int:
         macro_event_dates=[],
     )
 
-    # --- 9. Apply AI vol_regime multiplier ---
-    if pass1:
-        vol_mult = AI_VOL_REGIME_MULTIPLIERS.get(pass1.vol_regime, 1.0)
+    # --- 9. Apply AI vol_regime multiplier (uses Pass 2's revised regime
+    #         when available — Pass 2 wins, sacred decision #7).
+    if effective_ai:
+        vol_mult = AI_VOL_REGIME_MULTIPLIERS.get(effective_ai.vol_regime, 1.0)
         effective_sigma = blended_sigma * vol_mult
     else:
         effective_sigma = blended_sigma
@@ -890,13 +907,15 @@ def run_pipeline(args) -> int:
         vol_schedule=vol_schedule,
     )
 
-    # --- 13. AI catalyst stress test ---
+    # --- 13. AI catalyst stress test — uses Pass 2's revised catalyst list
+    #          when available (effective_ai), else Pass 1's. Sacred #7.
     catalyst_stress_results = []
     catalyst_stress_cost = 0.0
-    if not args.no_ai and pass1 and best:
+    if not args.no_ai and effective_ai and best:
         print("AI catalyst impact stress test...")
         catalyst_stress_results, catalyst_stress_cost = call_ai_catalyst_stress_test(
-            ticker, spot, best.dip_price, best.rally_price, pass1.catalysts, horizon_days,
+            ticker, spot, best.dip_price, best.rally_price,
+            effective_ai.catalysts, horizon_days,
         )
 
     # --- 14. Three-method math cross-check ---
@@ -958,8 +977,8 @@ def run_pipeline(args) -> int:
         "net_expected_value": f"{best.net_expected_value:.2f}" if best else "",
         "ai_drift_pass1": f"{pass1.drift_estimate:.4f}" if pass1 else "",
         "ai_drift_pass2": f"{pass2.drift_estimate:.4f}" if pass2 else "",
-        "ai_vol_regime": pass1.vol_regime if pass1 else "",
-        "narrative_score": pass1.narrative_score if pass1 else "",
+        "ai_vol_regime": effective_ai.vol_regime if effective_ai else "",
+        "narrative_score": effective_ai.narrative_score if effective_ai else "",
         "catalyst_proximity_drift": f"{catalyst_mu:.4f}",
         "garch_alpha_plus_beta": f"{vol_profile.garch_alpha_plus_beta:.4f}",
         "horizon_days": str(horizon_days),
