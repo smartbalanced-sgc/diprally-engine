@@ -69,7 +69,15 @@ days. Refuses negative-EV setups.
 ## Ticker universe (17, fixed)
 - **EXTREME (4)**: LWLG, MRAM, ENGN, VELO3D
 - **HIGH (5)**: ASTS, RKLB, PL, SATS, GHM
-- **MID (8)**: INTC, IPGP, LITE, MU, STX, AMAT, MOG.A, GLW
+- **MID (8)**: INTC, IPGP, LITE, MU, STX, AMAT, MOG-A, GLW
+
+> **Ticker convention**: canonical form across this repo uses dashes for
+> class shares (MOG-A, BRK-B, BF-B) — the Yahoo Finance / industry-standard
+> form. **FMP empirically accepts the dash form** (verified 2026-05-22 via
+> MOG-A smoke). FMP also has MOG.A in its database but our Starter plan
+> tier returns 402 on the dot form. Conclusion: standardize on the dash
+> form, use it as-is when calling FMP. If a future provider requires a
+> different separator, the W2 registry adds per-provider translation.
 
 ## σ-class defaults
 | Class    | Conv-dip | Conv-rally | Grid dip | Grid rally | Panic floor | Friction bps RT | AI vol_mult (H/M/L) |
