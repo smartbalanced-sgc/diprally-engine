@@ -125,6 +125,15 @@ class V3ReviewCriteriaConfig(_StrictModel):
     bag_hold_rate_target: tuple[float, float]
 
 
+# Per-ticker registry entry. The universe is data, not code (sacred #17 +
+# universe-is-config). Adding/removing tickers is a YAML edit.
+class TickerConfig(_StrictModel):
+    sigma_class: str = Field(pattern=r"^(EXTREME|HIGH|MID)$")
+    sector_expected: str
+    stock_peers: list[str]
+    etf_peer: str  # "" when not configured
+
+
 class DiprallyConfig(_StrictModel):
     version: str
     data: DataConfig
@@ -147,6 +156,7 @@ class DiprallyConfig(_StrictModel):
     phantom_signal_se: float = Field(gt=0.0, le=1.0)
     ai_cache: AICacheConfig
     bag_hold_terminal_assumption: str
+    tickers: dict[str, TickerConfig]
     v3_review_criteria: V3ReviewCriteriaConfig
 
 

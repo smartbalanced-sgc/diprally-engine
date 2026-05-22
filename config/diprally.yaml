@@ -194,6 +194,116 @@ ai_cache:
 # -----------------------------------------------------------
 bag_hold_terminal_assumption: "median_terminal_dip_paths"
 
+# =============================================================================
+# Ticker universe — the working roster. ADD / REMOVE tickers by editing this
+# section (sacred decisions #17 + universe-is-config). Engine handles any
+# universe size without code modification.
+#
+# Schema per entry:
+#   sigma_class: EXTREME | HIGH | MID   (drives W3 σ-class defaults)
+#   sector_expected: free-text (sanity check against FMP profile.sector)
+#   stock_peers: list of ticker symbols — used by signal_from_peer_rs.
+#                Empty list means no comparable stock peers (use etf_peer).
+#   etf_peer: thematic ETF symbol — used as fallback when stock_peers is
+#             empty OR when stock_peers fetch fails (D-W2-14 yfinance fallback
+#             work). Empty string means no ETF fallback configured (signal
+#             gracefully degrades to _none_signal).
+#
+# Symbol convention: dashes for class shares (MOG-A, BRK-B, BF-B). Matches
+# FMP's accepted form and Yahoo Finance's industry-standard form.
+# =============================================================================
+tickers:
+  # ---- EXTREME class (σ > 100% typical; small caps, narrative-driven) ----
+  LWLG:
+    sigma_class: EXTREME
+    sector_expected: "Technology / Communication Equipment"
+    stock_peers: []            # no comparable photonics-only public names
+    etf_peer: "SOXX"           # iShares Semi ETF — closest cyclical anchor
+  MRAM:
+    sigma_class: EXTREME
+    sector_expected: "Technology / Semiconductors"
+    stock_peers: []
+    etf_peer: "SOXX"
+  ENGN:
+    sigma_class: EXTREME
+    sector_expected: "Healthcare / Biotechnology"
+    stock_peers: []
+    etf_peer: "XBI"            # SPDR S&P Biotech ETF (per CLAUDE.md hint)
+  VELO3D:
+    sigma_class: EXTREME
+    sector_expected: "Industrials / Aerospace & Defense"
+    stock_peers: []
+    etf_peer: "PPA"            # Invesco Aerospace & Defense ETF
+
+  # ---- HIGH class (σ 60-100% typical; mid-caps, momentum / space / defense) ----
+  ASTS:
+    sigma_class: HIGH
+    sector_expected: "Communication Services / Telecom"
+    stock_peers: ["RKLB", "IRDM"]
+    etf_peer: ""
+  RKLB:
+    sigma_class: HIGH
+    sector_expected: "Industrials / Aerospace & Defense"
+    stock_peers: ["ASTS", "LMT"]
+    etf_peer: ""
+  PL:
+    sigma_class: HIGH
+    sector_expected: "Technology / Software"
+    stock_peers: ["MAXR", "SPIR"]
+    etf_peer: ""
+  SATS:
+    sigma_class: HIGH
+    sector_expected: "Communication Services / Telecom"
+    stock_peers: ["IRDM", "VSAT"]
+    etf_peer: ""
+  GHM:
+    sigma_class: HIGH
+    sector_expected: "Industrials / Specialty Industrial Machinery"
+    stock_peers: ["ROP", "WTS"]
+    etf_peer: ""
+
+  # ---- MID class (σ 30-60% typical; large caps, mature) ----
+  INTC:
+    sigma_class: MID
+    sector_expected: "Technology / Semiconductors"
+    stock_peers: ["AMD", "AVGO"]
+    etf_peer: ""
+  IPGP:
+    sigma_class: MID
+    sector_expected: "Technology / Communication Equipment"
+    stock_peers: ["LITE", "COHR"]
+    etf_peer: ""
+  LITE:
+    sigma_class: MID
+    sector_expected: "Technology / Communication Equipment"
+    stock_peers: ["IPGP", "COHR"]
+    etf_peer: ""
+  MU:
+    sigma_class: MID
+    sector_expected: "Technology / Semiconductors"
+    stock_peers: ["SNDK", "WDC", "STX"]
+    etf_peer: ""
+  STX:
+    sigma_class: MID
+    sector_expected: "Technology / Computer Hardware"
+    stock_peers: ["MU", "SNDK", "WDC"]
+    etf_peer: ""
+  AMAT:
+    sigma_class: MID
+    sector_expected: "Technology / Semiconductor Equipment"
+    stock_peers: ["LRCX", "KLAC"]
+    etf_peer: ""
+  MOG-A:
+    sigma_class: MID
+    sector_expected: "Industrials / Aerospace & Defense"
+    stock_peers: ["HEI", "TDG", "CW"]
+    etf_peer: ""
+  GLW:
+    sigma_class: MID
+    sector_expected: "Technology / Communication Equipment"
+    stock_peers: ["AAOI", "CIEN"]
+    etf_peer: ""
+
 # -----------------------------------------------------------
 # v3 review criteria — LOCKED at v2 ship, executed at 30 days of runtime
 # -----------------------------------------------------------

@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 
 from src import ai_cache
+from src.registry import resolve_peers
 from src.ai_layer import (
     build_ai_pass1_prompt,
     build_ai_pass2_prompt,
@@ -715,15 +716,15 @@ def run_pipeline(args) -> int:
     insider = fetch_insider_activity(ticker, api_key)
     short_data = fetch_short_interest(ticker, api_key)
 
-    # W0 TEMP — peer list defaults to user-supplied --peers; SNDK falls back to
-    # ["MU", "WDC"] to preserve W0 byte-for-byte output. Removed in W2 when the
-    # ticker registry supplies peers per ticker.
+    # Peer resolution via registry (D-W2-1 closed). CLI --peers is an override;
+    # absent --peers falls back to config/diprally.yaml's per-ticker entry
+    # (stock_peers preferred, etf_peer if no stocks, [] if neither configured).
+    # Tickers not in the universe get [] and the peer_rs signal degrades to
+    # _none_signal cleanly — no SNDK-specific hardcode anywhere (sacred #4).
     if args.peers:
         peer_tickers = list(args.peers)
-    elif ticker == "SNDK":
-        peer_tickers = ["MU", "WDC"]
     else:
-        peer_tickers = []
+        peer_tickers = resolve_peers(ticker)
     # CRITICAL: peer history needs DEFAULT_LOOKBACK_DAYS calendar days (730), NOT 60.
     # signal_from_peer_rs computes a 60-trading-day return which needs 61 trading
     # bars (~85 calendar days). 60 calendar days = ~43 trading bars — insufficient.
