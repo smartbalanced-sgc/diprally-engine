@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from src.config import (
+    ANALYST_EXTREME_DRIFT_THRESHOLD,
     BLEND_WEIGHTS,
     CATALYST_Z_THRESHOLD,
     CONFIDENCE_TO_SE,
@@ -20,6 +21,27 @@ from src.config import (
     FACTOR_WEIGHTS,
     NARRATIVE_DRIFT_ADJUSTMENT,
 )
+
+
+# Confidence one-step downgrade ladder for outlier-suppression logic.
+_CONF_DOWNGRADE = {"HIGH": "MEDIUM", "MEDIUM": "LOW", "LOW": "LOW"}
+
+
+def _gate_extreme_drift(drift: float, conf: str, notes: str) -> tuple[str, str]:
+    """Sanity gate for signal drifts. When |drift| exceeds the extreme-outlier
+    threshold (analyst, etc.), step the confidence down one notch and append
+    a verification flag to the notes. Returns (new_conf, new_notes).
+
+    Surfaced by MOG-A FMP analyst signal returning -58.9% HIGH conf — possibly
+    real, possibly stale/wrong-ticker data. Either way, no signal that extreme
+    should drive a blend at full HIGH-conf weight without verification.
+    """
+    if abs(drift) > ANALYST_EXTREME_DRIFT_THRESHOLD:
+        new_conf = _CONF_DOWNGRADE[conf]
+        flag = (f" [EXTREME OUTLIER — |implied drift| > {ANALYST_EXTREME_DRIFT_THRESHOLD*100:.0f}%/yr; "
+                f"conf downgraded {conf}→{new_conf}; manual verification recommended]")
+        return new_conf, notes + flag
+    return conf, notes
 
 
 # =============================================================================
@@ -74,12 +96,14 @@ def signal_from_analyst_targets(targets, S0, price_history_df=None,
                                           f"in 60d, only {window} avg available)")
                 except (ValueError, TypeError, IndexError):
                     pass
+            base_notes = (f"{window} avg ${target:.0f} (n={n_analysts}), "
+                          f"vs spot ${S0:.0f}, drift implied {drift*100:+.1f}%"
+                          f"{staleness_note}")
+            base_conf, base_notes = _gate_extreme_drift(drift, base_conf, base_notes)
             return {
                 "drift": float(drift), "confidence": base_conf,
                 "source_quality": "REPUTABLE", "sources_count": int(n_analysts),
-                "notes": (f"{window} avg ${target:.0f} (n={n_analysts}), "
-                          f"vs spot ${S0:.0f}, drift implied {drift*100:+.1f}%"
-                          f"{staleness_note}"),
+                "notes": base_notes,
             }
 
     if not targets or not targets.get("target_mean") or S0 <= 0:
@@ -111,11 +135,13 @@ def signal_from_analyst_targets(targets, S0, price_history_df=None,
             except (ValueError, TypeError, IndexError):
                 pass
 
+        notes = (f"consensus mean ${target:.0f}, range ${low:.0f}-${high:.0f}"
+                 f"{staleness_note}")
+        conf, notes = _gate_extreme_drift(drift, conf, notes)
         return {
             "drift": float(drift), "confidence": conf,
             "source_quality": "REPUTABLE", "sources_count": 5,
-            "notes": (f"consensus mean ${target:.0f}, range ${low:.0f}-${high:.0f}"
-                      f"{staleness_note}"),
+            "notes": notes,
         }
     except (ValueError, TypeError):
         return _none_signal("analyst target parse error")

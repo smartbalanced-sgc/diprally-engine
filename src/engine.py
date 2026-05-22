@@ -42,6 +42,7 @@ from src.config import (
     RALLY_GRID_STEP,
 )
 from src.data_fetch import (
+    FetchError,
     fetch_analyst_summary,
     fetch_analyst_targets,
     fetch_company_profile,
@@ -134,6 +135,8 @@ class DriftSignal:
     source_quality: str
     weight: float
     rationale: str
+    is_absent: bool = False  # NONE_FOUND / None-drift signal — reporter prints "n/a"
+    effective_weight: float = 0.0  # post LOW-halve, post normalization (see D-W2-12)
 
 
 @dataclass
@@ -174,8 +177,19 @@ class JointConditionalResult:
 # Signal dict → display list adapter
 # =============================================================================
 
-def _signals_dict_to_display_list(signals_dict, weights):
-    """Convert v1 signal dict format → list[DriftSignal] for display."""
+def _signals_dict_to_display_list(signals_dict, weights, blend=None):
+    """Convert v1 signal dict format → list[DriftSignal] for display.
+
+    is_absent=True when source_quality == NONE_FOUND OR drift is None.
+    Reporter prints "n/a" instead of "+0.0%" for absent signals — this
+    prevents the W0/W1 silent-failure pattern where a broken signal looked
+    like a legitimate zero-drift signal.
+
+    effective_weight computed from the live blend's `weights` field (after
+    LOW-halving, NONE_FOUND-zeroing) renormalized to sum-to-1.0 across the
+    surviving set. Surfaces what's ACTUALLY driving the blend point estimate,
+    not the nominal design weight (D-W2-12).
+    """
     pretty_names = {
         "historical": "Historical (GARCH + enrichment)",
         "analyst": "Analyst (price-target-summary)",
@@ -189,9 +203,19 @@ def _signals_dict_to_display_list(signals_dict, weights):
         "catalyst_proximity": "Catalyst proximity (AI-generated)",
         "narrative": "Structural narrative score",
     }
+
+    # Compute effective normalized weights from the live blend, if provided.
+    effective_weights: dict[str, float] = {}
+    if blend and isinstance(blend.get("weights"), dict):
+        post_gate = blend["weights"]  # already has LOW-halve / NONE_FOUND-zero applied
+        total = sum(post_gate.values()) or 1.0
+        effective_weights = {n: w / total for n, w in post_gate.items()}
+
     out: list[DriftSignal] = []
     for name, info in signals_dict.items():
         drift = info.get("drift")
+        source_quality = str(info.get("source_quality", "PRIMARY"))
+        is_absent = (drift is None) or (source_quality == "NONE_FOUND")
         if drift is None:
             drift = 0.0
         display_name = pretty_names.get(name, name)
@@ -207,9 +231,11 @@ def _signals_dict_to_display_list(signals_dict, weights):
             name=display_name,
             mu_annual=float(drift),
             confidence=str(info.get("confidence", "LOW")),
-            source_quality=str(info.get("source_quality", "PRIMARY")),
+            source_quality=source_quality,
             weight=float(weights.get(name, 0.0)),
             rationale=str(info.get("notes", "")),
+            is_absent=is_absent,
+            effective_weight=float(effective_weights.get(name, 0.0)),
         ))
     return out
 
@@ -564,9 +590,15 @@ def run_pipeline(args) -> int:
 
     # --- 1. Fetch data ---
     print(f"Fetching data for {ticker}...")
-    history_df = fetch_history(ticker, api_key, DEFAULT_LOOKBACK_DAYS)
+    try:
+        history_df = fetch_history(ticker, api_key, DEFAULT_LOOKBACK_DAYS)
+    except FetchError as e:
+        # Graceful exit instead of Python stack trace. W5 batch orchestrator
+        # will catch the same FetchError to skip the ticker and continue.
+        print(f"ERROR: {e}")
+        return 1
     if history_df is None or history_df.empty:
-        print(f"ERROR: failed to fetch history for {ticker}")
+        print(f"ERROR: empty history returned for {ticker}")
         return 1
     spot = float(history_df["Close"].iloc[-1])
     # Debug spot override (W1) — lets the cache-invalidation smoke test
@@ -691,7 +723,17 @@ def run_pipeline(args) -> int:
         peer_tickers = ["MU", "WDC"]
     else:
         peer_tickers = []
-    peer_dfs = fetch_peer_history(peer_tickers, api_key, lookback_days=60) if peer_tickers else {}
+    # CRITICAL: peer history needs DEFAULT_LOOKBACK_DAYS calendar days (730), NOT 60.
+    # signal_from_peer_rs computes a 60-trading-day return which needs 61 trading
+    # bars (~85 calendar days). 60 calendar days = ~43 trading bars — insufficient.
+    # Previously this silently failed: n_day_return returned None on every peer
+    # fetch, signal_from_peer_rs returned _none_signal, and the display masked
+    # the absence as "+0.0% LOW". Result: 10% of the blend weight was inert from
+    # W0 through W1 across every smoke run. Aligning peer lookback with own-ticker
+    # lookback eliminates the implicit calendar-vs-trading-days assumption and
+    # future-proofs against signals that want longer lookback windows.
+    peer_dfs = fetch_peer_history(peer_tickers, api_key,
+                                    lookback_days=DEFAULT_LOOKBACK_DAYS) if peer_tickers else {}
 
     self_earnings = fetch_next_earnings(ticker, api_key)
     self_earnings_dt = None
@@ -938,7 +980,7 @@ def run_pipeline(args) -> int:
         "today_weight": 1 - prior_weight,
     }
 
-    base_signals = _signals_dict_to_display_list(signals_dict, BLEND_WEIGHTS_V2)
+    base_signals = _signals_dict_to_display_list(signals_dict, BLEND_WEIGHTS_V2, blend=blend)
 
     # --- 8. Vol schedule (catalyst-aware) ---
     # peer_earnings_dts populated at fetch time (step 3.5). macro_event_dates
