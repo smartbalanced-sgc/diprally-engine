@@ -1,0 +1,206 @@
+# DipRally Engine — single source of truth for all configurable values.
+# Sacred decision #17: src/ holds code only. Changing a threshold must NEVER
+# require a code edit, PR, or deploy — only an edit to this file.
+#
+# Schema validated by src/config.py at import time via pydantic. Type errors,
+# missing keys, or out-of-range values fail loudly before the engine runs.
+#
+# Scope of this W2 foundation lift: top-level constants previously in
+# src/config.py (~50 keys). Future W2 sessions extend the lift to:
+#   - Embedded signal thresholds in src/signals.py (D-W2-6, ~30 keys)
+#   - Scattered tunables in src/engine.py / src/data_fetch.py / src/math_utils.py
+#     (D-W2-5, D-W2-7, D-W2-8, D-W2-9)
+#   - Per-ticker registry (D-W2-1, peer mappings + σ-class hints + sector)
+
+version: "DIPNRALLY-v1.0"
+
+# -----------------------------------------------------------
+# Data sources
+# -----------------------------------------------------------
+data:
+  fmp_base_url: "https://financialmodelingprep.com/stable"
+  default_lookback_days: 730
+
+# -----------------------------------------------------------
+# Anthropic pricing — Opus 4.7, Sonnet 4.6, Haiku 4.5.
+# Verify against https://docs.anthropic.com/en/api/pricing before each wave.
+# Expressed per token (divide $/M by 1e6 to get this form).
+# -----------------------------------------------------------
+ai_pricing:
+  opus_input_per_token: 0.000015      # $15/M input
+  opus_output_per_token: 0.000075     # $75/M output
+  sonnet_input_per_token: 0.000003    # $3/M input
+  sonnet_output_per_token: 0.000015   # $15/M output
+  haiku_input_per_token: 0.000001     # $1/M input
+  haiku_output_per_token: 0.000005    # $5/M output
+  web_search_per_use: 0.01            # $0.01 per web_search invocation
+
+# Canonical model IDs. Updating these here switches every dispatch site.
+ai_models:
+  opus: "claude-opus-4-7"
+  sonnet: "claude-sonnet-4-6"
+  haiku: "claude-haiku-4-5-20251001"
+
+# -----------------------------------------------------------
+# Blend weights. Sum need not equal 1.0 — blend_with_uncertainty normalizes.
+# -----------------------------------------------------------
+blend_weights_v1:
+  historical: 0.10
+  analyst: 0.15
+  sector: 0.08
+  macro: 0.07
+  insider: 0.05
+  ai: 0.30
+  short_interest: 0.05
+  peer_rs: 0.10
+  sector_decoupling: 0.10
+
+blend_weights_v2:
+  historical: 0.05
+  analyst: 0.15
+  sector: 0.04
+  macro: 0.07
+  insider: 0.02      # sacred #15 says drop; partial — captured as D-W2-16
+  short_interest: 0.02
+  peer_rs: 0.10
+  sector_decoupling: 0.10
+  ai: 0.25
+  catalyst_proximity: 0.10
+  narrative: 0.10
+
+# Standard error per qualitative confidence tier (decimal annualised return).
+confidence_to_se:
+  HIGH: 0.05
+  MEDIUM: 0.10
+  LOW: 0.20
+
+# -----------------------------------------------------------
+# Conviction thresholds (sacred decisions #1, #13)
+# -----------------------------------------------------------
+conviction:
+  dip_marginal: 0.65            # P(touch dip) threshold
+  rally_conditional: 0.75       # P(rally | dip touched) threshold
+  ev_hurdle_bps_of_dip: 50      # sacred #13: refuse if EV < 50bps of dip
+
+# -----------------------------------------------------------
+# Horizon + MC paths
+# -----------------------------------------------------------
+horizon:
+  default_days: 60
+  default_mc_paths: 100000
+  deep_dip_autoscale_threshold: 0.40
+  deep_dip_autoscale_paths: 200000
+
+# -----------------------------------------------------------
+# Grid scan (dip × rally) — D-W3-1 will σ-class the step in W3
+# -----------------------------------------------------------
+grid:
+  dip_step_dollars: 10.0
+  rally_step_dollars: 10.0
+  dip_max_depth_pct: 0.40       # scan down to (1 - 0.40) × spot
+  rally_max_reach_pct: 0.60     # scan up to (1 + 0.60) × spot
+  panic_floor_pct: 0.30         # path-metrics panic floor (W3 σ-class varying)
+
+# -----------------------------------------------------------
+# AI vol_regime → vol multiplier (drives effective σ in MC)
+# -----------------------------------------------------------
+ai_vol_regime_multipliers:
+  HIGH: 1.15
+  MEDIUM: 1.00
+  LOW: 0.90
+
+# -----------------------------------------------------------
+# Structural narrative score → drift adjustment (annualised pp)
+# -----------------------------------------------------------
+narrative_drift_adjustment:
+  strong: 0.05
+  neutral: 0.00
+  weak: -0.05
+
+# -----------------------------------------------------------
+# Bull/bear factor arithmetic (Pass 1 factor counting)
+# -----------------------------------------------------------
+factor_arithmetic:
+  weights:
+    high: 3
+    med: 2
+    low: 1
+  net_threshold: 4              # |bull - bear| > 4 triggers tail bias
+  tail_bias: 0.05               # ±5pp drift bias when threshold exceeded
+
+# -----------------------------------------------------------
+# Catalyst Z-score (unusual-move detector)
+# -----------------------------------------------------------
+catalyst:
+  z_threshold: 3.0
+
+# -----------------------------------------------------------
+# Vol schedule multipliers around catalysts (drives time-varying σ)
+# -----------------------------------------------------------
+vol_schedule_multipliers:
+  self_earnings_day: 3.0
+  self_earnings_pre_post: 1.5
+  self_earnings_window_days: 2
+  peer_earnings_day: 1.8
+  peer_earnings_pre_post: 1.3
+  peer_earnings_window_days: 1
+  macro_event_day: 1.5
+
+# -----------------------------------------------------------
+# Three-method tolerance (σ-scaled). Sacred decision #16.
+# Bridge residual scales ~linearly with σ. Constant thresholds are wrong
+# for any σ outside the σ-class they were tuned against.
+#   σ=0.30 → flag 2.0pp, refuse 3.6pp
+#   σ=1.00 → flag 3.0pp, refuse 5.4pp
+#   σ=1.50 → flag 4.5pp, refuse 8.1pp
+# -----------------------------------------------------------
+method_tolerance:
+  marginal_floor_pp: 2.0
+  marginal_multiplier: 3.0
+  first_passage_floor_pp: 3.0
+  first_passage_multiplier: 4.0
+  refusal_multiplier: 1.8       # refuse threshold = 1.8 × flag threshold
+
+# -----------------------------------------------------------
+# Backtest layer gate
+# -----------------------------------------------------------
+backtest:
+  min_samples: 30
+
+# -----------------------------------------------------------
+# Analyst signal extreme-outlier sanity gate (D-W2-13).
+# |implied_drift| > threshold downgrades confidence one notch + adds
+# verification flag to notes. MOG-A smoke surfaced -58.9% HIGH conf —
+# data-quality red flag, not full-weight blend contribution.
+# -----------------------------------------------------------
+analyst_outlier_threshold: 0.50
+
+# -----------------------------------------------------------
+# Phantom-signal std accounting (W1).
+# When AI-derived signals (ai, catalyst_proximity, narrative) drop with
+# NONE_FOUND status, their nominal weight contributes to within_var via
+# this SE. Reflects "we don't have forward-looking synthesis" honestly.
+# -----------------------------------------------------------
+phantom_signal_se: 0.20
+
+# -----------------------------------------------------------
+# AI cache (W1) — same-day cache invalidation when spot moves
+# -----------------------------------------------------------
+ai_cache:
+  spot_move_invalidation_pct: 0.01    # ≥1% spot move → cache miss
+
+# -----------------------------------------------------------
+# Bag-hold valuation assumption
+# -----------------------------------------------------------
+bag_hold_terminal_assumption: "median_terminal_dip_paths"
+
+# -----------------------------------------------------------
+# v3 review criteria — LOCKED at v2 ship, executed at 30 days of runtime
+# -----------------------------------------------------------
+v3_review_criteria:
+  n_days_min: 30
+  calibration_dip_target: [0.60, 0.70]
+  calibration_rally_cond_target: [0.70, 0.80]
+  ai_pass2_critique_rate_min: 0.20
+  catalyst_signal_correlation_min: 0.10
+  bag_hold_rate_target: [0.10, 0.20]
