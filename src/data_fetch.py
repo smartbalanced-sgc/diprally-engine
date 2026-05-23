@@ -257,14 +257,19 @@ def fetch_company_profile(ticker, api_key):
 def fetch_grades_history(ticker, api_key, limit=50):
     """W6 PR #35 — analyst upgrade/downgrade history.
 
-    FMP's stable-API endpoint for grade-change actions is `grades-historical`
-    (the legacy v3 name `upgrades-downgrades` returns 404 on stable). Each
-    row has publishedDate, gradingCompany, previousGrade, newGrade, action
-    ("upgrade" / "downgrade" / "maintain" / "init" / "reiterated").
-    Returns a list of dicts (newest first) or [] when the ticker has no
-    coverage / endpoint fails. PR #37 hotfix.
+    FMP's stable-API endpoint for individual grade-change events is
+    `/stable/grades?symbol=X` (PR #43 — confirmed with FMP support).
+    Each row has date, gradingCompany, previousGrade, newGrade, action
+    ("upgrade" / "downgrade" / "maintain"). The signal filters to
+    upgrade/downgrade only.
+
+    Earlier PR #37 used `grades-historical` which actually returns
+    aggregate buy/hold/sell COUNTS snapshotted by date — a different
+    data shape that doesn't match signal_from_revision_momentum's
+    contract. Returns a list of dicts (newest first) or [] when the
+    ticker has no coverage / endpoint fails.
     """
-    data = _fmp_get("grades-historical", api_key,
+    data = _fmp_get("grades", api_key,
                      {"symbol": ticker, "limit": limit})
     if not data or not isinstance(data, list):
         return []
@@ -306,10 +311,17 @@ def fetch_fundamentals(ticker, api_key, market_cap=None):
                 pass
         # Net debt / EBITDA: FMP exposes netDebtToEBITDATTM. Only valid
         # when EBITDA > 0 (negative-EBITDA names get None — leverage
-        # ratio is meaningless against negative cash flow).
-        ebitda = row.get("ebitdaTTM") or row.get("evToEbitdaTTM")
+        # ratio is meaningless against negative cash flow). We infer
+        # EBITDA sign from evToEBITDATTM: EV is generally positive, so
+        # evToEBITDATTM > 0 ⇒ EBITDA > 0. (PR #43: prior code had a
+        # camelCase typo "evToEbitdaTTM" — actual field is uppercase
+        # "evToEBITDATTM" — and stable doesn't expose ebitdaTTM directly,
+        # so the sub-component was silently returning None on every
+        # ticker since PR #34 shipped.)
         nd_ebitda = row.get("netDebtToEBITDATTM")
-        if nd_ebitda is not None and ebitda and float(ebitda) > 0:
+        ev_to_ebitda = row.get("evToEBITDATTM")
+        if (nd_ebitda is not None and ev_to_ebitda is not None
+                and float(ev_to_ebitda) > 0):
             try:
                 out["net_debt_to_ebitda"] = float(nd_ebitda)
                 out["n_components_available"] += 1
