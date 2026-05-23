@@ -56,6 +56,7 @@ from src.config import (
     DEFAULT_HORIZON_DAYS,
     DEFAULT_LOOKBACK_DAYS,
     DEFAULT_MC_PATHS,
+    MC_DISTRIBUTION,
     MODEL_OPUS,
     MODEL_SONNET,
 )
@@ -526,10 +527,17 @@ def compute_sensitivity_table(
             vs = vol_schedule_base * scale
         else:
             vs = None
+        # W9 PR #48: sensitivity MCs use the same distribution/df as
+        # the main MC — keep stress-test innovations consistent with
+        # the recommendation's underlying assumption.
         paths_s = run_mc_joint_conditional(
             S0=S0, sigma=sigma_s, mu=mu_s,
             horizon_days=horizon_days, n_paths=n_paths_sensitivity,
             vol_schedule=vs, seed=42 + len(rows),
+            distribution=MC_DISTRIBUTION.default,
+            df=MC_DISTRIBUTION.per_class.get(
+                sigma_class, MC_DISTRIBUTION.default_df,
+            ),
         )
         result = analyze_joint_conditional(
             paths_s, S0, dip_price, rally_price, horizon_days,
@@ -578,6 +586,20 @@ CSV_COLUMNS = [
     "garch_alpha_plus_beta", "horizon_days",
     "method_agreement_flags", "ai_cost_total", "data_source",
     "ai_tier", "ambiguity_score",
+    # W10 PR #47 — calibration harness. Outcome fields populated by
+    # src.calibration.resolve_outcomes() at each engine run; the row's
+    # prediction is locked at write time but its outcome accumulates as
+    # the horizon window plays out. Empty strings until resolved.
+    "outcome_status",          # OPEN / RESOLVED / EXPIRED
+    "dip_touched",             # 1 / 0 (within horizon)
+    "dip_touch_day",           # day index from prediction date (0..horizon-1)
+    "rally_touched_after_dip", # 1 / 0 — rally after the dip touch
+    "rally_touch_day",         # day index from prediction date
+    "round_trip_completed",    # 1 / 0 — sacred ordering: dip THEN rally
+    "bag_hold_realized",       # 1 / 0 — dip touched, rally never (or close < dip at horizon)
+    "realized_max_drawdown",   # decimal — max DD from spot during window
+    "realized_terminal_return",# decimal — terminal close vs spot
+    "resolved_at",             # YYYY-MM-DD when status flipped to RESOLVED/EXPIRED
 ]
 
 
@@ -1249,7 +1271,12 @@ def run_pipeline(args) -> int:
         effective_sigma = blended_sigma
 
     # --- 10. Run MC ---
-    print(f"Running Monte Carlo ({DEFAULT_MC_PATHS} paths)...")
+    # W9 PR #48: fat-tail innovations (Student-t) when configured;
+    # df is per-σ-class so EXTREME names use heavier tails than MID.
+    mc_dist = MC_DISTRIBUTION.default
+    mc_df = MC_DISTRIBUTION.per_class.get(sigma_class, MC_DISTRIBUTION.default_df)
+    print(f"Running Monte Carlo ({DEFAULT_MC_PATHS} paths, "
+          f"distribution={mc_dist}{f', df={mc_df}' if mc_dist == 'student_t' else ''})...")
     paths = run_mc_joint_conditional(
         S0=spot,
         sigma=effective_sigma,
@@ -1259,6 +1286,8 @@ def run_pipeline(args) -> int:
         vol_schedule=vol_schedule,
         mean_reversion_strength=args.mean_reversion,
         mean_reversion_anchor=spot * (1.0 - MEAN_REVERSION_ANCHOR_PCT_BELOW_SPOT) if args.mean_reversion > 0 else None,
+        distribution=mc_dist,
+        df=mc_df,
     )
 
     # --- 11. Scan grid ---
@@ -1463,6 +1492,32 @@ def run_pipeline(args) -> int:
 
     # --- 15. Backtest layer ---
     backtest = run_backtest_layer(history_path, spot)
+
+    # --- 15b. W10 calibration harness (PR #47): resolve outcomes for
+    # any prior predictions whose horizon window has now closed. Updates
+    # CSV in-place. Idempotent — already-resolved rows pass through
+    # unchanged. Runs BEFORE the new prediction row is written so the
+    # current row enters as OPEN.
+    try:
+        from src.calibration import resolve_history as _resolve_history
+        if history_path.exists():
+            with open(history_path, "r") as _f:
+                _existing_rows = list(csv.DictReader(_f))
+            _resolved_rows, _n_newly = _resolve_history(
+                _existing_rows, history_df,
+            )
+            if _n_newly > 0:
+                print(f"Calibration: resolved {_n_newly} prior prediction"
+                      f"{'s' if _n_newly != 1 else ''} (horizon window closed)")
+                # Rewrite CSV with resolved outcomes.
+                with open(history_path, "w", newline="") as _f:
+                    _w = csv.DictWriter(_f, fieldnames=CSV_COLUMNS,
+                                          extrasaction="ignore")
+                    _w.writeheader()
+                    for _r in _resolved_rows:
+                        _w.writerow(_r)
+    except Exception as _e:
+        print(f"   WARNING: calibration resolver skipped: {_e}")
 
     # --- 16. Persist CSV row ---
     total_ai_cost = (pass1_cost_charged + pass2_cost_charged

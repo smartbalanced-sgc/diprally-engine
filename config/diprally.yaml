@@ -257,6 +257,54 @@ horizon:
   deep_dip_autoscale_paths: 200000
 
 # -----------------------------------------------------------
+# W9 PR #48 — fat-tail Monte Carlo.
+# Lognormal GBM (normal innovations) systematically underprices
+# parabolic / panic moves that are routine in the diprally universe
+# (INTC +92% mom_30d, LWLG +251% YTD, RKLB +99% mom_30d all observed
+# in the W3-W6 smokes). At σ=83% annualized, a +50% 30d move is a
+# +3.4σ event under normal — but happens monthly in this universe.
+#
+# Student-t innovations with df=5 (kurtosis 6 vs normal's 3) capture
+# fat tails without rebuilding the GBM scaffold. Daily Student-t
+# innovations are rescaled to unit variance so σ remains interpretable
+# the same way (annualized vol). df is per-σ-class because EXTREME
+# names have heavier tails than MID names — empirical kurtosis on
+# the universe shows df ~4-5 for EXTREME, ~6-7 for MID.
+#
+# distribution: "normal" | "student_t"
+# df:           only used when distribution == "student_t"; must be > 2
+#               (Student-t variance df/(df-2) requires df > 2)
+mc_distribution:
+  default: "student_t"          # universe-wide default; sacred design after smoke audit
+  default_df: 5.0
+  per_class:                     # σ-class-aware df (overrides default_df)
+    EXTREME: 4.0                 # heaviest tails — pre-revenue / momentum names
+    HIGH:    5.0
+    MID:     7.0                 # mature large-caps — closer to normal
+
+# -----------------------------------------------------------
+# W8 PR #49 — portfolio-level gating. Sacred #6 compliant: this does
+# NOT size positions; it refuses substitute recommendations when two
+# tickers behave too similarly. If the orchestrator's accepted set
+# contains both INTC and AMD with 60d return-correlation = 0.92, the
+# trader doesn't have two independent ideas — they have one idea
+# expressed twice. The gate drops the lower-EV ticker.
+#
+# correlation_threshold: ρ ≥ this triggers refusal (default 0.85 = "too
+#                         similar to count as a separate idea")
+# correlation_window:    trading days of own-history used for pairwise
+#                         correlation (default 60 — matches the engine's
+#                         decision horizon)
+# enabled:               master switch; turn OFF to disable gating
+#                         entirely (useful for backtesting against
+#                         pre-W8 behavior)
+# -----------------------------------------------------------
+portfolio_gate:
+  enabled: true
+  correlation_threshold: 0.85
+  correlation_window_days: 60
+
+# -----------------------------------------------------------
 # Legacy global blocks RETIRED in W3:
 #   - grid.step/depth/reach        → PR #22 (sigma_classes.<CLASS>.grid)
 #   - grid.panic_floor_pct          → PR #24 (sigma_classes.<CLASS>.panic_floor_pct)
