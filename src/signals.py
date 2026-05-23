@@ -923,24 +923,72 @@ def compute_unusual_move_z(history_df, beta=1.0, lookback=60):
 # Catalyst date parser — needed by signal_from_catalyst_proximity. Re-exported
 # from engine.py as parse_catalyst_date for use elsewhere.
 def _parse_catalyst_date(date_str):
-    """Robust catalyst date parser. Handles Y/M/Q/range/relative formats."""
+    """Robust catalyst date parser. Handles Y/M/Q/H/range/relative formats.
+
+    PR #51 extended set:
+      - "ongoing" / "rolling" / "<year>-rolling"  → today + 1 day
+        (semantically "active across horizon" → treat as in-horizon)
+      - "<year>-H1" / "H1 <year>" / "H2 <year>"   → first day of half
+      - "Q<n>" / "Q<n> <year>" without dash       → first day of quarter
+        (year defaults to current year, then auto-advances to next year
+         if the resulting date is already past today)
+    """
     if not date_str or not isinstance(date_str, str):
         return None
     s = date_str.strip().lower()
     today = datetime.now().date()
 
+    # PR #51: "ongoing" / "rolling" semantics — catalyst is active across
+    # the horizon window. Treat as in-horizon by returning a near-future
+    # date (today+1 ensures the in-window check captures it). Pass 1/
+    # Pass 2 use these for overhangs (insider selling, secondary risk,
+    # debt refinancing window, export-control regime risk, etc.).
+    if s in ("ongoing", "rolling", "continuous", "current",
+              "tbd-rolling", "n/a"):
+        return today + timedelta(days=1)
+
+    # PR #51: "<year>-rolling" or "<year> rolling" — year-tagged rolling.
+    import re
+    m = re.match(r"(\d{4})[-\s]?rolling$", s)
+    if m:
+        return today + timedelta(days=1)
+
+    # Existing: "/" separated range → parse each, return EARLIEST.
     if "/" in s:
         parts = [p.strip() for p in s.split("/") if p.strip()]
         candidates = [_parse_catalyst_date(p) for p in parts]
         valid = [c for c in candidates if c is not None]
         return min(valid) if valid else None
 
-    import re
+    # Existing: relative "next NN days"
     m = re.match(r"next\s+(\d+)\s*d", s)
     if m:
         offset = int(m.group(1)) // 2
         return today + timedelta(days=offset)
 
+    # PR #51: "<year>-H1" / "<year>-H2" half-year format.
+    m = re.match(r"(\d{4})[-\s]?h([12])$", s)
+    if m:
+        year = int(m.group(1))
+        h = int(m.group(2))
+        month = 1 if h == 1 else 7
+        try:
+            return datetime(year, month, 1).date()
+        except ValueError:
+            return None
+
+    # PR #51: "H1 <year>" / "H2 <year>" reversed order.
+    m = re.match(r"h([12])\s+(\d{4})$", s)
+    if m:
+        h = int(m.group(1))
+        year = int(m.group(2))
+        month = 1 if h == 1 else 7
+        try:
+            return datetime(year, month, 1).date()
+        except ValueError:
+            return None
+
+    # Existing: "<year>-Q<n>"
     m = re.match(r"(\d{4})[-\s]?q([1-4])", s)
     if m:
         year = int(m.group(1))
@@ -951,6 +999,28 @@ def _parse_catalyst_date(date_str):
         except ValueError:
             return None
 
+    # PR #51: "Q<n> <year>" reversed order.
+    m = re.match(r"q([1-4])\s+(\d{4})$", s)
+    if m:
+        q = int(m.group(1))
+        year = int(m.group(2))
+        month = {1: 1, 2: 4, 3: 7, 4: 10}[q]
+        try:
+            return datetime(year, month, 1).date()
+        except ValueError:
+            return None
+
+    # PR #51: "Q<n>" without year — assume current year; if past, roll forward.
+    m = re.match(r"q([1-4])$", s)
+    if m:
+        q = int(m.group(1))
+        month = {1: 1, 2: 4, 3: 7, 4: 10}[q]
+        candidate = datetime(today.year, month, 1).date()
+        if candidate < today:
+            candidate = datetime(today.year + 1, month, 1).date()
+        return candidate
+
+    # Existing: "<year>-MM" or "<year>-MM-DD"
     m = re.match(r"(\d{4})-(\d{1,2})(?:-(\d{1,2}))?", s)
     if m:
         try:
@@ -961,6 +1031,7 @@ def _parse_catalyst_date(date_str):
         except ValueError:
             return None
 
+    # Existing: bare year
     m = re.match(r"^(\d{4})$", s)
     if m:
         try:
