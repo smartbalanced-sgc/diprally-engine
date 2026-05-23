@@ -122,6 +122,31 @@ RULES:
 - bull_factors and bear_factors: each list 2-4 items, concise (<200 chars).
 - key_risks: 2-3 risks, one short sentence each.
 - Return ONLY the JSON object. No preamble. No explanation. No markdown.
+
+SOURCE-QUALITY DISCIPLINE (PR #50 — institutional anchor sources only):
+- High-magnitude catalysts ("high" or "med") REQUIRE at least one
+  INSTITUTIONAL anchor: SEC filings (sec.gov), company IR
+  (investor.<company>.com), top-tier sell-side research (GS, MS,
+  JPM, BofA, Citi, UBS, Barclays, Wells), or primary newswire
+  (Bloomberg, Reuters, WSJ, FT, businesswire, prnewswire,
+  globenewswire). Government / regulatory sources (FDA, SAM.gov,
+  CHIPS Act program office) also qualify.
+- DO NOT anchor on retail / influencer / aggregator sites for
+  high-magnitude claims: TimothySykes, capitalstreetfx, phemex,
+  StocksToTrade, 247WallSt, heygotrade, tradethepool, finance.yahoo,
+  TipRanks consensus pages, UnusualWhales, MotleyFool, Seeking Alpha.
+  These may be cited as SECONDARY sources alongside institutional
+  anchors, but NEVER as the primary anchor.
+- If you cannot find an institutional anchor for a "high" magnitude
+  catalyst, DOWNGRADE its magnitude to "med" or "low" and surface
+  the source-quality limitation explicitly in the catalyst name
+  (e.g. "Q3 contract awards [retail-aggregator sourced — pending
+  institutional confirmation]").
+- For corporate-action catalysts (M&A, secondary offerings, debt
+  refinancings, spin-offs), the ONLY institutional anchors are SEC
+  filings (8-K, S-1, 10-Q, S-3 shelf) and the company's official
+  press releases via primary newswire. Any other source is
+  speculative.
 """
 
 
