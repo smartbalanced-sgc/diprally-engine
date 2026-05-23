@@ -441,15 +441,25 @@ Return ONLY valid JSON list, one entry per catalyst in the SAME ORDER:
 ]
 """
     try:
-        # Constrain web_search to authoritative domains.
+        # Constrain web_search to authoritative domains. PR #44 fix:
+        # reuters.com / wsj.com / bloomberg.com block Anthropic's user
+        # agent (HTTP 400 on every call), so D-W5-1's verification step
+        # was 100% non-functional in production since PR #33 shipped.
+        # Replaced with crawlable primary sources only:
+        #   sec.gov          → 8-K / 10-Q / 10-K / S-1 filings
+        #   sam.gov          → US government contract awards
+        #   fda.gov          → FDA milestone calendars
+        #   clinicaltrials.gov → trial readouts
+        #   businesswire / prnewswire / globenewswire → primary press releases
+        # Removed: wsj.com, reuters.com, bloomberg.com (Anthropic-blocked).
+        # Also dropped ir.com / investorrelations.com (umbrella domains that
+        # don't host actual IR content — they're aggregators).
         tools = [{
             "type": "web_search_20250305",
             "name": "web_search",
             "max_uses": 6,
             "allowed_domains": [
-                "sec.gov", "ir.com", "investorrelations.com",
-                "sam.gov", "fda.gov", "clinicaltrials.gov",
-                "wsj.com", "reuters.com", "bloomberg.com",
+                "sec.gov", "sam.gov", "fda.gov", "clinicaltrials.gov",
                 "businesswire.com", "prnewswire.com", "globenewswire.com",
             ],
         }]

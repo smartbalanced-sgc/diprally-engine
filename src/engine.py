@@ -51,8 +51,7 @@ from src.config import (
     PASS2_CLOSED_FORM_BRACKET_PCT,
     SENSITIVITY_SCENARIOS,
     SIGMA_CLASSES,
-    PARABOLA_FILTER_RSI_THRESHOLD,
-    PARABOLA_FILTER_YTD_THRESHOLD,
+    PARABOLA_FILTER_MOM_30D_THRESHOLD,
     TREND_FILTER_MOM_30D_THRESHOLD,
     DEFAULT_HORIZON_DAYS,
     DEFAULT_LOOKBACK_DAYS,
@@ -1294,20 +1293,21 @@ def run_pipeline(args) -> int:
                   f"no in-horizon bullish/two-sided catalyst")
             met_threshold_strict = False
 
-    # PR #41: mirror of sacred #14 for blow-off tops. RSI overheated AND
-    # YTD parabolic AND no AI-surfaced bearish/two-sided de-rating catalyst
-    # in horizon → refuse. Without a structural reason to mean-revert,
-    # dip-buying a parabolic name is statistically betting against gravity.
+    # PR #41 / PR #44: mirror of sacred #14 for blow-off tops. 30-day
+    # momentum is the symmetric trigger — sacred #14 refuses on mom_30d
+    # < -25% (falling knife); we refuse on mom_30d > +50% (parabola)
+    # absent a bearish/two-sided de-rating catalyst.
+    # PR #44 redesigned away from RSI+YTD: the INTC smoke (RSI=66.2,
+    # YTD=+204%, mom_30d=+92%) bypassed the original gate because RSI
+    # lags the explosive-move phase by ~10 days.
     parabola_filter_refused = False
     if (best is not None
-            and snapshot.rsi >= PARABOLA_FILTER_RSI_THRESHOLD
-            and snapshot.ytd_return >= PARABOLA_FILTER_YTD_THRESHOLD):
+            and snapshot.mom_30d >= PARABOLA_FILTER_MOM_30D_THRESHOLD):
         if not _has_bearish_derating_catalyst(effective_ai, horizon_days):
             parabola_filter_refused = True
-            print(f"⛔ Parabola-filter refusal (PR #41): RSI={snapshot.rsi:.1f} ≥ "
-                  f"{PARABOLA_FILTER_RSI_THRESHOLD:.0f} AND YTD={snapshot.ytd_return*100:+.0f}% ≥ "
-                  f"{PARABOLA_FILTER_YTD_THRESHOLD*100:+.0f}%, no in-horizon "
-                  f"bearish/two-sided de-rating catalyst")
+            print(f"⛔ Parabola-filter refusal (PR #41/#44): mom_30d = "
+                  f"{snapshot.mom_30d*100:+.1f}% ≥ {PARABOLA_FILTER_MOM_30D_THRESHOLD*100:+.0f}%, "
+                  f"no in-horizon bearish/two-sided de-rating catalyst")
             met_threshold_strict = False
 
     # --- 13. AI catalyst stress test — uses Pass 2's revised catalyst list

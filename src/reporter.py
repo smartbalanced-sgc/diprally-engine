@@ -106,19 +106,17 @@ def format_report(
     # HEADLINE RECOMMENDATION
     lines.append(hr("ROUND-TRIP RECOMMENDATION"))
     if parabola_filter_refused and best is not None:
-        # PR #41 — parabola filter (mirror of sacred #14).
-        from src.config import (
-            PARABOLA_FILTER_RSI_THRESHOLD as _RSI,
-            PARABOLA_FILTER_YTD_THRESHOLD as _YTD,
-        )
-        lines.append(f"  ⛔ REFUSED — parabola filter (PR #41).")
-        lines.append(f"  RSI {snapshot.rsi:.1f} ≥ {_RSI:.0f} AND YTD {snapshot.ytd_return*100:+.0f}% ≥ {_YTD*100:+.0f}% (blow-off territory)")
-        lines.append(f"  AND no in-horizon bearish/two-sided de-rating catalyst surfaced by AI.")
+        # PR #41 / PR #44 — parabola filter (mirror of sacred #14).
+        from src.config import PARABOLA_FILTER_MOM_30D_THRESHOLD as _MOM
+        lines.append(f"  ⛔ REFUSED — parabola filter (PR #41/#44).")
+        lines.append(f"  30-day momentum {snapshot.mom_30d*100:+.1f}% is above the blow-off")
+        lines.append(f"  threshold of {_MOM*100:+.0f}% AND no in-horizon catalyst with")
+        lines.append(f"  bearish or two-sided direction was surfaced by AI Pass 1/Pass 2.")
         lines.append(f"  A parabolic move without a structural reason to mean-revert is statistically")
         lines.append(f"  betting against gravity over a swing horizon — institutional discipline says pass.")
-        lines.append(f"  Action: WAIT for either (a) RSI cool-down below {_RSI:.0f}, (b) YTD compression")
-        lines.append(f"  below {_YTD*100:+.0f}%, or (c) a concrete bearish/two-sided catalyst (earnings,")
-        lines.append(f"  regulatory action, secondary, peer disappointment) that defines the de-rating thesis.")
+        lines.append(f"  Action: WAIT until either momentum cools (mom_30d < {_MOM*100:+.0f}%) or")
+        lines.append(f"  a concrete bearish/two-sided catalyst materializes (earnings reset,")
+        lines.append(f"  regulatory action, secondary offering, peer disappointment) to define the de-rating thesis.")
     elif trend_filter_refused and best is not None:
         # Sacred decision #14 — falling-knife trend filter.
         from src.config import TREND_FILTER_MOM_30D_THRESHOLD

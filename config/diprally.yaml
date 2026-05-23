@@ -347,22 +347,26 @@ trend_filter:
   mom_30d_threshold: -0.25
 
 # -----------------------------------------------------------
-# Post-parabola refusal gate (PR #41 — mirror of sacred #14).
+# Post-parabola refusal gate (PR #41 / PR #44 — mirror of sacred #14).
 # Refuses dip-buy recommendations on a parabolic blow-off when:
-#   RSI ≥ rsi_threshold (overheated)
-#   AND YTD return ≥ ytd_threshold (already had the run)
-#   AND no AI-surfaced bearish de-rating catalyst in horizon
-#       (a de-rating catalyst is the only thing that lets the math
-#        anchor on mean-reversion; without one, "BUY THE DIP" on a
-#        parabolic name is statistically betting against gravity)
+#   30d momentum ≥ mom_30d_threshold (recent explosive move — same
+#     scale as sacred #14's falling-knife trigger but inverted sign)
+#   AND no AI-surfaced bearish/two-sided de-rating catalyst in horizon
+#     (without a structural reason to mean-revert, dip-buying a name
+#      that's up 50%+ in a month is gravity-betting on a swing horizon)
 # Gate fires AFTER the math layer recommends BUY but BEFORE the
 # recommendation reaches the trader — sacred-style hard refusal.
-# Same shape as the falling-knife trend filter above; both gates
-# refuse asymmetric-tail entries.
+#
+# PR #44 redesign: the original PR #41 used RSI + YTD as triggers. INTC
+# at RSI 66 + YTD +204% + mom_30d +92% bypassed the gate because RSI
+# was below 70 — but +92% in a month is by definition parabolic. RSI
+# is a 14-period lagging indicator that doesn't trigger until AFTER
+# the blow-off resolves. 30d momentum is the symmetric pair to sacred
+# #14's mom_30d_threshold = -25%, and the natural mirror for the
+# institutional "you missed the move" criterion.
 # -----------------------------------------------------------
 parabola_filter:
-  rsi_threshold: 70.0                   # ≥ this is overbought
-  ytd_threshold: 1.50                   # ≥ +150% YTD is parabolic
+  mom_30d_threshold: 0.50               # ≥ +50% in 30 trading days → parabolic
 
 # -----------------------------------------------------------
 # Macro regime detection (data_fetch.fetch_macro_indicators).

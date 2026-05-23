@@ -254,7 +254,7 @@ def fetch_company_profile(ticker, api_key):
     return data[0]
 
 
-def fetch_grades_history(ticker, api_key, limit=50):
+def fetch_grades_history(ticker, api_key, limit=200, lookback_days=120):
     """W6 PR #35 — analyst upgrade/downgrade history.
 
     FMP's stable-API endpoint for individual grade-change events is
@@ -263,17 +263,41 @@ def fetch_grades_history(ticker, api_key, limit=50):
     ("upgrade" / "downgrade" / "maintain"). The signal filters to
     upgrade/downgrade only.
 
-    Earlier PR #37 used `grades-historical` which actually returns
-    aggregate buy/hold/sell COUNTS snapshotted by date — a different
-    data shape that doesn't match signal_from_revision_momentum's
-    contract. Returns a list of dicts (newest first) or [] when the
-    ticker has no coverage / endpoint fails.
+    PR #44 update: FMP's `limit` param is IGNORED on this endpoint
+    (returns all 810 rows for INTC regardless). We truncate client-side
+    by date — keep only rows within `lookback_days` of today (default
+    120d, comfortably wider than the signal's 90d filter window). This
+    drops ~95% of bytes per fetch while preserving signal correctness.
+    Also caps at `limit` rows as a hard safety net for tickers with
+    extreme coverage history.
     """
     data = _fmp_get("grades", api_key,
-                     {"symbol": ticker, "limit": limit})
+                     {"symbol": ticker})
     if not data or not isinstance(data, list):
         return []
-    return data
+    # Client-side date truncation — FMP `limit` is ignored on stable grades.
+    today = datetime.now().date()
+    cutoff = today - timedelta(days=lookback_days)
+    filtered = []
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        date_str = row.get("date") or row.get("publishedDate") or ""
+        try:
+            row_date = datetime.strptime(date_str[:10], "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            continue
+        if row_date < cutoff:
+            continue
+        # Normalize field name — signal reads publishedDate but FMP stable
+        # uses 'date'. Keep both so the signal works either way.
+        if "publishedDate" not in row and "date" in row:
+            row = dict(row)
+            row["publishedDate"] = row["date"]
+        filtered.append(row)
+        if len(filtered) >= limit:
+            break
+    return filtered
 
 
 def fetch_fundamentals(ticker, api_key, market_cap=None):

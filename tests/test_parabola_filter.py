@@ -22,7 +22,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from src.config import PARABOLA_FILTER_RSI_THRESHOLD, PARABOLA_FILTER_YTD_THRESHOLD
+from src.config import PARABOLA_FILTER_MOM_30D_THRESHOLD
 from src.engine import _has_bearish_derating_catalyst
 
 
@@ -46,10 +46,11 @@ def _cat(name, direction, days_ahead):
     }
 
 
-def test_thresholds_loaded_from_yaml():
-    """PR #41 boundaries must load from YAML, not hardcoded."""
-    assert PARABOLA_FILTER_RSI_THRESHOLD > 50.0
-    assert PARABOLA_FILTER_YTD_THRESHOLD > 0.0
+def test_threshold_loaded_from_yaml():
+    """PR #41 / PR #44 threshold must load from YAML, not hardcoded.
+    Must be a positive momentum value (parabolic = explosive UP move)."""
+    assert PARABOLA_FILTER_MOM_30D_THRESHOLD > 0.0
+    assert PARABOLA_FILTER_MOM_30D_THRESHOLD < 5.0  # sanity bound
 
 
 def test_bearish_catalyst_in_horizon_blocks_refusal():
