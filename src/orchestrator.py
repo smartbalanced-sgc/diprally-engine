@@ -311,6 +311,40 @@ def _latest_history_row(ticker: str) -> Optional[dict]:
     return rows[-1]
 
 
+def _history_as_price_df(ticker: str):
+    """Read all rows from output/round_trip_history_<TICKER>.csv and
+    return a pandas DataFrame with 'Date' + 'Close' columns. 'Close'
+    is the engine-run-time spot price for that prediction date —
+    a daily-close proxy that's good enough for 60d-correlation
+    computation in the portfolio gate (PR #55 wiring of PR #49).
+    Returns None when the file is absent or has < 5 rows (gate
+    accepts defensively below the minimum-data threshold)."""
+    path = _OUTPUT_ROOT / f"round_trip_history_{ticker}.csv"
+    if not path.exists():
+        return None
+    try:
+        import pandas as pd
+    except ImportError:
+        return None
+    rows = []
+    with open(path) as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            d = r.get("date", "")
+            s = r.get("spot", "")
+            if not d or not s:
+                continue
+            try:
+                rows.append({"Date": pd.to_datetime(d[:10]),
+                             "Close": float(s)})
+            except (ValueError, TypeError):
+                continue
+    if len(rows) < 5:
+        return None
+    df = pd.DataFrame(rows).sort_values("Date").reset_index(drop=True)
+    return df
+
+
 def _parse_float(s, default=None):
     if s is None or s == "":
         return default
@@ -366,12 +400,14 @@ def _decision_from_run(run: TickerRun) -> TickerDecision:
 
 
 _VERDICT_COLORS = {
-    "BUY":            "#1a7f37",     # green
-    "WAIT":           "#6e7781",     # neutral gray
-    "REFUSED-EV":     "#bc4c00",     # orange
-    "REFUSED-TREND":  "#bc4c00",
-    "REFUSED-METHOD": "#cf222e",     # red
-    "FAIL":           "#cf222e",
+    "BUY":                "#1a7f37",     # green
+    "WAIT":               "#6e7781",     # neutral gray
+    "REFUSED-EV":         "#bc4c00",     # orange
+    "REFUSED-TREND":      "#bc4c00",
+    "REFUSED-PARABOLA":   "#bc4c00",
+    "REFUSED-CORRELATED": "#8250df",     # purple (PR #55 — substitute idea)
+    "REFUSED-METHOD":     "#cf222e",     # red
+    "FAIL":               "#cf222e",
 }
 
 
@@ -523,6 +559,12 @@ def generate_aggregate_dashboard(results: list[TickerRun],
       output/index.html             — stable bookmark target (per-ticker
                                       links are siblings)
 
+    PR #55 wires the W8 portfolio correlation gate (PR #49 module): any
+    BUY-verdict ticker whose 60d return correlation against an
+    already-accepted higher-EV ticker exceeds the threshold gets
+    re-tagged as REFUSED-CORRELATED so the trader sees one
+    representative per cluster instead of substitute ideas.
+
     Returns the path of the run-dir copy (operator-bookmarkable URL is
     the stable one).
     """
@@ -533,6 +575,38 @@ def generate_aggregate_dashboard(results: list[TickerRun],
         -(d.ambiguity or -1.0),               # higher ambiguity first
         d.ticker,
     ))
+
+    # PR #55: portfolio correlation gate applied to BUY-verdict tickers
+    # only. WAIT / REFUSED / FAIL pass through untouched (no
+    # recommendation to dedupe). Dropped BUYs get re-tagged with the
+    # gate's reason in status_note + verdict flipped to REFUSED-
+    # CORRELATED so the dashboard shows it clearly.
+    try:
+        from src.portfolio import (
+            PortfolioRecommendation,
+            gate_by_correlation,
+        )
+        buy_decisions = [d for d in decisions if d.verdict == "BUY"]
+        if len(buy_decisions) >= 2:
+            recs = []
+            for d in buy_decisions:
+                hist_df = _history_as_price_df(d.ticker)
+                if hist_df is None:
+                    continue
+                recs.append(PortfolioRecommendation(
+                    ticker=d.ticker,
+                    ev_bps=d.ev_bps_of_dip if d.ev_bps_of_dip is not None else 0.0,
+                    history_df=hist_df,
+                ))
+            if len(recs) >= 2:
+                gate = gate_by_correlation(recs)
+                for d in decisions:
+                    if d.ticker in gate.dropped:
+                        d.verdict = "REFUSED-CORRELATED"
+                        d.status_note = gate.dropped[d.ticker]
+    except Exception as _e:
+        # Gate failure must NOT block dashboard generation. Log + skip.
+        print(f"   WARNING: portfolio gate skipped: {_e}")
 
     # Audit copy inside run_dir — one level deep, links use "../".
     run_html = _render_dashboard_html(decisions, allocation, href_prefix="../")

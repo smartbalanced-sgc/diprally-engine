@@ -19,6 +19,73 @@ def hr(title: str = "") -> str:
     return f"\n{line}\n{title}\n{line}" if title else line
 
 
+def _headline_card(ticker, spot, horizon_days, best, ev_pct_of_dip,
+                    met_threshold_strict, method_check,
+                    parabola_filter_refused, trend_filter_refused,
+                    ev_hurdle_refused, snapshot) -> str:
+    """PR #56 — trader headline card. Single-line verdict at the top
+    of every report. Mirrors the headline-section verdict tree below
+    so traders see the bottom-line at-a-glance without scrolling.
+
+    Verdict precedence (matches reporter.py headline section):
+      1. trend filter refused (sacred #14)
+      2. parabola filter refused (PR #41/#44)
+      3. method disagreement refused (sacred #16; best is None)
+      4. EV-hurdle refused (sacred #13)
+      5. below conviction threshold (best-by-EV fallback)
+      6. negative EV (warning)
+      7. BUY
+      8. WAIT (no qualifying pair found)
+    """
+    bar = "▓" * 4
+    if trend_filter_refused and best is not None:
+        return (
+            f"  {bar} {ticker} — ⛔ REFUSED · trend filter · "
+            f"mom_30d {snapshot.mom_30d*100:+.0f}% · action: WAIT for momentum stabilization "
+            f"or catalyst"
+        )
+    if parabola_filter_refused and best is not None:
+        return (
+            f"  {bar} {ticker} — ⛔ REFUSED · parabola filter · "
+            f"mom_30d {snapshot.mom_30d*100:+.0f}% · action: WAIT for cool-down "
+            f"or bearish catalyst"
+        )
+    if best is None and method_check.get("refused"):
+        return (
+            f"  {bar} {ticker} — ⛔ REFUSED · math methods disagree · "
+            f"action: investigate σ/drift inputs, re-run"
+        )
+    if ev_hurdle_refused and best is not None:
+        ev_str = f"{ev_pct_of_dip * 10000.0:+.1f}bps" if ev_pct_of_dip is not None else "n/a"
+        return (
+            f"  {bar} {ticker} — ⛔ REFUSED · EV/dip {ev_str} below 50bps hurdle · "
+            f"action: WAIT for higher-EV setup"
+        )
+    if best is None:
+        return (
+            f"  {bar} {ticker} — ⚠ WAIT · no dip/rally pair clears conviction · "
+            f"action: re-run after next close"
+        )
+    if not met_threshold_strict:
+        return (
+            f"  {bar} {ticker} — ⚠ BELOW-THRESHOLD · best-EV fallback "
+            f"${best.dip_price:,.2f}/${best.rally_price:,.2f} · "
+            f"action: DO NOT TRADE, WAIT for higher-conviction"
+        )
+    if best.net_ev_per_share < 0:
+        return (
+            f"  {bar} {ticker} — ⚠ NEGATIVE-EV · ${best.dip_price:,.2f}/${best.rally_price:,.2f} "
+            f"meets conviction but EV/share {best.net_ev_per_share:+.2f} loses on average · "
+            f"action: SKIP"
+        )
+    # Clean BUY.
+    return (
+        f"  {bar} {ticker} — ✅ BUY ${best.dip_price:,.2f} → SELL ${best.rally_price:,.2f} · "
+        f"P(RT) {best.p_round_trip*100:.0f}% · EV {best.ev_pct_of_dip*10000:+.1f}bps · "
+        f"{horizon_days}d horizon"
+    )
+
+
 def format_report(
     snapshot,
     vol_profile,
@@ -50,6 +117,25 @@ def format_report(
 ) -> str:
     lines: list[str] = []
     lines.append(hr(f"DIPRALLY ENGINE ({V2_VERSION}) — {snapshot.ticker} — {snapshot.timestamp:%Y-%m-%d %H:%M}"))
+
+    # PR #56: trader headline card — single-line verdict at the top.
+    # Operator no longer needs to scroll the dense report to find the
+    # bottom-line decision. Same verdict-tree as the headline section
+    # below but rendered as a one-liner for at-a-glance reading.
+    lines.append(_headline_card(
+        ticker=snapshot.ticker,
+        spot=snapshot.spot,
+        horizon_days=horizon_days,
+        best=best,
+        ev_pct_of_dip=ev_pct_of_dip,
+        met_threshold_strict=met_threshold_strict,
+        method_check=method_check,
+        parabola_filter_refused=parabola_filter_refused,
+        trend_filter_refused=trend_filter_refused,
+        ev_hurdle_refused=ev_hurdle_refused,
+        snapshot=snapshot,
+    ))
+
     lines.append(f"  Ticker: {snapshot.ticker}")
     lines.append(f"  Spot: ${snapshot.spot:.2f}   Market cap: ${snapshot.market_cap/1e9:.1f}B")
     lines.append(f"  Sector / Industry: {snapshot.sector} / {snapshot.industry}")
