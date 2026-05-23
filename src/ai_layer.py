@@ -436,64 +436,61 @@ def call_ai_catalyst_verification(ticker: str, catalysts: list, horizon_days: in
         f'magnitude={c.get("magnitude", "?")})'
         for i, c in enumerate(top)
     )
-    prompt = f"""Verify the following catalysts for {ticker} against PRIMARY sources only.
+    prompt = f"""Verify the following catalysts for {ticker} against your trained
+knowledge of institutional primary sources (SEC filings, IR pages,
+press wires, FDA/SAM.gov for regulatory milestones).
 
 Catalysts to verify (top-{len(top)} from Pass 2):
 {catalyst_lines}
 
-For each catalyst, search authoritative primary sources to determine if
-the SPECIFIC details (date/window, direction, structure) are corroborated:
-  - Earnings dates → SEC 8-K filings, company IR earnings-calendar
+For each catalyst, judge whether the SPECIFIC details (date/window,
+direction, structure) are corroborated by your training data on
+institutional primary sources for this ticker:
+  - Earnings dates → SEC 8-K filings + company IR earnings-calendar
   - Convertible / debt terms → SEC 10-K/10-Q footnotes, indenture filings
-  - M&A close dates → SEC 8-K, company press releases, wire services
+  - M&A close dates → SEC 8-K, company press releases
   - Government contract awards → SAM.gov, DoD comptroller, company IR
   - FDA / regulatory milestones → FDA.gov, ClinicalTrials.gov, company IR
   - Guidance / capital markets days → company IR investor calendar
 
 Return one verdict per catalyst:
-  VERIFIED   — primary source confirms the specific date/window AND direction
-  UNVERIFIED — couldn't corroborate the specific details (theme may be
-               real but the structure Pass 1 framed isn't supported)
-  REFUTED    — primary source directly contradicts the catalyst
-               (already happened, different direction, not real)
+  VERIFIED   — primary-source structure (as you recall it) confirms
+               the specific date/window AND direction Pass 2 claimed
+  UNVERIFIED — you can't confirm the specific details from training data
+               (the theme may be real but Pass 2's framing isn't supported)
+               — this is the SAFE DEFAULT when uncertain
+  REFUTED    — your training data directly contradicts the catalyst
+               (already happened, different direction, structure not real)
 
-Return ONLY valid JSON list, one entry per catalyst in the SAME ORDER:
+Bias toward UNVERIFIED on uncertainty. False positives (VERIFIED when
+should be UNVERIFIED) harm the trader more than false negatives.
+
+Return ONLY valid JSON list, one entry per catalyst in the SAME ORDER.
+No prose before or after, no markdown fences.
 [
   {{"catalyst_name": "...", "verdict": "VERIFIED|UNVERIFIED|REFUTED",
-    "reasoning": "1-sentence primary-source citation",
-    "supporting_url": "https://..." or null}},
+    "reasoning": "1-sentence rationale",
+    "supporting_url": null}},
   ...
 ]
 """
     try:
-        # Constrain web_search to authoritative domains. PR #44 fix:
-        # reuters.com / wsj.com / bloomberg.com block Anthropic's user
-        # agent (HTTP 400 on every call), so D-W5-1's verification step
-        # was 100% non-functional in production since PR #33 shipped.
-        # Replaced with crawlable primary sources only:
-        #   sec.gov          → 8-K / 10-Q / 10-K / S-1 filings
-        #   sam.gov          → US government contract awards
-        #   fda.gov          → FDA milestone calendars
-        #   clinicaltrials.gov → trial readouts
-        #   businesswire / prnewswire / globenewswire → primary press releases
-        # Removed: wsj.com, reuters.com, bloomberg.com (Anthropic-blocked).
-        # Also dropped ir.com / investorrelations.com (umbrella domains that
-        # don't host actual IR content — they're aggregators).
-        tools = [{
-            "type": "web_search_20250305",
-            "name": "web_search",
-            "max_uses": 6,
-            "allowed_domains": [
-                "sec.gov", "sam.gov", "fda.gov", "clinicaltrials.gov",
-                "businesswire.com", "prnewswire.com", "globenewswire.com",
-            ],
-        }]
-        response = client.messages.create(
-            model=verification_model,
-            max_tokens=2000,
-            tools=tools,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        # PR #52 cost optimization: skip the web_search-primary path
+        # entirely. Across 3+ production smokes (PRs #44, #45, #46),
+        # the constrained-domain primary call has failed 100% of the
+        # time to produce parseable JSON — Haiku narrates "I'll verify
+        # each catalyst..." after running search tools and never
+        # synthesizes the final structured output. Cost burned per
+        # failed primary call: ~$0.10-0.15 (input tokens + 3-5
+        # web_search round-trips). PR #45/#46's fallback path (no
+        # web_search, verify from training data) reliably produces
+        # verdicts. The data says the primary call is a $0.12/run tax
+        # for zero verification value — kill it.
+        #
+        # If a future model upgrade fixes this behavior, restore the
+        # primary path by reverting this commit. Until then: direct to
+        # no-search verification, accept the marginal authoritativeness
+        # loss in exchange for $0.12/run savings × ~12 T2-T3 tickers/day.
 
         def _extract_json(resp):
             """Pull text from response.content blocks, strip code fences,
@@ -516,36 +513,22 @@ Return ONLY valid JSON list, one entry per catalyst in the SAME ORDER:
             except json.JSONDecodeError:
                 return None, r
 
+        # Direct no-search verification (formerly the fallback path).
+        response = client.messages.create(
+            model=verification_model,
+            max_tokens=2000,
+            messages=[{"role": "user", "content": prompt}],
+        )
         parsed, raw = _extract_json(response)
         cost = compute_ai_cost(response, model_id=verification_model,
-                                had_web_search=True)
+                                had_web_search=False)
 
-        # PR #45/#46: if constrained search returned no usable JSON
-        # (empty text OR non-JSON like "I couldn't verify..."), retry
-        # without web_search. Lets the model verify from training data
-        # — less authoritative but produces a verdict instead of silent
-        # skip-everything. PR #46 fix: now also triggers when raw is
-        # NON-EMPTY but unparseable (the case that was crashing PR #45).
         if parsed is None:
-            block_types = [type(b).__name__ for b in response.content]
             preview = raw[:200].replace("\n", " ") if raw else "(empty)"
-            print(f"   ⓘ Catalyst verification: primary call returned "
-                  f"unparseable JSON (blocks={block_types}, preview="
-                  f"{preview!r}); retrying without web_search...")
-            fallback = client.messages.create(
-                model=verification_model,
-                max_tokens=2000,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            parsed, raw_fb = _extract_json(fallback)
-            cost += compute_ai_cost(fallback, model_id=verification_model,
-                                     had_web_search=False)
-            if parsed is None:
-                preview = raw_fb[:200].replace("\n", " ") if raw_fb else "(empty)"
-                print(f"   ⚠️ Catalyst verification: fallback also "
-                      f"unparseable (preview={preview!r}); skipping "
-                      f"verification (catalysts pass through unchanged).")
-                return [], cost
+            print(f"   ⚠️ Catalyst verification: response unparseable "
+                  f"(preview={preview!r}); skipping verification "
+                  f"(catalysts pass through unchanged).")
+            return [], cost
         if not isinstance(parsed, list):
             return [], cost
         # Validate verdicts; coerce unknowns to UNVERIFIED (defensive).
