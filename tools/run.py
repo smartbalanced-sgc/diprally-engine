@@ -52,6 +52,10 @@ def main():
                         "overrides the registry entirely.")
     p.add_argument("--show-rationale", action="store_true",
                    help="Verbose mode (currently default)")
+    p.add_argument("--bust-cache", action="store_true",
+                   help="Force a fresh AI run (Pass 1/2/verify/stress) even when "
+                        "today's payload exists. Use to re-validate a newly-deployed "
+                        "AI step on tickers whose cache predates it. PR #38.")
     p.add_argument("--emit-snapshot", action="store_true",
                    help="After the report, print one JSON line containing the "
                         "ticker's BrokerSnapshot (ticker / ambiguity / "

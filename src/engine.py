@@ -51,6 +51,8 @@ from src.config import (
     PASS2_CLOSED_FORM_BRACKET_PCT,
     SENSITIVITY_SCENARIOS,
     SIGMA_CLASSES,
+    PARABOLA_FILTER_RSI_THRESHOLD,
+    PARABOLA_FILTER_YTD_THRESHOLD,
     TREND_FILTER_MOM_30D_THRESHOLD,
     DEFAULT_HORIZON_DAYS,
     DEFAULT_LOOKBACK_DAYS,
@@ -209,6 +211,37 @@ def _truncate_at_word_boundary(text: str, max_chars: int) -> str:
     if last_space > max_chars // 2:  # only walk back if we don't lose too much
         cut = cut[:last_space]
     return cut + "…"
+
+
+def _has_bearish_derating_catalyst(effective_ai, horizon_days: int) -> bool:
+    """PR #41 helper (mirror of sacred #14): returns True iff Pass 1/Pass 2
+    surfaced at least one in-horizon catalyst with direction_risk in
+    (bearish, two-sided). These are the only structural reasons a
+    parabolic stock mean-reverts within a swing window. Without one,
+    buying the dip on a +RSI+YTD-pegged name is betting against gravity.
+
+    A two-sided catalyst counts: it carries the possibility of a
+    de-rating event that lets the math anchor on mean-reversion.
+    In --no-ai mode effective_ai is None → False (strict reading
+    refuses parabolic dip-buys without a thesis)."""
+    if not effective_ai or not effective_ai.catalysts:
+        return False
+    from datetime import datetime as _dt, timedelta as _td
+    from src.signals import parse_catalyst_date
+    today = _dt.now().date()
+    horizon_end = today + _td(days=horizon_days)
+    for c in effective_ai.catalysts:
+        if not isinstance(c, dict):
+            continue
+        dir_risk = str(c.get("direction_risk", "")).lower()
+        if dir_risk not in ("bearish", "two-sided"):
+            continue
+        cdate = parse_catalyst_date(c.get("date_or_window", ""))
+        if cdate is None:
+            continue
+        if today <= cdate <= horizon_end:
+            return True
+    return False
 
 
 def _has_supporting_catalyst(effective_ai, horizon_days: int) -> bool:
@@ -941,7 +974,14 @@ def run_pipeline(args) -> int:
     pass1_sources_for_cache = 0
     pass2_raw_for_cache = None
 
-    cache_payload = None if not tier.runs_ai else ai_cache.get_cached(ticker, spot)
+    # PR #38: --bust-cache forces a fresh AI run even when today's payload
+    # exists. Used to re-validate newly-deployed AI steps (e.g. PR #33
+    # catalyst verification) on tickers whose cache predates the new step.
+    bust_cache = getattr(args, "bust_cache", False)
+    cache_payload = (None if (not tier.runs_ai or bust_cache)
+                     else ai_cache.get_cached(ticker, spot))
+    if bust_cache:
+        print("AI cache bypass (--bust-cache): forcing fresh Pass 1/2/verify/stress")
     if cache_payload:
         print(f"   AI cache HIT for {ticker} ({cache_payload.get('date')}, "
               f"spot ${cache_payload.get('spot'):.2f}) — Pass 1/2/stress replayed at $0.00")
@@ -1254,6 +1294,22 @@ def run_pipeline(args) -> int:
                   f"no in-horizon bullish/two-sided catalyst")
             met_threshold_strict = False
 
+    # PR #41: mirror of sacred #14 for blow-off tops. RSI overheated AND
+    # YTD parabolic AND no AI-surfaced bearish/two-sided de-rating catalyst
+    # in horizon → refuse. Without a structural reason to mean-revert,
+    # dip-buying a parabolic name is statistically betting against gravity.
+    parabola_filter_refused = False
+    if (best is not None
+            and snapshot.rsi >= PARABOLA_FILTER_RSI_THRESHOLD
+            and snapshot.ytd_return >= PARABOLA_FILTER_YTD_THRESHOLD):
+        if not _has_bearish_derating_catalyst(effective_ai, horizon_days):
+            parabola_filter_refused = True
+            print(f"⛔ Parabola-filter refusal (PR #41): RSI={snapshot.rsi:.1f} ≥ "
+                  f"{PARABOLA_FILTER_RSI_THRESHOLD:.0f} AND YTD={snapshot.ytd_return*100:+.0f}% ≥ "
+                  f"{PARABOLA_FILTER_YTD_THRESHOLD*100:+.0f}%, no in-horizon "
+                  f"bearish/two-sided de-rating catalyst")
+            met_threshold_strict = False
+
     # --- 13. AI catalyst stress test — uses Pass 2's revised catalyst list
     #          when available (effective_ai), else Pass 1's. Sacred #7.
     catalyst_stress_results = []
@@ -1442,6 +1498,7 @@ def run_pipeline(args) -> int:
         ev_hurdle_refused=ev_hurdle_refused,
         ev_pct_of_dip=ev_pct_of_dip,
         trend_filter_refused=trend_filter_refused,
+        parabola_filter_refused=parabola_filter_refused,
         sigma_class=sigma_class,
         sigma_class_mismatch=sigma_class_mismatch,
         ambiguity=ambiguity,

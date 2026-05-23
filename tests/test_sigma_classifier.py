@@ -10,8 +10,8 @@ Boundary semantics (>= for the lower bound):
   σ >= extreme_min                        → EXTREME
   σ is None / σ <= 0                      → MID  (GARCH-failure fallback)
 
-With config/diprally.yaml defaults (extreme_min=0.95, high_min=0.50):
-  σ = 0.49  → MID
+With config/diprally.yaml defaults (extreme_min=1.20, high_min=0.65; PR #39):
+  σ = 0.64  → MID
   σ = 0.50  → HIGH  (boundary, inclusive)
   σ = 0.94  → HIGH
   σ = 0.95  → EXTREME (boundary, inclusive)
@@ -35,20 +35,31 @@ from src.sigma_classifier import (
 
 
 def test_classify_below_high_min_is_mid():
+    """All values strictly below the YAML-loaded high_min must classify
+    as MID. Test data uses values < 0.50 to stay safely below any
+    plausible high_min recalibration."""
     assert classify_sigma(0.49) == "MID"
     assert classify_sigma(0.30) == "MID"
     assert classify_sigma(0.10) == "MID"
 
 
 def test_classify_at_high_min_is_high():
-    # Inclusive >= boundary.
+    # Inclusive >= boundary — boundary value loaded from YAML so the
+    # test stays valid across recalibrations.
     assert classify_sigma(SIGMA_CLASS_BOUNDARIES.high_min) == "HIGH"
 
 
 def test_classify_between_high_and_extreme_is_high():
-    assert classify_sigma(0.60) == "HIGH"
-    assert classify_sigma(0.80) == "HIGH"
-    assert classify_sigma(0.94) == "HIGH"
+    """Any σ strictly between high_min and extreme_min → HIGH. Compute
+    relative to YAML boundaries so PR #39-style recalibrations don't
+    break the test."""
+    mid_band = (SIGMA_CLASS_BOUNDARIES.high_min
+                + SIGMA_CLASS_BOUNDARIES.extreme_min) / 2.0
+    assert classify_sigma(mid_band) == "HIGH"
+    # Just above high_min.
+    assert classify_sigma(SIGMA_CLASS_BOUNDARIES.high_min + 0.01) == "HIGH"
+    # Just below extreme_min.
+    assert classify_sigma(SIGMA_CLASS_BOUNDARIES.extreme_min - 0.01) == "HIGH"
 
 
 def test_classify_at_extreme_min_is_extreme():
@@ -57,8 +68,9 @@ def test_classify_at_extreme_min_is_extreme():
 
 
 def test_classify_above_extreme_min_is_extreme():
-    assert classify_sigma(1.20) == "EXTREME"
-    assert classify_sigma(2.50) == "EXTREME"
+    """Strictly above extreme_min → EXTREME. Compute relative to YAML."""
+    assert classify_sigma(SIGMA_CLASS_BOUNDARIES.extreme_min + 0.01) == "EXTREME"
+    assert classify_sigma(SIGMA_CLASS_BOUNDARIES.extreme_min + 1.0) == "EXTREME"
 
 
 def test_classify_none_falls_back_to_mid():

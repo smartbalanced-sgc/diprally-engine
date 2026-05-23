@@ -42,6 +42,7 @@ def format_report(
     ev_hurdle_refused=False,
     ev_pct_of_dip=None,
     trend_filter_refused=False,
+    parabola_filter_refused=False,
     sigma_class=None,
     sigma_class_mismatch=None,
     ambiguity=None,
@@ -104,7 +105,21 @@ def format_report(
 
     # HEADLINE RECOMMENDATION
     lines.append(hr("ROUND-TRIP RECOMMENDATION"))
-    if trend_filter_refused and best is not None:
+    if parabola_filter_refused and best is not None:
+        # PR #41 — parabola filter (mirror of sacred #14).
+        from src.config import (
+            PARABOLA_FILTER_RSI_THRESHOLD as _RSI,
+            PARABOLA_FILTER_YTD_THRESHOLD as _YTD,
+        )
+        lines.append(f"  ⛔ REFUSED — parabola filter (PR #41).")
+        lines.append(f"  RSI {snapshot.rsi:.1f} ≥ {_RSI:.0f} AND YTD {snapshot.ytd_return*100:+.0f}% ≥ {_YTD*100:+.0f}% (blow-off territory)")
+        lines.append(f"  AND no in-horizon bearish/two-sided de-rating catalyst surfaced by AI.")
+        lines.append(f"  A parabolic move without a structural reason to mean-revert is statistically")
+        lines.append(f"  betting against gravity over a swing horizon — institutional discipline says pass.")
+        lines.append(f"  Action: WAIT for either (a) RSI cool-down below {_RSI:.0f}, (b) YTD compression")
+        lines.append(f"  below {_YTD*100:+.0f}%, or (c) a concrete bearish/two-sided catalyst (earnings,")
+        lines.append(f"  regulatory action, secondary, peer disappointment) that defines the de-rating thesis.")
+    elif trend_filter_refused and best is not None:
         # Sacred decision #14 — falling-knife trend filter.
         from src.config import TREND_FILTER_MOM_30D_THRESHOLD
         lines.append(f"  ⛔ REFUSED — trend filter (sacred decision #14).")

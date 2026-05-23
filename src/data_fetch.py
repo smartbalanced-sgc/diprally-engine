@@ -257,13 +257,14 @@ def fetch_company_profile(ticker, api_key):
 def fetch_grades_history(ticker, api_key, limit=50):
     """W6 PR #35 — analyst upgrade/downgrade history.
 
-    FMP's `upgrades-downgrades` endpoint returns recent grade-change
-    actions. Each row has publishedDate, gradingCompany, previousGrade,
-    newGrade, action ("upgrade" / "downgrade" / "maintain" / "init" /
-    "reiterated"). Returns a list of dicts (newest first) or [] when
-    the ticker has no coverage / endpoint fails.
+    FMP's stable-API endpoint for grade-change actions is `grades-historical`
+    (the legacy v3 name `upgrades-downgrades` returns 404 on stable). Each
+    row has publishedDate, gradingCompany, previousGrade, newGrade, action
+    ("upgrade" / "downgrade" / "maintain" / "init" / "reiterated").
+    Returns a list of dicts (newest first) or [] when the ticker has no
+    coverage / endpoint fails. PR #37 hotfix.
     """
-    data = _fmp_get("upgrades-downgrades", api_key,
+    data = _fmp_get("grades-historical", api_key,
                      {"symbol": ticker, "limit": limit})
     if not data or not isinstance(data, list):
         return []
@@ -315,9 +316,10 @@ def fetch_fundamentals(ticker, api_key, market_cap=None):
             except (TypeError, ValueError):
                 pass
 
-    # Quarterly income statement for margin-trend.
-    inc = _fmp_get(f"income-statement/{ticker}", api_key,
-                    {"period": "quarter", "limit": 8})
+    # Quarterly income statement for margin-trend. PR #37 hotfix:
+    # stable API uses ?symbol=X (query-param style), not path-style.
+    inc = _fmp_get("income-statement", api_key,
+                    {"symbol": ticker, "period": "quarter", "limit": 8})
     if inc and isinstance(inc, list) and len(inc) >= 8:
         try:
             # FMP rows are newest-first.

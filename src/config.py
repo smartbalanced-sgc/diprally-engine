@@ -178,6 +178,16 @@ class TrendFilterConfig(_StrictModel):
     mom_30d_threshold: float = Field(lt=0.0, gt=-1.0)
 
 
+class ParabolaFilterConfig(_StrictModel):
+    """PR #41 — mirror of sacred #14 for blow-off tops. Refuses dip-buy
+    on a parabolic name unless an AI-surfaced bearish de-rating catalyst
+    sits inside the horizon (the only structural reason a parabolic
+    stock mean-reverts within a swing window). Without one, buying a
+    +RSI+YTD-pegged name is betting against gravity."""
+    rsi_threshold: float = Field(gt=50.0, le=100.0)
+    ytd_threshold: float = Field(gt=0.0)
+
+
 class MacroRegimeConfig(_StrictModel):
     """D-W2-8: macro regime detection thresholds (VIX + SPY-vs-MA50)."""
     vix_risk_off_threshold: float = Field(gt=0.0)
@@ -405,6 +415,7 @@ class DiprallyConfig(_StrictModel):
     backtest: BacktestConfig
     analyst_outlier_threshold: float = Field(gt=0.0)
     trend_filter: TrendFilterConfig
+    parabola_filter: ParabolaFilterConfig
     macro_regime: MacroRegimeConfig
     options_iv: OptionsIVConfig
     sector_perf: SectorPerfConfig
@@ -614,6 +625,8 @@ def _rebind_module_constants() -> None:
     # Outlier gate + phantom SE
     g["ANALYST_EXTREME_DRIFT_THRESHOLD"] = _CONFIG.analyst_outlier_threshold
     g["TREND_FILTER_MOM_30D_THRESHOLD"] = _CONFIG.trend_filter.mom_30d_threshold
+    g["PARABOLA_FILTER_RSI_THRESHOLD"] = _CONFIG.parabola_filter.rsi_threshold
+    g["PARABOLA_FILTER_YTD_THRESHOLD"] = _CONFIG.parabola_filter.ytd_threshold
 
     # Macro regime (D-W2-8)
     g["VIX_RISK_OFF_THRESHOLD"] = _CONFIG.macro_regime.vix_risk_off_threshold

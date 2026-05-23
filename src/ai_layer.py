@@ -202,6 +202,19 @@ ADVERSARIAL POSTURE:
 - If Pass 1 missed a known catalyst in the horizon, flag it.
 - If Pass 1 anchored on single source where multiple were available, critique it.
 - Return ONLY valid JSON.
+
+FACT DISCIPLINE (PR #40 — anti-hallucination guard):
+- The spot price in this run is ${snapshot.spot:.2f}. Do NOT invent
+  contradictory spot/price facts. Critique Pass 1's REASONING and
+  WEIGHTING, not numeric facts the math layer already established.
+- If you cite a financial figure (revenue, FCF, market cap, fair value)
+  that did not appear in Pass 1's JSON or the MATH LAYER block above,
+  you are hallucinating — re-anchor on what's given.
+- Permitted: critique narrative framing, missing catalysts, asymmetric
+  drift_range, vol_regime miscalibration, source quality (e.g. retail
+  sites like TimothySykes are not institutional sources).
+- Forbidden: introducing new factual claims about price levels, share
+  counts, or financials not present in Pass 1's catalysts/factors.
 """
 
 

@@ -162,14 +162,19 @@ conviction:
 # -----------------------------------------------------------
 # σ-class auto-detection (W3 / D-W2-X / sacred decision spec from CLAUDE.md).
 # Detector picks a class from blended σ; class-specific defaults override
-# the flat conviction above. Boundaries chosen conservatively — EXTREME is
-# σ ≥ 95% (truly extraordinary names). RKLB at σ=112% should classify
-# EXTREME under this rule; CLAUDE.md hint says HIGH — surface mismatch
-# in report rather than silently override.
+# the flat conviction above. PR #39 recalibration (2026-05-23 smoke):
+# the original boundaries (extreme_min=0.95, high_min=0.50) were calibrated
+# for normal-cycle tech vol (15-50% annualised). The current AI/semis regime
+# is running 50-150% annualised across the universe — 4 of 5 representative
+# tickers (INTC 83%, AMAT 51%, MU 81%, RKLB 107%) auto-classed differently
+# than the static registry hint. Boundaries widened to match: EXTREME now
+# starts at 120% (truly extreme even for hot tech), HIGH starts at 65%.
+# Re-run the registry-hint review after this PR; tickers at the boundary
+# will see fewer false mismatches.
 # -----------------------------------------------------------
 sigma_class_boundaries:
-  extreme_min: 0.95             # σ ≥ this → EXTREME
-  high_min: 0.50                # this ≤ σ < extreme_min → HIGH; below → MID
+  extreme_min: 1.20             # σ ≥ this → EXTREME (raised from 0.95)
+  high_min: 0.65                # this ≤ σ < extreme_min → HIGH; below → MID (raised from 0.50)
 
 # Per-class threshold table. Other class-keyed config (friction,
 # panic floor, AI vol_regime mult) lands in subsequent W3 PRs — this
@@ -340,6 +345,24 @@ analyst_outlier_threshold: 0.50
 # -----------------------------------------------------------
 trend_filter:
   mom_30d_threshold: -0.25
+
+# -----------------------------------------------------------
+# Post-parabola refusal gate (PR #41 — mirror of sacred #14).
+# Refuses dip-buy recommendations on a parabolic blow-off when:
+#   RSI ≥ rsi_threshold (overheated)
+#   AND YTD return ≥ ytd_threshold (already had the run)
+#   AND no AI-surfaced bearish de-rating catalyst in horizon
+#       (a de-rating catalyst is the only thing that lets the math
+#        anchor on mean-reversion; without one, "BUY THE DIP" on a
+#        parabolic name is statistically betting against gravity)
+# Gate fires AFTER the math layer recommends BUY but BEFORE the
+# recommendation reaches the trader — sacred-style hard refusal.
+# Same shape as the falling-knife trend filter above; both gates
+# refuse asymmetric-tail entries.
+# -----------------------------------------------------------
+parabola_filter:
+  rsi_threshold: 70.0                   # ≥ this is overbought
+  ytd_threshold: 1.50                   # ≥ +150% YTD is parabolic
 
 # -----------------------------------------------------------
 # Macro regime detection (data_fetch.fetch_macro_indicators).
