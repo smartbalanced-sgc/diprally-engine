@@ -61,14 +61,18 @@ def test_t2_is_sonnet_pass1_plus_pass2_with_verification():
 
 
 def test_t3_is_opus_sonnet_haiku_full_stack_with_verification():
-    """T3 must match the pre-W4 single-ticker hardcoded behavior plus
-    W6 PR #33 catalyst verification."""
+    """T3 must have the deepest stack: Opus Pass 1 + Sonnet Pass 2 +
+    Haiku stress + Haiku verification. PR #52: web_search reduced
+    from 5 to 3 (rarely-hit upper bound; Pass 1 already gathers
+    10+ sources from 3 searches)."""
     spec = resolve_tier("T3")
     assert spec.pass1_model == MODEL_OPUS
     assert spec.pass2_model == MODEL_SONNET
     assert spec.stress_model == MODEL_HAIKU
     assert spec.catalyst_verification_model == MODEL_HAIKU
-    assert spec.pass1_web_search_max == 5
+    # PR #52 — web_search reduced 5→3. Sanity-check it stays > 1
+    # (Pass 1 needs at least one search to gather catalysts).
+    assert spec.pass1_web_search_max >= 2
     assert spec.runs_ai is True
 
 

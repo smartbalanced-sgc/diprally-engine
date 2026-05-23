@@ -76,21 +76,26 @@ ai_tiers:
     pass2_model: sonnet
     stress_model: null
     # W6 PR #33: Haiku verifies Pass 2's catalysts against primary
-    # sources (SEC, IR, press wire). ~3×$0.005 = ~$0.015 extra.
+    # sources (SEC, IR, press wire). PR #52: web_search-primary path
+    # was failing 100% (Haiku narrates instead of producing JSON), so
+    # the engine now goes straight to no-search verification — same
+    # verdict quality, no wasted ~$0.12 on the broken primary call.
     catalyst_verification_model: haiku
-    pass1_web_search_max: 3
+    pass1_web_search_max: 2       # PR #52: was 3; Pass 1 already gathers
+                                    # 10+ sources from 2 searches
     pass1_max_tokens: 8000
-    pass2_max_tokens: 4000
-    estimated_cost_usd: 0.12
+    pass2_max_tokens: 2500        # PR #52: was 4000; actual P2 output ~1000
+    estimated_cost_usd: 0.08      # PR #52: was 0.12 (reduced web_search + tokens)
   T3:
     pass1_model: opus            # deepest — current single-ticker default
     pass2_model: sonnet
     stress_model: haiku
     catalyst_verification_model: haiku
-    pass1_web_search_max: 5
+    pass1_web_search_max: 3       # PR #52: was 5; rarely-hit upper bound
     pass1_max_tokens: 8000
-    pass2_max_tokens: 4000
-    estimated_cost_usd: 0.32
+    pass2_max_tokens: 2500        # PR #52: was 4000
+    estimated_cost_usd: 0.45      # PR #52: was 0.30; calibrated to actual
+                                    # observed $0.55-0.70 minus PR #52 cuts
 
 # Per-day total AI cost cap. Hard ceiling — broker refuses to allocate
 # beyond this even if every ticker has high ambiguity.
@@ -108,7 +113,14 @@ ai_daily_budget_cap_usd: 2.00
 #   ambig ≥ t3_min, NOT qualified         → T1 (T1 ceiling without qual)
 ai_broker:
   ai_min_ambiguity: 0.20   # below this, any AI spend is wasteful
-  t3_min_ambiguity: 0.50   # T3 (~$0.30) reserved for high-ambiguity setups
+  # PR #52: T3 threshold raised from 0.50 → 0.75. RKLB / INTC smokes
+  # showed ambiguity in the 0.50-0.60 range producing Pass 2 critiques
+  # whose drift revisions could have been produced equally well by
+  # T2's Sonnet Pass 1 ($0.08) instead of T3's Opus Pass 1 ($0.45).
+  # Reserve Opus depth for genuinely contested setups (≥0.75 ambig
+  # — typically EXTREME-class names with high σ divergence + method
+  # tolerance near refusal).
+  t3_min_ambiguity: 0.75
 
 # -----------------------------------------------------------
 # Blend weights. Sum need not equal 1.0 — blend_with_uncertainty normalizes.

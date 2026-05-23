@@ -126,12 +126,12 @@ def test_below_t1_threshold_stays_t0_even_with_budget():
 
 def test_three_tier_cascade():
     """Mix of high / medium / low ambiguity, all qualified, modest
-    budget — should land T3 / T2 / T0 across them. Specifically:
-    one high-ambig qualified gets T3, next-highest get T2 until
-    budget exhausts."""
-    snaps = [_snap("HI",    0.90, True),  # T3 candidate
-             _snap("MID1",  0.55, True),  # T3 if budget, else T2
-             _snap("MID2",  0.51, True),  # T3 if budget, else T2
+    budget — should land T3 / T2 / T0 across them. PR #52: T3
+    threshold raised to 0.75, so values just above (HI=0.90) clear
+    T3 while mid-range values (MID1=0.55, MID2=0.51) now drop to T2."""
+    snaps = [_snap("HI",    0.90, True),  # T3 candidate (≥ 0.75)
+             _snap("MID1",  0.55, True),  # below T3 threshold → T2 if budget
+             _snap("MID2",  0.51, True),  # below T3 threshold → T2 if budget
              _snap("MILD",  0.25, True),  # above ai_min, qualified → T2
              _snap("CLEAR", 0.05, True)]  # below ai_min → T0 (math decisive)
     alloc = allocate(snaps, budget_usd=2.00)
@@ -185,7 +185,8 @@ def test_realistic_17_ticker_universe_under_budget():
     snaps = [_snap(t, a, q, c) for (t, a, q, c) in universe]
     alloc = allocate(snaps)
     assert alloc.spent_usd <= 2.00
-    # At least one T3 slot (we have 5 EXTREME-class qualifiers above t3_min).
+    # At least one T3 slot. PR #52 raised t3_min to 0.75 — LWLG at 0.78
+    # is the only qualifier in this fixture (qualified + above threshold).
     tier_counts = {"T3": 0, "T2": 0, "T1": 0, "T0": 0}
     for t in alloc.assignments.values():
         tier_counts[t] += 1
