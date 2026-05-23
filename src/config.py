@@ -130,6 +130,16 @@ class HorizonConfig(_StrictModel):
     deep_dip_autoscale_paths: int = Field(gt=0)
 
 
+class PortfolioGateConfig(_StrictModel):
+    """W8 PR #49: portfolio correlation gating. Refuses substitute
+    recommendations when two would-recommend tickers have 60d return
+    correlation above threshold. Sacred #6 compliant — this is
+    recommendation deduplication, not position sizing."""
+    enabled: bool
+    correlation_threshold: float = Field(gt=0.0, lt=1.0)
+    correlation_window_days: int = Field(ge=20, le=252)
+
+
 class MCDistributionConfig(_StrictModel):
     """W9 PR #48: Monte Carlo innovation distribution. Switches between
     classic lognormal GBM ("normal") and fat-tail Student-t innovations
@@ -431,6 +441,7 @@ class DiprallyConfig(_StrictModel):
     sigma_classes: dict[str, SigmaClassThresholdConfig]
     horizon: HorizonConfig
     mc_distribution: MCDistributionConfig
+    portfolio_gate: PortfolioGateConfig
     narrative_drift_adjustment: dict[str, float]
     factor_arithmetic: FactorArithmeticConfig
     catalyst: CatalystConfig
@@ -606,6 +617,8 @@ def _rebind_module_constants() -> None:
 
     # W9 PR #48: MC distribution config (normal vs student_t per σ-class).
     g["MC_DISTRIBUTION"] = _CONFIG.mc_distribution
+    # W8 PR #49: portfolio correlation gate config.
+    g["PORTFOLIO_GATE"] = _CONFIG.portfolio_gate
 
     # Narrative drift (panic_floor + ai_vol_regime_multipliers are now
     # per-σ-class — accessed via SIGMA_CLASSES[class].<field>).
