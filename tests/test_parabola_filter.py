@@ -90,6 +90,25 @@ def test_twosided_catalyst_does_NOT_count_as_derating():
     assert _has_bearish_derating_catalyst(ai, horizon_days=60) is False
 
 
+def test_bearish_skew_variant_counts_as_derating():
+    """PR #46: Pass 1/Pass 2 commonly emit 'bearish-skew' for mean-
+    reversion catalysts (e.g. 'profit-taking after +204% YTD').
+    The filter accepts any direction_risk string starting with
+    'bearish' so these lexical variants don't silently bypass the
+    gate. Same semantic intent as PR #45 (specifically bearish, not
+    bidirectional), just lexically tolerant."""
+    from datetime import datetime as _dt
+    today = _dt.now().date()
+    d = today + timedelta(days=20)
+    for variant in ("bearish", "bearish-skew", "Bearish",
+                     "BEARISH-skew", "bearish/down"):
+        ai = _ai({"name": "mean reversion", "type": "macro",
+                   "date_or_window": d.strftime("%Y-%m-%d"),
+                   "magnitude": "med", "direction_risk": variant})
+        assert _has_bearish_derating_catalyst(ai, horizon_days=60) is True, \
+            f"variant {variant!r} should count as bearish"
+
+
 def test_bullish_only_catalyst_does_not_block_refusal():
     """A purely bullish catalyst does NOT provide a de-rating thesis —
     it would actually accelerate the parabolic move. Parabola filter

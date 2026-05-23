@@ -469,48 +469,58 @@ Return ONLY valid JSON list, one entry per catalyst in the SAME ORDER:
             tools=tools,
             messages=[{"role": "user", "content": prompt}],
         )
-        text_parts = [b.text for b in response.content if hasattr(b, "text")]
-        raw = "\n".join(text_parts).strip()
-        # Strip code fences if present.
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
+
+        def _extract_json(resp):
+            """Pull text from response.content blocks, strip code fences,
+            try to json.loads. Returns (parsed_list_or_None,
+            raw_string_for_diagnostics)."""
+            text_parts = [b.text for b in resp.content if hasattr(b, "text")]
+            r = "\n".join(text_parts).strip()
+            if r.startswith("```"):
+                r = r.split("```")[1]
+                if r.startswith("json"):
+                    r = r[4:]
+                r = r.strip()
+            if not r:
+                return None, ""
+            try:
+                p = json.loads(r)
+                if isinstance(p, list):
+                    return p, r
+                return None, r
+            except json.JSONDecodeError:
+                return None, r
+
+        parsed, raw = _extract_json(response)
         cost = compute_ai_cost(response, model_id=verification_model,
                                 had_web_search=True)
-        # PR #45: if the constrained-search path returned empty text
-        # (e.g. SEC.gov has no recent hit on these specific catalysts;
-        # Haiku used the tools but didn't synthesize a final response),
-        # fall back to a no-search call that lets the model verify from
-        # training data. Less authoritative but at least produces a
-        # verdict — better than silent skip-everything.
-        if not raw:
-            print(f"   ⓘ Catalyst verification: constrained-search call "
-                  f"returned empty text (block types: "
-                  f"{[type(b).__name__ for b in response.content]}); "
-                  f"retrying without web_search...")
+
+        # PR #45/#46: if constrained search returned no usable JSON
+        # (empty text OR non-JSON like "I couldn't verify..."), retry
+        # without web_search. Lets the model verify from training data
+        # — less authoritative but produces a verdict instead of silent
+        # skip-everything. PR #46 fix: now also triggers when raw is
+        # NON-EMPTY but unparseable (the case that was crashing PR #45).
+        if parsed is None:
+            block_types = [type(b).__name__ for b in response.content]
+            preview = raw[:200].replace("\n", " ") if raw else "(empty)"
+            print(f"   ⓘ Catalyst verification: primary call returned "
+                  f"unparseable JSON (blocks={block_types}, preview="
+                  f"{preview!r}); retrying without web_search...")
             fallback = client.messages.create(
                 model=verification_model,
                 max_tokens=2000,
                 messages=[{"role": "user", "content": prompt}],
             )
-            fb_text = [b.text for b in fallback.content if hasattr(b, "text")]
-            raw = "\n".join(fb_text).strip()
-            if raw.startswith("```"):
-                raw = raw.split("```")[1]
-                if raw.startswith("json"):
-                    raw = raw[4:]
-                raw = raw.strip()
+            parsed, raw_fb = _extract_json(fallback)
             cost += compute_ai_cost(fallback, model_id=verification_model,
                                      had_web_search=False)
-        if not raw:
-            # Both calls returned nothing — surface diagnostically and skip.
-            print(f"   ⚠️ Catalyst verification: empty response on both "
-                  f"primary and fallback calls; skipping verification "
-                  f"(catalysts pass through unchanged).")
-            return [], cost
-        parsed = json.loads(raw)
+            if parsed is None:
+                preview = raw_fb[:200].replace("\n", " ") if raw_fb else "(empty)"
+                print(f"   ⚠️ Catalyst verification: fallback also "
+                      f"unparseable (preview={preview!r}); skipping "
+                      f"verification (catalysts pass through unchanged).")
+                return [], cost
         if not isinstance(parsed, list):
             return [], cost
         # Validate verdicts; coerce unknowns to UNVERIFIED (defensive).

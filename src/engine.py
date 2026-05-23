@@ -245,7 +245,13 @@ def _has_bearish_derating_catalyst(effective_ai, horizon_days: int) -> bool:
         if not isinstance(c, dict):
             continue
         dir_risk = str(c.get("direction_risk", "")).lower()
-        if dir_risk != "bearish":
+        # PR #46: accept any "bearish*" variant (Pass 1/Pass 2 emit
+        # "bearish", "bearish-skew", "bearish/skew" etc.). Still excludes
+        # "two-sided" and "bullish*" — semantic intent unchanged from
+        # PR #45 ("specifically bearish thesis required"), just more
+        # lexically tolerant. Pass 2 commonly emits "bearish-skew" for
+        # mean-reversion catalysts (e.g. "profit-taking after +204% YTD").
+        if not dir_risk.startswith("bearish"):
             continue
         cdate = parse_catalyst_date(c.get("date_or_window", ""))
         if cdate is None:
