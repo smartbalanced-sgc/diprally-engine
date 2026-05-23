@@ -600,7 +600,62 @@ CSV_COLUMNS = [
     "realized_max_drawdown",   # decimal — max DD from spot during window
     "realized_terminal_return",# decimal — terminal close vs spot
     "resolved_at",             # YYYY-MM-DD when status flipped to RESOLVED/EXPIRED
+    # W10 PR #54 — D-W10-1 catalyst-accuracy capture. Snapshots Pass 1
+    # and Pass 2's catalyst output AND the verification verdicts at run
+    # time so future analysis can compute per-ticker hallucination rates
+    # by checking whether each predicted catalyst actually occurred as
+    # described. Compact JSON serialization keeps the CSV machine-
+    # parsable without exploding row width. Empty string when AI didn't
+    # run (T0 tier) or no catalysts surfaced.
+    "pass1_catalysts_json",      # JSON list of Pass 1 catalysts (name/date/type/direction/magnitude)
+    "pass2_catalysts_json",      # JSON list of Pass 2 revised catalysts (same shape)
+    "verification_verdicts_json",# JSON list aligned to top-3 Pass 2 catalysts: verdict + reasoning
 ]
+
+
+def _compact_catalysts_json(catalysts) -> str:
+    """W10 PR #54 helper: serialize a Pass 1/Pass 2 catalyst list for
+    CSV capture. Only retains the fields D-W10-1 analysis needs
+    (name / type / date_or_window / direction_risk / magnitude). Drops
+    'sources' and any verification_* fields appended by PR #33's
+    apply_catalyst_verification — those go in their own column.
+    Empty list → "" (engine doesn't write JSON-for-empty)."""
+    import json as _json
+    if not catalysts:
+        return ""
+    keep = []
+    for c in catalysts:
+        if not isinstance(c, dict):
+            continue
+        keep.append({
+            k: c.get(k) for k in (
+                "name", "type", "date_or_window",
+                "direction_risk", "magnitude",
+            )
+        })
+    if not keep:
+        return ""
+    return _json.dumps(keep, separators=(",", ":"))
+
+
+def _compact_verdicts_json(verifications) -> str:
+    """W10 PR #54 helper: serialize PR #33's catalyst-verification
+    verdicts for CSV capture. Aligns 1:1 with the top-3 Pass 2 catalysts."""
+    import json as _json
+    if not verifications:
+        return ""
+    keep = []
+    for v in verifications:
+        if not isinstance(v, dict):
+            continue
+        keep.append({
+            "catalyst_name": v.get("catalyst_name", ""),
+            "verdict": v.get("verdict", "UNVERIFIED"),
+            "reasoning": v.get("reasoning", ""),
+        })
+    if not keep:
+        return ""
+    return _json.dumps(keep, separators=(",", ":"))
 
 
 def append_history_row(history_path, row):
@@ -1553,6 +1608,16 @@ def run_pipeline(args) -> int:
         "data_source": data_source,
         "ai_tier": tier.name,
         "ambiguity_score": f"{ambiguity.overall:.4f}",
+        # W10 PR #54 — D-W10-1 catalyst-accuracy capture.
+        "pass1_catalysts_json": _compact_catalysts_json(
+            pass1.catalysts if pass1 else []
+        ),
+        "pass2_catalysts_json": _compact_catalysts_json(
+            pass2.catalysts if pass2 else []
+        ),
+        "verification_verdicts_json": _compact_verdicts_json(
+            catalyst_verifications
+        ),
     }
     append_history_row(history_path, csv_row)
 
