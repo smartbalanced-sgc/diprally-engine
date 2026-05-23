@@ -578,6 +578,20 @@ CSV_COLUMNS = [
     "garch_alpha_plus_beta", "horizon_days",
     "method_agreement_flags", "ai_cost_total", "data_source",
     "ai_tier", "ambiguity_score",
+    # W10 PR #47 — calibration harness. Outcome fields populated by
+    # src.calibration.resolve_outcomes() at each engine run; the row's
+    # prediction is locked at write time but its outcome accumulates as
+    # the horizon window plays out. Empty strings until resolved.
+    "outcome_status",          # OPEN / RESOLVED / EXPIRED
+    "dip_touched",             # 1 / 0 (within horizon)
+    "dip_touch_day",           # day index from prediction date (0..horizon-1)
+    "rally_touched_after_dip", # 1 / 0 — rally after the dip touch
+    "rally_touch_day",         # day index from prediction date
+    "round_trip_completed",    # 1 / 0 — sacred ordering: dip THEN rally
+    "bag_hold_realized",       # 1 / 0 — dip touched, rally never (or close < dip at horizon)
+    "realized_max_drawdown",   # decimal — max DD from spot during window
+    "realized_terminal_return",# decimal — terminal close vs spot
+    "resolved_at",             # YYYY-MM-DD when status flipped to RESOLVED/EXPIRED
 ]
 
 
@@ -1463,6 +1477,32 @@ def run_pipeline(args) -> int:
 
     # --- 15. Backtest layer ---
     backtest = run_backtest_layer(history_path, spot)
+
+    # --- 15b. W10 calibration harness (PR #47): resolve outcomes for
+    # any prior predictions whose horizon window has now closed. Updates
+    # CSV in-place. Idempotent — already-resolved rows pass through
+    # unchanged. Runs BEFORE the new prediction row is written so the
+    # current row enters as OPEN.
+    try:
+        from src.calibration import resolve_history as _resolve_history
+        if history_path.exists():
+            with open(history_path, "r") as _f:
+                _existing_rows = list(csv.DictReader(_f))
+            _resolved_rows, _n_newly = _resolve_history(
+                _existing_rows, history_df,
+            )
+            if _n_newly > 0:
+                print(f"Calibration: resolved {_n_newly} prior prediction"
+                      f"{'s' if _n_newly != 1 else ''} (horizon window closed)")
+                # Rewrite CSV with resolved outcomes.
+                with open(history_path, "w", newline="") as _f:
+                    _w = csv.DictWriter(_f, fieldnames=CSV_COLUMNS,
+                                          extrasaction="ignore")
+                    _w.writeheader()
+                    for _r in _resolved_rows:
+                        _w.writerow(_r)
+    except Exception as _e:
+        print(f"   WARNING: calibration resolver skipped: {_e}")
 
     # --- 16. Persist CSV row ---
     total_ai_cost = (pass1_cost_charged + pass2_cost_charged
