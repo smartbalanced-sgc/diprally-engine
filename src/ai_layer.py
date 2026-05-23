@@ -202,6 +202,19 @@ ADVERSARIAL POSTURE:
 - If Pass 1 missed a known catalyst in the horizon, flag it.
 - If Pass 1 anchored on single source where multiple were available, critique it.
 - Return ONLY valid JSON.
+
+FACT DISCIPLINE (PR #40 — anti-hallucination guard):
+- The spot price in this run is ${snapshot.spot:.2f}. Do NOT invent
+  contradictory spot/price facts. Critique Pass 1's REASONING and
+  WEIGHTING, not numeric facts the math layer already established.
+- If you cite a financial figure (revenue, FCF, market cap, fair value)
+  that did not appear in Pass 1's JSON or the MATH LAYER block above,
+  you are hallucinating — re-anchor on what's given.
+- Permitted: critique narrative framing, missing catalysts, asymmetric
+  drift_range, vol_regime miscalibration, source quality (e.g. retail
+  sites like TimothySykes are not institutional sources).
+- Forbidden: introducing new factual claims about price levels, share
+  counts, or financials not present in Pass 1's catalysts/factors.
 """
 
 
@@ -290,8 +303,15 @@ def call_ai_pass(prompt, max_tokens=3000, pass_label="Pass",
 
 
 def call_ai_catalyst_stress_test(ticker, spot, dip_price, rally_price,
-                                  catalysts, horizon_days):
-    """Top-3 catalyst impact: directional drift if disappoints by 20%."""
+                                  catalysts, horizon_days,
+                                  stress_model=None):
+    """Top-3 catalyst impact: directional drift if disappoints by 20%.
+
+    W4 PR #27: stress_model is parameterized by the AI tier. Defaults to
+    MODEL_HAIKU for backwards compat with any code path that doesn't
+    pass it explicitly (e.g. tests)."""
+    if stress_model is None:
+        stress_model = MODEL_HAIKU
     client = _anthropic_client()
     if client is None or not catalysts:
         return [], 0.0
@@ -315,7 +335,7 @@ Return ONLY valid JSON list.
 """
     try:
         response = client.messages.create(
-            model=MODEL_HAIKU,
+            model=stress_model,
             max_tokens=1500,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -334,6 +354,237 @@ Return ONLY valid JSON list.
     except Exception as e:
         print(f"⚠️  Catalyst stress test failed: {e}")
         return [], 0.0
+
+
+# =============================================================================
+# Catalyst verification (W6 PR #33, closes D-W5-1)
+# =============================================================================
+# Pass 1's web_search surface produces high-fluency catalyst summaries that
+# sometimes fabricate structure around real underlying themes (e.g. the
+# RKLB-convertible "Q2 conversion window" — see D-W5-1 in
+# docs/handover/_DEFERRED.md). Pass 2's adversarial critique catches
+# reasoning errors but doesn't verify factual specifics. A Haiku-constrained
+# verification call after Pass 2 grounds each catalyst against primary
+# sources before its magnitude feeds the drift blend.
+#
+# Verification verdicts:
+#   VERIFIED   — primary source confirms the catalyst exists with the
+#                stated date/window/direction; magnitude unchanged.
+#   UNVERIFIED — couldn't find primary-source corroboration; downgrade
+#                magnitude to "low" (still surfaced, but contribution
+#                shrinks).
+#   REFUTED    — primary source directly contradicts the catalyst
+#                (e.g. "M&A close already happened in Q1"); catalyst
+#                dropped entirely from the signal blend.
+
+VERIFICATION_VERDICTS = {"VERIFIED", "UNVERIFIED", "REFUTED"}
+
+
+def call_ai_catalyst_verification(ticker: str, catalysts: list, horizon_days: int,
+                                   verification_model: str):
+    """Verify top-3 catalysts against primary sources via Haiku.
+
+    Returns (verifications, cost_usd). verifications is a list aligned
+    1:1 with the top-3 input catalysts (in order), each entry a dict:
+        {"catalyst_name": ..., "verdict": "VERIFIED|UNVERIFIED|REFUTED",
+         "reasoning": ..., "supporting_url": ... or null}
+
+    On model error / parse failure, returns ([], 0.0) — caller treats
+    this as "verification not run" and leaves catalysts untouched.
+
+    Cost: ~$0.005 × 3 catalysts ≈ $0.015. The verification prompt
+    constrains web_search to authoritative domains (SEC, IR, wire
+    services) — adds 3-6 web calls × $0.01 = ~$0.03-0.06. Plus model
+    tokens; total expected $0.02-0.05 per ticker.
+    """
+    client = _anthropic_client()
+    if client is None or not catalysts:
+        return [], 0.0
+    top = [c for c in catalysts[:3] if isinstance(c, dict)]
+    if not top:
+        return [], 0.0
+
+    catalyst_lines = "\n".join(
+        f'  {i+1}. {c.get("name", "?")} (type={c.get("type", "?")}, '
+        f'date_or_window={c.get("date_or_window", "?")}, '
+        f'direction={c.get("direction_risk", "?")}, '
+        f'magnitude={c.get("magnitude", "?")})'
+        for i, c in enumerate(top)
+    )
+    prompt = f"""Verify the following catalysts for {ticker} against PRIMARY sources only.
+
+Catalysts to verify (top-{len(top)} from Pass 2):
+{catalyst_lines}
+
+For each catalyst, search authoritative primary sources to determine if
+the SPECIFIC details (date/window, direction, structure) are corroborated:
+  - Earnings dates → SEC 8-K filings, company IR earnings-calendar
+  - Convertible / debt terms → SEC 10-K/10-Q footnotes, indenture filings
+  - M&A close dates → SEC 8-K, company press releases, wire services
+  - Government contract awards → SAM.gov, DoD comptroller, company IR
+  - FDA / regulatory milestones → FDA.gov, ClinicalTrials.gov, company IR
+  - Guidance / capital markets days → company IR investor calendar
+
+Return one verdict per catalyst:
+  VERIFIED   — primary source confirms the specific date/window AND direction
+  UNVERIFIED — couldn't corroborate the specific details (theme may be
+               real but the structure Pass 1 framed isn't supported)
+  REFUTED    — primary source directly contradicts the catalyst
+               (already happened, different direction, not real)
+
+Return ONLY valid JSON list, one entry per catalyst in the SAME ORDER:
+[
+  {{"catalyst_name": "...", "verdict": "VERIFIED|UNVERIFIED|REFUTED",
+    "reasoning": "1-sentence primary-source citation",
+    "supporting_url": "https://..." or null}},
+  ...
+]
+"""
+    try:
+        # Constrain web_search to authoritative domains. PR #44 fix:
+        # reuters.com / wsj.com / bloomberg.com block Anthropic's user
+        # agent (HTTP 400 on every call), so D-W5-1's verification step
+        # was 100% non-functional in production since PR #33 shipped.
+        # Replaced with crawlable primary sources only:
+        #   sec.gov          → 8-K / 10-Q / 10-K / S-1 filings
+        #   sam.gov          → US government contract awards
+        #   fda.gov          → FDA milestone calendars
+        #   clinicaltrials.gov → trial readouts
+        #   businesswire / prnewswire / globenewswire → primary press releases
+        # Removed: wsj.com, reuters.com, bloomberg.com (Anthropic-blocked).
+        # Also dropped ir.com / investorrelations.com (umbrella domains that
+        # don't host actual IR content — they're aggregators).
+        tools = [{
+            "type": "web_search_20250305",
+            "name": "web_search",
+            "max_uses": 6,
+            "allowed_domains": [
+                "sec.gov", "sam.gov", "fda.gov", "clinicaltrials.gov",
+                "businesswire.com", "prnewswire.com", "globenewswire.com",
+            ],
+        }]
+        response = client.messages.create(
+            model=verification_model,
+            max_tokens=2000,
+            tools=tools,
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        def _extract_json(resp):
+            """Pull text from response.content blocks, strip code fences,
+            try to json.loads. Returns (parsed_list_or_None,
+            raw_string_for_diagnostics)."""
+            text_parts = [b.text for b in resp.content if hasattr(b, "text")]
+            r = "\n".join(text_parts).strip()
+            if r.startswith("```"):
+                r = r.split("```")[1]
+                if r.startswith("json"):
+                    r = r[4:]
+                r = r.strip()
+            if not r:
+                return None, ""
+            try:
+                p = json.loads(r)
+                if isinstance(p, list):
+                    return p, r
+                return None, r
+            except json.JSONDecodeError:
+                return None, r
+
+        parsed, raw = _extract_json(response)
+        cost = compute_ai_cost(response, model_id=verification_model,
+                                had_web_search=True)
+
+        # PR #45/#46: if constrained search returned no usable JSON
+        # (empty text OR non-JSON like "I couldn't verify..."), retry
+        # without web_search. Lets the model verify from training data
+        # — less authoritative but produces a verdict instead of silent
+        # skip-everything. PR #46 fix: now also triggers when raw is
+        # NON-EMPTY but unparseable (the case that was crashing PR #45).
+        if parsed is None:
+            block_types = [type(b).__name__ for b in response.content]
+            preview = raw[:200].replace("\n", " ") if raw else "(empty)"
+            print(f"   ⓘ Catalyst verification: primary call returned "
+                  f"unparseable JSON (blocks={block_types}, preview="
+                  f"{preview!r}); retrying without web_search...")
+            fallback = client.messages.create(
+                model=verification_model,
+                max_tokens=2000,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            parsed, raw_fb = _extract_json(fallback)
+            cost += compute_ai_cost(fallback, model_id=verification_model,
+                                     had_web_search=False)
+            if parsed is None:
+                preview = raw_fb[:200].replace("\n", " ") if raw_fb else "(empty)"
+                print(f"   ⚠️ Catalyst verification: fallback also "
+                      f"unparseable (preview={preview!r}); skipping "
+                      f"verification (catalysts pass through unchanged).")
+                return [], cost
+        if not isinstance(parsed, list):
+            return [], cost
+        # Validate verdicts; coerce unknowns to UNVERIFIED (defensive).
+        clean = []
+        for entry in parsed:
+            if not isinstance(entry, dict):
+                continue
+            verdict = str(entry.get("verdict", "UNVERIFIED")).upper()
+            if verdict not in VERIFICATION_VERDICTS:
+                verdict = "UNVERIFIED"
+            clean.append({
+                "catalyst_name": str(entry.get("catalyst_name", "")),
+                "verdict": verdict,
+                "reasoning": str(entry.get("reasoning", "")),
+                "supporting_url": entry.get("supporting_url"),
+            })
+        return clean, cost
+    except Exception as e:
+        print(f"⚠️  Catalyst verification failed: {e}")
+        return [], 0.0
+
+
+def apply_catalyst_verification(catalysts: list, verifications: list) -> list:
+    """Filter + downgrade an input catalyst list based on verification
+    results. Pure function — does not mutate inputs.
+
+    - REFUTED catalysts are dropped entirely.
+    - UNVERIFIED catalysts have their magnitude forced to "low".
+    - VERIFIED catalysts pass through unchanged.
+    - Catalysts beyond the top-3 (no verification entry) pass through
+      unchanged — they didn't reach the verification threshold but
+      weren't tested either.
+
+    Each kept catalyst gets a `verification_verdict` field appended so
+    downstream code (reporter, dashboard) can surface it.
+    """
+    if not catalysts:
+        return []
+    if not verifications:
+        # Verification didn't run / failed; return unchanged.
+        return list(catalysts)
+    # Match by index — verification entries are aligned 1:1 with top-N catalysts.
+    out = []
+    for i, c in enumerate(catalysts):
+        if not isinstance(c, dict):
+            out.append(c)
+            continue
+        if i >= len(verifications):
+            # Beyond verified-top-N; pass through.
+            out.append(dict(c))
+            continue
+        v = verifications[i]
+        verdict = v.get("verdict", "UNVERIFIED")
+        if verdict == "REFUTED":
+            continue  # drop entirely
+        new_c = dict(c)
+        new_c["verification_verdict"] = verdict
+        new_c["verification_reasoning"] = v.get("reasoning", "")
+        new_c["verification_url"] = v.get("supporting_url")
+        if verdict == "UNVERIFIED":
+            new_c["magnitude"] = "low"
+            new_c["magnitude_pre_verification"] = c.get("magnitude")
+        out.append(new_c)
+    return out
 
 
 # =============================================================================

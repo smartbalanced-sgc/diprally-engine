@@ -254,6 +254,132 @@ def fetch_company_profile(ticker, api_key):
     return data[0]
 
 
+def fetch_grades_history(ticker, api_key, limit=200, lookback_days=120):
+    """W6 PR #35 — analyst upgrade/downgrade history.
+
+    FMP's stable-API endpoint for individual grade-change events is
+    `/stable/grades?symbol=X` (PR #43 — confirmed with FMP support).
+    Each row has date, gradingCompany, previousGrade, newGrade, action
+    ("upgrade" / "downgrade" / "maintain"). The signal filters to
+    upgrade/downgrade only.
+
+    PR #44 update: FMP's `limit` param is IGNORED on this endpoint
+    (returns all 810 rows for INTC regardless). We truncate client-side
+    by date — keep only rows within `lookback_days` of today (default
+    120d, comfortably wider than the signal's 90d filter window). This
+    drops ~95% of bytes per fetch while preserving signal correctness.
+    Also caps at `limit` rows as a hard safety net for tickers with
+    extreme coverage history.
+    """
+    data = _fmp_get("grades", api_key,
+                     {"symbol": ticker})
+    if not data or not isinstance(data, list):
+        return []
+    # Client-side date truncation — FMP `limit` is ignored on stable grades.
+    today = datetime.now().date()
+    cutoff = today - timedelta(days=lookback_days)
+    filtered = []
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        date_str = row.get("date") or row.get("publishedDate") or ""
+        try:
+            row_date = datetime.strptime(date_str[:10], "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            continue
+        if row_date < cutoff:
+            continue
+        # Normalize field name — signal reads publishedDate but FMP stable
+        # uses 'date'. Keep both so the signal works either way.
+        if "publishedDate" not in row and "date" in row:
+            row = dict(row)
+            row["publishedDate"] = row["date"]
+        filtered.append(row)
+        if len(filtered) >= limit:
+            break
+    return filtered
+
+
+def fetch_fundamentals(ticker, api_key, market_cap=None):
+    """W6 PR #34 — TTM FCF + leverage + margin trend.
+
+    Pulls from two FMP endpoints:
+      * key-metrics-ttm  → TTM FCF, EBITDA, net debt (per-share scaled)
+      * income-statement?period=quarter  → last 8 quarters for the
+                                            margin-trend sub-component
+
+    Returns a dict {fcf_yield, net_debt_to_ebitda, op_margin_trend,
+    n_components_available}. Each numeric field is None when not
+    computable (pre-revenue names, missing endpoint, etc.); the signal
+    function treats None as "this sub-component unavailable" rather
+    than as zero.
+    """
+    out = {
+        "fcf_yield": None,
+        "net_debt_to_ebitda": None,
+        "op_margin_trend": None,
+        "n_components_available": 0,
+    }
+
+    # TTM key metrics
+    ttm = _fmp_get("key-metrics-ttm", api_key, {"symbol": ticker})
+    if ttm and isinstance(ttm, list) and ttm:
+        row = ttm[0]
+        # FCF yield: FMP exposes freeCashFlowYieldTTM directly (decimal).
+        fcfy = row.get("freeCashFlowYieldTTM")
+        if fcfy is not None:
+            try:
+                out["fcf_yield"] = float(fcfy)
+                out["n_components_available"] += 1
+            except (TypeError, ValueError):
+                pass
+        # Net debt / EBITDA: FMP exposes netDebtToEBITDATTM. Only valid
+        # when EBITDA > 0 (negative-EBITDA names get None — leverage
+        # ratio is meaningless against negative cash flow). We infer
+        # EBITDA sign from evToEBITDATTM: EV is generally positive, so
+        # evToEBITDATTM > 0 ⇒ EBITDA > 0. (PR #43: prior code had a
+        # camelCase typo "evToEbitdaTTM" — actual field is uppercase
+        # "evToEBITDATTM" — and stable doesn't expose ebitdaTTM directly,
+        # so the sub-component was silently returning None on every
+        # ticker since PR #34 shipped.)
+        nd_ebitda = row.get("netDebtToEBITDATTM")
+        ev_to_ebitda = row.get("evToEBITDATTM")
+        if (nd_ebitda is not None and ev_to_ebitda is not None
+                and float(ev_to_ebitda) > 0):
+            try:
+                out["net_debt_to_ebitda"] = float(nd_ebitda)
+                out["n_components_available"] += 1
+            except (TypeError, ValueError):
+                pass
+
+    # Quarterly income statement for margin-trend. PR #37 hotfix:
+    # stable API uses ?symbol=X (query-param style), not path-style.
+    inc = _fmp_get("income-statement", api_key,
+                    {"symbol": ticker, "period": "quarter", "limit": 8})
+    if inc and isinstance(inc, list) and len(inc) >= 8:
+        try:
+            # FMP rows are newest-first.
+            recent_4q = inc[:4]
+            prior_4q = inc[4:8]
+            def _avg_margin(rows):
+                margins = []
+                for r in rows:
+                    rev = float(r.get("revenue") or 0.0)
+                    op_inc = float(r.get("operatingIncome") or 0.0)
+                    if rev > 0:
+                        margins.append(op_inc / rev)
+                return sum(margins) / len(margins) if margins else None
+            recent_avg = _avg_margin(recent_4q)
+            prior_avg = _avg_margin(prior_4q)
+            if recent_avg is not None and prior_avg is not None:
+                out["op_margin_trend"] = recent_avg - prior_avg
+                out["n_components_available"] += 1
+        except (TypeError, ValueError, KeyError):
+            pass
+
+    return out
+
+
 def fetch_sector_perf(sector, api_key, days=None, exchange_filter="NASDAQ"):
     """FMP historical-sector-performance — filtered to one exchange, last-N unique dates.
 

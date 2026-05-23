@@ -26,6 +26,8 @@ from src.config import (
     SIGNAL_MACRO_DRIFT_LEVELS,
     SIGNAL_PEER_RS,
     SIGNAL_REGIME_DETECTION,
+    SIGNAL_FUNDAMENTALS,
+    SIGNAL_REVISION_MOMENTUM,
     SIGNAL_SECTOR_DECOUPLING,
     SIGNAL_SECTOR_MOMENTUM_CAPS,
     SIGNAL_SHORT_INTEREST_BRACKETS,
@@ -279,6 +281,193 @@ def signal_from_short_interest(short_data):
         "drift": float(drift), "confidence": conf,
         "source_quality": "PRIMARY", "sources_count": 1,
         "notes": note + f" [via {short_data.get('source', '?')}]",
+    }
+
+
+def signal_from_fundamentals(fundamentals):
+    """W6 PR #34 — TTM FCF yield + leverage + margin trend → drift.
+
+    Input `fundamentals` is the dict returned by
+    data_fetch.fetch_fundamentals(). When all three sub-components are
+    missing (pre-revenue / no FMP data), returns _none_signal.
+
+    The three sub-component drifts are arithmetic-averaged (not summed)
+    so a single strong sub-component doesn't dominate — the combined
+    signal is a balanced read on financial quality. Cap on combined
+    drift prevents extreme tails (drift_cap_abs from YAML).
+
+    Confidence ladder:
+      3 components available → HIGH
+      2 components           → MEDIUM
+      1 component            → LOW
+      0                      → _none_signal
+    """
+    if not fundamentals:
+        return _none_signal("no fundamentals fetched")
+    n_available = int(fundamentals.get("n_components_available") or 0)
+    if n_available == 0:
+        return _none_signal("no fundamentals sub-components computable")
+
+    cfg = SIGNAL_FUNDAMENTALS
+    drifts = []
+    notes = []
+
+    # 1. FCF yield.
+    fcfy = fundamentals.get("fcf_yield")
+    if fcfy is not None:
+        if fcfy >= cfg.fcf_yield_strong_bull:
+            d = cfg.bullish_drift_pp
+            tag = "FCF strong+"
+        elif fcfy >= cfg.fcf_yield_mild_bull:
+            d = cfg.mild_drift_pp
+            tag = "FCF mild+"
+        elif fcfy >= cfg.fcf_yield_neutral_low:
+            d = 0.0
+            tag = "FCF neutral"
+        elif fcfy >= cfg.fcf_yield_strong_bear:
+            d = -cfg.mild_drift_pp
+            tag = "FCF mild-"
+        else:
+            d = -cfg.bullish_drift_pp
+            tag = "FCF strong-"
+        drifts.append(d)
+        notes.append(f"{tag} ({fcfy*100:+.1f}%)")
+
+    # 2. Net debt / EBITDA leverage.
+    leverage = fundamentals.get("net_debt_to_ebitda")
+    if leverage is not None:
+        if leverage <= cfg.leverage_strong_bull:
+            d = cfg.mild_drift_pp
+            tag = "leverage low+"
+        elif leverage <= cfg.leverage_neutral_high:
+            d = 0.0
+            tag = "leverage neutral"
+        elif leverage <= cfg.leverage_mild_bear:
+            d = -cfg.mild_drift_pp
+            tag = "leverage mid-"
+        else:
+            d = -cfg.bullish_drift_pp
+            tag = "leverage high-"
+        drifts.append(d)
+        notes.append(f"{tag} (ND/EBITDA={leverage:.1f}×)")
+
+    # 3. Operating margin trend (last 4Q avg vs prior 4Q avg).
+    margin_trend = fundamentals.get("op_margin_trend")
+    if margin_trend is not None:
+        if margin_trend >= cfg.margin_trend_bull:
+            d = cfg.margin_trend_drift_pp
+            tag = "op-margin improving"
+        elif margin_trend <= cfg.margin_trend_bear:
+            d = -cfg.margin_trend_drift_pp
+            tag = "op-margin deteriorating"
+        else:
+            d = 0.0
+            tag = "op-margin stable"
+        drifts.append(d)
+        notes.append(f"{tag} ({margin_trend*100:+.1f}pp)")
+
+    combined = sum(drifts) / len(drifts) if drifts else 0.0
+    capped = max(-cfg.drift_cap_abs, min(cfg.drift_cap_abs, combined))
+
+    if n_available >= 3:
+        confidence = "HIGH"
+    elif n_available == 2:
+        confidence = "MEDIUM"
+    else:
+        confidence = "LOW"
+    return {
+        "drift": float(capped),
+        "confidence": confidence,
+        "source_quality": "PRIMARY",
+        "sources_count": n_available,
+        "notes": "; ".join(notes),
+    }
+
+
+def signal_from_revision_momentum(grades, today=None):
+    """W6 PR #35 — analyst upgrade/downgrade momentum.
+
+    Inputs:
+      grades: list of dicts with 'publishedDate' (YYYY-MM-DD...) and
+              'action' ("upgrade" / "downgrade" / "maintain" / "init" /
+              "reiterated") from data_fetch.fetch_grades_history.
+      today : datetime.date for the reference "now" — defaults to today.
+              Tests pass an explicit date for determinism.
+
+    Algorithm: each grade-change action contributes +1 / -1 / 0 weighted
+    by time-decay bucket. Recent actions (last 30d) get full weight;
+    older actions decay. Sum is multiplied by drift_per_unit_pp and
+    capped at drift_cap_abs.
+
+    Returns the standard signal dict; _none_signal when no grades in
+    the lookback window (small caps with no coverage).
+    """
+    if not grades:
+        return _none_signal("no analyst coverage / no grade changes")
+
+    cfg = SIGNAL_REVISION_MOMENTUM
+    if today is None:
+        today = datetime.now().date()
+
+    weighted_score = 0.0
+    in_window_count = 0
+    n_up = 0
+    n_down = 0
+
+    for g in grades:
+        if not isinstance(g, dict):
+            continue
+        date_str = g.get("publishedDate") or g.get("date") or ""
+        try:
+            # FMP returns "YYYY-MM-DD HH:MM:SS" or ISO — first 10 chars suffice.
+            gdate = datetime.strptime(date_str[:10], "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            continue
+        age_days = (today - gdate).days
+        if age_days < 0 or age_days > cfg.lookback_days:
+            continue
+        if age_days <= 30:
+            w = cfg.recent_weight
+        elif age_days <= 60:
+            w = cfg.medium_weight
+        else:
+            w = cfg.older_weight
+        action = str(g.get("action", "")).lower()
+        if action == "upgrade":
+            sign = 1
+            n_up += 1
+        elif action == "downgrade":
+            sign = -1
+            n_down += 1
+        else:
+            # "maintain" / "init" / "reiterated" → no direction
+            continue
+        weighted_score += sign * w
+        in_window_count += 1
+
+    if in_window_count == 0:
+        return _none_signal("no directional grade changes in lookback window")
+
+    drift = weighted_score * cfg.drift_per_unit_pp
+    capped = max(-cfg.drift_cap_abs, min(cfg.drift_cap_abs, drift))
+
+    if in_window_count >= cfg.conf_high_count:
+        confidence = "HIGH"
+    elif in_window_count >= cfg.conf_medium_count:
+        confidence = "MEDIUM"
+    else:
+        confidence = "LOW"
+
+    note = (
+        f"{n_up} upgrades / {n_down} downgrades over last {cfg.lookback_days}d "
+        f"(weighted score {weighted_score:+.1f})"
+    )
+    return {
+        "drift": float(capped),
+        "confidence": confidence,
+        "source_quality": "PRIMARY",
+        "sources_count": in_window_count,
+        "notes": note,
     }
 
 

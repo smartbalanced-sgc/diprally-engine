@@ -17,6 +17,7 @@ math_utils.py and add the ticker registry.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
@@ -53,10 +54,73 @@ class AIModelsConfig(_StrictModel):
     haiku: str
 
 
+class AIBrokerConfig(_StrictModel):
+    """W4 PR #29: broker ambiguity gates. INDEPENDENT of the sacred
+    T2+ pre-EV / conviction gates — both must pass for a ticker to be
+    eligible for that tier."""
+    ai_min_ambiguity: float = Field(ge=0.0, le=1.0)
+    t3_min_ambiguity: float = Field(ge=0.0, le=1.0)
+
+
+class AITierConfig(_StrictModel):
+    """W4 PR #27: one row in the AI tier ladder. pass1/pass2/stress
+    model fields are keys into AIModelsConfig (opus/sonnet/haiku) or
+    null to disable that pass. T0 has all three null (math only).
+
+    W6 PR #33: catalyst_verification_model added — Haiku-constrained
+    primary-source lookup that runs after Pass 2 and tags each
+    surfaced catalyst VERIFIED / UNVERIFIED / REFUTED."""
+    pass1_model: Optional[str] = None
+    pass2_model: Optional[str] = None
+    stress_model: Optional[str] = None
+    catalyst_verification_model: Optional[str] = None
+    pass1_web_search_max: int = Field(ge=0)
+    pass1_max_tokens: int = Field(ge=0)
+    pass2_max_tokens: int = Field(ge=0)
+    estimated_cost_usd: float = Field(ge=0.0)
+
+
 class ConvictionConfig(_StrictModel):
     dip_marginal: float = Field(gt=0.0, lt=1.0)
     rally_conditional: float = Field(gt=0.0, lt=1.0)
     ev_hurdle_bps_of_dip: float = Field(ge=0.0)
+
+
+class SigmaClassBoundariesConfig(_StrictModel):
+    """W3: σ-class auto-detection boundaries. extreme_min > high_min must hold;
+    pydantic model_validator below enforces. Both in decimal (0.95 = 95%)."""
+    extreme_min: float = Field(gt=0.0, lt=10.0)
+    high_min: float = Field(gt=0.0, lt=10.0)
+
+
+class SigmaClassConvictionConfig(_StrictModel):
+    """Per-class conviction thresholds (W3, PR #21 scope: conviction only)."""
+    dip: float = Field(gt=0.0, lt=1.0)
+    rally_conditional: float = Field(gt=0.0, lt=1.0)
+
+
+class SigmaClassGridConfig(_StrictModel):
+    """Per-class dip/rally grid sizing (W3, PR #22). All fields are
+    fractions of spot — price-agnostic across the universe. dip steps
+    scan DOWN from spot; rally steps scan UP. max_depth/max_reach
+    bound the grid range."""
+    dip_step_pct: float = Field(gt=0.0, lt=1.0)
+    rally_step_pct: float = Field(gt=0.0, lt=1.0)
+    dip_max_depth_pct: float = Field(gt=0.0, lt=1.0)
+    rally_max_reach_pct: float = Field(gt=0.0)
+
+
+class SigmaClassThresholdConfig(_StrictModel):
+    """One row in the sigma_classes table. PR #21 added conviction;
+    PR #22 added grid; PR #23 added friction_bps_round_trip;
+    PR #24 added panic_floor_pct + ai_vol_regime_multipliers.
+    Class table is now feature-complete — every per-class lever lives
+    here."""
+    conviction: SigmaClassConvictionConfig
+    grid: SigmaClassGridConfig
+    friction_bps_round_trip: float = Field(ge=0.0)
+    panic_floor_pct: float = Field(gt=0.0, lt=1.0)
+    ai_vol_regime_multipliers: dict[str, float]
 
 
 class HorizonConfig(_StrictModel):
@@ -64,14 +128,6 @@ class HorizonConfig(_StrictModel):
     default_mc_paths: int = Field(gt=0)
     deep_dip_autoscale_threshold: float = Field(gt=0.0, lt=1.0)
     deep_dip_autoscale_paths: int = Field(gt=0)
-
-
-class GridConfig(_StrictModel):
-    dip_step_dollars: float = Field(gt=0.0)
-    rally_step_dollars: float = Field(gt=0.0)
-    dip_max_depth_pct: float = Field(gt=0.0, lt=1.0)
-    rally_max_reach_pct: float = Field(gt=0.0)
-    panic_floor_pct: float = Field(gt=0.0, lt=1.0)
 
 
 class MethodToleranceConfig(_StrictModel):
@@ -122,6 +178,15 @@ class TrendFilterConfig(_StrictModel):
     mom_30d_threshold: float = Field(lt=0.0, gt=-1.0)
 
 
+class ParabolaFilterConfig(_StrictModel):
+    """PR #41 / PR #44 — mirror of sacred #14 for blow-off tops.
+    Refuses dip-buy on a parabolic name unless an AI-surfaced bearish
+    de-rating catalyst sits inside the horizon. PR #44 redesigned the
+    trigger from RSI+YTD to mom_30d-only — RSI is too lagging and the
+    INTC smoke (RSI=66, mom_30d=+92%) bypassed the gate."""
+    mom_30d_threshold: float = Field(gt=0.0, lt=10.0)
+
+
 class MacroRegimeConfig(_StrictModel):
     """D-W2-8: macro regime detection thresholds (VIX + SPY-vs-MA50)."""
     vix_risk_off_threshold: float = Field(gt=0.0)
@@ -160,9 +225,10 @@ class GARCHConfig(_StrictModel):
 
 
 class EngineConfig(_StrictModel):
-    """D-W2-5 + D-W2-7: engine-level scattered tunables."""
+    """D-W2-5 + D-W2-7: engine-level scattered tunables.
+    spread_per_share_round_trip RETIRED in W3 PR #23 — friction is now
+    per-σ-class bps."""
     drift_cap: float = Field(gt=0.0)
-    spread_per_share_round_trip: float = Field(ge=0.0)
     garch_fallback_sigma: float = Field(gt=0.0, lt=10.0)
     grid_prefilter_looseness: float = Field(ge=0.0, lt=1.0)
 
@@ -251,6 +317,40 @@ class CatalystProximityConfig(_StrictModel):
     in_window_count_medium_conf: int = Field(ge=1)
 
 
+class RevisionMomentumSignalConfig(_StrictModel):
+    """W6 PR #35: analyst revision-momentum signal thresholds. Net
+    upgrades minus downgrades over the lookback window, time-decay-
+    weighted by age bucket. Capped at drift_cap_abs."""
+    recent_weight: float = Field(ge=0.0, le=1.0)
+    medium_weight: float = Field(ge=0.0, le=1.0)
+    older_weight: float = Field(ge=0.0, le=1.0)
+    drift_per_unit_pp: float = Field(gt=0.0)
+    drift_cap_abs: float = Field(gt=0.0)
+    conf_high_count: int = Field(ge=1)
+    conf_medium_count: int = Field(ge=1)
+    lookback_days: int = Field(ge=30)
+
+
+class FundamentalsSignalConfig(_StrictModel):
+    """W6 PR #34: fundamentals signal thresholds. Three sub-components
+    (FCF yield, net debt / EBITDA, operating margin trend) combined to
+    an annualised drift contribution. EXTREME / pre-revenue names with
+    ≤0 EBITDA or ≤0 FCF degrade to LOW confidence rather than crash."""
+    fcf_yield_strong_bull: float
+    fcf_yield_mild_bull: float
+    fcf_yield_neutral_low: float
+    fcf_yield_strong_bear: float
+    bullish_drift_pp: float = Field(ge=0.0)
+    mild_drift_pp: float = Field(ge=0.0)
+    leverage_strong_bull: float = Field(gt=0.0)
+    leverage_neutral_high: float = Field(gt=0.0)
+    leverage_mild_bear: float = Field(gt=0.0)
+    margin_trend_bull: float
+    margin_trend_bear: float
+    margin_trend_drift_pp: float = Field(ge=0.0)
+    drift_cap_abs: float = Field(gt=0.0)
+
+
 class SignalsConfig(_StrictModel):
     """D-W2-6: aggregate of all signal-level embedded thresholds."""
     analyst: AnalystSignalConfig
@@ -262,6 +362,8 @@ class SignalsConfig(_StrictModel):
     sector_decoupling: SectorDecouplingConfig
     regime_detection: RegimeDetectionConfig
     catalyst_proximity: CatalystProximityConfig
+    fundamentals: FundamentalsSignalConfig
+    revision_momentum: RevisionMomentumSignalConfig
 
 
 class V3ReviewCriteriaConfig(_StrictModel):
@@ -294,13 +396,16 @@ class DiprallyConfig(_StrictModel):
     data: DataConfig
     ai_pricing: AIPricingConfig
     ai_models: AIModelsConfig
+    ai_tiers: dict[str, AITierConfig]
+    ai_daily_budget_cap_usd: float = Field(gt=0.0)
+    ai_broker: AIBrokerConfig
     blend_weights_v1: dict[str, float]
     blend_weights_v2: dict[str, float]
     confidence_to_se: dict[str, float]
     conviction: ConvictionConfig
+    sigma_class_boundaries: SigmaClassBoundariesConfig
+    sigma_classes: dict[str, SigmaClassThresholdConfig]
     horizon: HorizonConfig
-    grid: GridConfig
-    ai_vol_regime_multipliers: dict[str, float]
     narrative_drift_adjustment: dict[str, float]
     factor_arithmetic: FactorArithmeticConfig
     catalyst: CatalystConfig
@@ -309,6 +414,7 @@ class DiprallyConfig(_StrictModel):
     backtest: BacktestConfig
     analyst_outlier_threshold: float = Field(gt=0.0)
     trend_filter: TrendFilterConfig
+    parabola_filter: ParabolaFilterConfig
     macro_regime: MacroRegimeConfig
     options_iv: OptionsIVConfig
     sector_perf: SectorPerfConfig
@@ -342,7 +448,54 @@ def _load_config(path: Path = CONFIG_PATH) -> DiprallyConfig:
     """
     with open(path) as f:
         raw = yaml.safe_load(f)
-    return DiprallyConfig(**raw)
+    config = DiprallyConfig(**raw)
+
+    # Cross-field invariants (W3):
+    b = config.sigma_class_boundaries
+    if b.extreme_min <= b.high_min:
+        raise ValueError(
+            f"sigma_class_boundaries: extreme_min ({b.extreme_min}) must be "
+            f"> high_min ({b.high_min}) — monotonicity violated"
+        )
+    required_classes = {"EXTREME", "HIGH", "MID"}
+    missing = required_classes - set(config.sigma_classes.keys())
+    if missing:
+        raise ValueError(
+            f"sigma_classes table missing required classes: {missing}"
+        )
+
+    # W4 PR #27: AI tier ladder must include all four tiers, and every
+    # non-null model field must resolve to a known ai_models key.
+    required_tiers = {"T0", "T1", "T2", "T3"}
+    missing_tiers = required_tiers - set(config.ai_tiers.keys())
+    if missing_tiers:
+        raise ValueError(
+            f"ai_tiers missing required tiers: {missing_tiers}"
+        )
+    valid_model_keys = {"opus", "sonnet", "haiku"}
+    for tier_name, spec in config.ai_tiers.items():
+        for field_name in ("pass1_model", "pass2_model", "stress_model",
+                            "catalyst_verification_model"):
+            v = getattr(spec, field_name)
+            if v is not None and v not in valid_model_keys:
+                raise ValueError(
+                    f"ai_tiers.{tier_name}.{field_name}={v!r} is not a known "
+                    f"ai_models key (expected one of {valid_model_keys} or null)"
+                )
+    # T0 must be pure math — all four model fields null.
+    t0 = config.ai_tiers["T0"]
+    if any(getattr(t0, f) is not None for f in
+           ("pass1_model", "pass2_model", "stress_model",
+            "catalyst_verification_model")):
+        raise ValueError("ai_tiers.T0 must have all model fields null (math-only tier)")
+    # W4 PR #29: t3 threshold strictly higher than ai_min (T3 must require
+    # MORE uncertainty than the bare minimum to spend ANY AI tokens).
+    if config.ai_broker.t3_min_ambiguity <= config.ai_broker.ai_min_ambiguity:
+        raise ValueError(
+            f"ai_broker.t3_min_ambiguity ({config.ai_broker.t3_min_ambiguity}) "
+            f"must be > ai_min_ambiguity ({config.ai_broker.ai_min_ambiguity})"
+        )
+    return config
 
 
 _CONFIG: DiprallyConfig = _load_config()
@@ -392,6 +545,12 @@ def _rebind_module_constants() -> None:
     g["MODEL_SONNET"] = _CONFIG.ai_models.sonnet
     g["MODEL_HAIKU"] = _CONFIG.ai_models.haiku
 
+    # W4 PR #27: AI tier ladder + daily budget cap.
+    g["AI_TIERS"] = dict(_CONFIG.ai_tiers)
+    g["AI_DAILY_BUDGET_CAP_USD"] = _CONFIG.ai_daily_budget_cap_usd
+    # W4 PR #29: broker ambiguity gates.
+    g["AI_BROKER"] = _CONFIG.ai_broker
+
     # Pricing dispatch tuple
     g["_AI_PRICING"] = (
         ("opus",   _CONFIG.ai_pricing.opus_input_per_token,   _CONFIG.ai_pricing.opus_output_per_token),
@@ -404,10 +563,15 @@ def _rebind_module_constants() -> None:
     g["BLEND_WEIGHTS_V2"] = dict(_CONFIG.blend_weights_v2)
     g["CONFIDENCE_TO_SE"] = dict(_CONFIG.confidence_to_se)
 
-    # Conviction
+    # Conviction (flat — used as fallback when σ-class auto-detect can't fire)
     g["DEFAULT_CONVICTION_DIP"] = _CONFIG.conviction.dip_marginal
     g["DEFAULT_CONVICTION_RALLY_COND"] = _CONFIG.conviction.rally_conditional
     g["EV_HURDLE_BPS_OF_DIP"] = _CONFIG.conviction.ev_hurdle_bps_of_dip
+
+    # σ-class table (W3 PR #21 — conviction-only this PR; subsequent W3
+    # PRs add grid / friction / panic / ai_vol_regime per class)
+    g["SIGMA_CLASS_BOUNDARIES"] = _CONFIG.sigma_class_boundaries
+    g["SIGMA_CLASSES"] = _CONFIG.sigma_classes
 
     # Horizon
     g["DEFAULT_HORIZON_DAYS"] = _CONFIG.horizon.default_days
@@ -415,15 +579,8 @@ def _rebind_module_constants() -> None:
     g["DEEP_DIP_AUTOSCALE_THRESHOLD"] = _CONFIG.horizon.deep_dip_autoscale_threshold
     g["DEEP_DIP_AUTOSCALE_PATHS"] = _CONFIG.horizon.deep_dip_autoscale_paths
 
-    # Grid
-    g["DIP_GRID_STEP"] = _CONFIG.grid.dip_step_dollars
-    g["RALLY_GRID_STEP"] = _CONFIG.grid.rally_step_dollars
-    g["DIP_GRID_MAX_DEPTH_PCT"] = _CONFIG.grid.dip_max_depth_pct
-    g["RALLY_GRID_MAX_REACH_PCT"] = _CONFIG.grid.rally_max_reach_pct
-    g["PANIC_FLOOR_PCT"] = _CONFIG.grid.panic_floor_pct
-
-    # AI vol regime + narrative
-    g["AI_VOL_REGIME_MULTIPLIERS"] = dict(_CONFIG.ai_vol_regime_multipliers)
+    # Narrative drift (panic_floor + ai_vol_regime_multipliers are now
+    # per-σ-class — accessed via SIGMA_CLASSES[class].<field>).
     g["NARRATIVE_DRIFT_ADJUSTMENT"] = dict(_CONFIG.narrative_drift_adjustment)
 
     # Factor arithmetic
@@ -467,6 +624,7 @@ def _rebind_module_constants() -> None:
     # Outlier gate + phantom SE
     g["ANALYST_EXTREME_DRIFT_THRESHOLD"] = _CONFIG.analyst_outlier_threshold
     g["TREND_FILTER_MOM_30D_THRESHOLD"] = _CONFIG.trend_filter.mom_30d_threshold
+    g["PARABOLA_FILTER_MOM_30D_THRESHOLD"] = _CONFIG.parabola_filter.mom_30d_threshold
 
     # Macro regime (D-W2-8)
     g["VIX_RISK_OFF_THRESHOLD"] = _CONFIG.macro_regime.vix_risk_off_threshold
@@ -499,9 +657,9 @@ def _rebind_module_constants() -> None:
     # Realized vol windows (D-W2-9)
     g["REALIZED_VOL_WINDOWS"] = tuple(_CONFIG.realized_vol_windows)
 
-    # Engine scattered (D-W2-5 + D-W2-7)
+    # Engine scattered (D-W2-5 + D-W2-7). SPREAD_PER_SHARE_ROUND_TRIP
+    # retired in W3 PR #23 — friction is per-σ-class bps now.
     g["DRIFT_CAP"] = _CONFIG.engine.drift_cap
-    g["SPREAD_PER_SHARE_ROUND_TRIP"] = _CONFIG.engine.spread_per_share_round_trip
     g["GARCH_FALLBACK_SIGMA"] = _CONFIG.engine.garch_fallback_sigma
     g["GRID_PREFILTER_LOOSENESS"] = _CONFIG.engine.grid_prefilter_looseness
 
@@ -533,6 +691,8 @@ def _rebind_module_constants() -> None:
     g["SIGNAL_SECTOR_DECOUPLING"] = sig.sector_decoupling
     g["SIGNAL_REGIME_DETECTION"] = sig.regime_detection
     g["SIGNAL_CATALYST_PROXIMITY"] = sig.catalyst_proximity
+    g["SIGNAL_FUNDAMENTALS"] = sig.fundamentals
+    g["SIGNAL_REVISION_MOMENTUM"] = sig.revision_momentum
     g["PHANTOM_SIGNAL_SE_CONFIG"] = _CONFIG.phantom_signal_se  # signals.py reads PHANTOM_SIGNAL_SE locally
 
     # AI cache

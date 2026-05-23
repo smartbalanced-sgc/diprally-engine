@@ -42,6 +42,11 @@ def format_report(
     ev_hurdle_refused=False,
     ev_pct_of_dip=None,
     trend_filter_refused=False,
+    parabola_filter_refused=False,
+    sigma_class=None,
+    sigma_class_mismatch=None,
+    ambiguity=None,
+    tier=None,
 ) -> str:
     lines: list[str] = []
     lines.append(hr(f"DIPRALLY ENGINE ({V2_VERSION}) — {snapshot.ticker} — {snapshot.timestamp:%Y-%m-%d %H:%M}"))
@@ -49,12 +54,70 @@ def format_report(
     lines.append(f"  Spot: ${snapshot.spot:.2f}   Market cap: ${snapshot.market_cap/1e9:.1f}B")
     lines.append(f"  Sector / Industry: {snapshot.sector} / {snapshot.industry}")
     lines.append(f"  RSI: {snapshot.rsi:.1f}   5d mom: {snapshot.mom_5d:+.1%}   30d mom: {snapshot.mom_30d:+.1%}   YTD: {snapshot.ytd_return:+.1%}")
-    lines.append(f"  Conviction thresholds: dip {conviction_dip:.0%} marginal, rally-cond {conviction_rally_cond:.0%}")
     lines.append(f"  Horizon: {horizon_days} trading days   (sacred #6: trader sizes externally)")
+
+    # σ-CLASS FIT-FOR-PURPOSE PROFILE (W3 close-out, PR #26).
+    # One block, all class-keyed levers visible at a glance — trader can
+    # tell at-a-read whether the engine is operating with EXTREME-name
+    # latitude or MID-name precision, and which knobs that pulled in.
+    if sigma_class is not None:
+        from src.config import SIGMA_CLASSES
+        ce = SIGMA_CLASSES[sigma_class]
+        lines.append(hr(f"σ-CLASS PROFILE — {sigma_class}"))
+        lines.append(
+            f"  Auto-detected from blended σ = {vol_profile.blended_sigma*100:.1f}% annualised "
+            f"(GARCH + realized 30/60/90d + options IV)"
+        )
+        if sigma_class_mismatch:
+            lines.append(f"  ⚠ {sigma_class_mismatch}")
+        lines.append(
+            f"  Conviction:  dip ≥ {ce.conviction.dip:.0%} marginal · "
+            f"rally|dip ≥ {ce.conviction.rally_conditional:.0%} conditional"
+        )
+        lines.append(
+            f"  Grid scan:   dip step {ce.grid.dip_step_pct*100:.2f}% × depth {ce.grid.dip_max_depth_pct*100:.0f}%  ·  "
+            f"rally step {ce.grid.rally_step_pct*100:.2f}% × reach {ce.grid.rally_max_reach_pct*100:.0f}%"
+        )
+        lines.append(
+            f"  Friction:    {ce.friction_bps_round_trip:.0f} bps RT (applied to (dip+rally)/2)"
+        )
+        lines.append(
+            f"  Panic floor: {ce.panic_floor_pct*100:.0f}% below spot  ·  "
+            f"AI vol_mult H/M/L = "
+            f"{ce.ai_vol_regime_multipliers['HIGH']:.2f}/"
+            f"{ce.ai_vol_regime_multipliers['MEDIUM']:.2f}/"
+            f"{ce.ai_vol_regime_multipliers['LOW']:.2f}"
+        )
+
+    # W4: AI tier + ambiguity score (broker sort key).
+    if tier is not None or ambiguity is not None:
+        lines.append(hr("AI ALLOCATION (W4)"))
+        if tier is not None:
+            lines.append(
+                f"  Tier:        {tier.name}  (est. cost ${tier.estimated_cost_usd:.2f})"
+            )
+        if ambiguity is not None:
+            lines.append(
+                f"  Ambiguity:   {ambiguity.overall:.2f}  (broker sort key — higher = AI tokens have more leverage)"
+            )
+            for name, value in ambiguity.components.items():
+                lines.append(f"    {name:<24} {value:.2f}")
 
     # HEADLINE RECOMMENDATION
     lines.append(hr("ROUND-TRIP RECOMMENDATION"))
-    if trend_filter_refused and best is not None:
+    if parabola_filter_refused and best is not None:
+        # PR #41 / PR #44 — parabola filter (mirror of sacred #14).
+        from src.config import PARABOLA_FILTER_MOM_30D_THRESHOLD as _MOM
+        lines.append(f"  ⛔ REFUSED — parabola filter (PR #41/#44).")
+        lines.append(f"  30-day momentum {snapshot.mom_30d*100:+.1f}% is above the blow-off")
+        lines.append(f"  threshold of {_MOM*100:+.0f}% AND no in-horizon catalyst with")
+        lines.append(f"  bearish or two-sided direction was surfaced by AI Pass 1/Pass 2.")
+        lines.append(f"  A parabolic move without a structural reason to mean-revert is statistically")
+        lines.append(f"  betting against gravity over a swing horizon — institutional discipline says pass.")
+        lines.append(f"  Action: WAIT until either momentum cools (mom_30d < {_MOM*100:+.0f}%) or")
+        lines.append(f"  a concrete bearish/two-sided catalyst materializes (earnings reset,")
+        lines.append(f"  regulatory action, secondary offering, peer disappointment) to define the de-rating thesis.")
+    elif trend_filter_refused and best is not None:
         # Sacred decision #14 — falling-knife trend filter.
         from src.config import TREND_FILTER_MOM_30D_THRESHOLD
         lines.append(f"  ⛔ REFUSED — trend filter (sacred decision #14).")
@@ -119,6 +182,16 @@ def format_report(
 
     # THREE-METHOD CROSS-CHECK
     lines.append(hr("THREE-METHOD MATH CROSS-CHECK (MC / PDE / closed-form)"))
+    if method_check.get("is_anchor"):
+        # PR #25: verification anchor — no qualified pair, but sacred #8
+        # says cross-check runs every time. Tag clearly so the user
+        # doesn't read these as a recommendation.
+        lines.append(
+            f"  ⓘ VERIFICATION ANCHOR — no qualified pair; checking math layer "
+            f"against class-anchor dip ${method_check['anchor_dip']:,.2f} × "
+            f"rally ${method_check['anchor_rally']:,.2f}."
+        )
+        lines.append(f"     (This pair is NOT a recommendation — sacred #16 refusal does not gate here.)")
     lines.append(f"  {method_check['agreement_status']}")
     lines.append(f"  {'Quantity':<25} {'MC':>10} {'PDE':>10} {'Δ pp':>8}")
     for q, mc, pde, delta in method_check["table"]:
@@ -230,7 +303,8 @@ def format_report(
         lines.append(f"    median: {path_metrics['max_dd_p50']*100:5.1f}% (${path_metrics['max_dd_price_p50']:,.0f} touched)")
         lines.append(f"    p75:    {path_metrics['max_dd_p75']*100:5.1f}% (${path_metrics['max_dd_price_p75']:,.0f} touched)")
         lines.append(f"    p90:    {path_metrics['max_dd_p90']*100:5.1f}% (${path_metrics['max_dd_price_p90']:,.0f} touched)")
-        lines.append(f"  Panic floor ${path_metrics['panic_floor_price']:,.0f} (30% below spot) touched: P = {path_metrics['p_panic_touched']*100:.0f}%")
+        panic_pct = 1.0 - path_metrics["panic_floor_price"] / snapshot.spot
+        lines.append(f"  Panic floor ${path_metrics['panic_floor_price']:,.0f} ({panic_pct*100:.0f}% below spot) touched: P = {path_metrics['p_panic_touched']*100:.0f}%")
         if path_metrics.get("time_to_dip_p50") is not None:
             lines.append(
                 f"  Time-to-dip (paths that touched): median {path_metrics['time_to_dip_p50']:.0f}d, "

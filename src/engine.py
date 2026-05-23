@@ -19,17 +19,25 @@ import numpy as np
 import pandas as pd
 
 from src import ai_cache
+from src.ai_tiers import resolve_tier, t0
+from src.ambiguity import compute_ambiguity
 from src.registry import resolve_peers
+from src.sigma_classifier import (
+    class_conviction,
+    classify_sigma,
+    reconcile_with_registry,
+)
 from src.ai_layer import (
+    apply_catalyst_verification,
     build_ai_pass1_prompt,
     build_ai_pass2_prompt,
     call_ai_catalyst_stress_test,
+    call_ai_catalyst_verification,
     call_ai_pass,
     parse_ai_pass1,
     parse_ai_pass2,
 )
 from src.config import (
-    AI_VOL_REGIME_MULTIPLIERS,
     BACKTEST_MIN_SAMPLES,
     BAYESIAN_DEFAULT_PRIOR_STD,
     BAYESIAN_DEFAULT_TODAY_STD,
@@ -42,23 +50,22 @@ from src.config import (
     MEAN_REVERSION_ANCHOR_PCT_BELOW_SPOT,
     PASS2_CLOSED_FORM_BRACKET_PCT,
     SENSITIVITY_SCENARIOS,
-    SPREAD_PER_SHARE_ROUND_TRIP,
+    SIGMA_CLASSES,
+    PARABOLA_FILTER_MOM_30D_THRESHOLD,
     TREND_FILTER_MOM_30D_THRESHOLD,
     DEFAULT_HORIZON_DAYS,
     DEFAULT_LOOKBACK_DAYS,
     DEFAULT_MC_PATHS,
-    DIP_GRID_MAX_DEPTH_PCT,
-    DIP_GRID_STEP,
     MODEL_OPUS,
     MODEL_SONNET,
-    RALLY_GRID_MAX_REACH_PCT,
-    RALLY_GRID_STEP,
 )
 from src.data_fetch import (
     FetchError,
     fetch_analyst_summary,
     fetch_analyst_targets,
     fetch_company_profile,
+    fetch_fundamentals,
+    fetch_grades_history,
     fetch_history,
     fetch_macro_indicators,
     fetch_next_earnings,
@@ -92,9 +99,11 @@ from src.signals import (
     parse_catalyst_date,  # noqa: F401  (re-export for callers)
     signal_from_analyst_targets,
     signal_from_catalyst_proximity,
+    signal_from_fundamentals,
     signal_from_historical,
     signal_from_macro,
     signal_from_peer_rs,
+    signal_from_revision_momentum,
     signal_from_sector,
     signal_from_sector_decoupling,
     signal_from_short_interest,
@@ -203,6 +212,55 @@ def _truncate_at_word_boundary(text: str, max_chars: int) -> str:
     return cut + "…"
 
 
+def _has_bearish_derating_catalyst(effective_ai, horizon_days: int) -> bool:
+    """PR #41 / #45 helper (mirror of sacred #14, tightened): returns True
+    iff Pass 1/Pass 2 surfaced at least one in-horizon catalyst with
+    direction_risk == "bearish". This is the ONLY structural reason to
+    expect a parabolic stock to mean-revert within a swing window.
+
+    PR #45 design change: dropped "two-sided" from the accepted set.
+    Two-sided catalysts (generic earnings, sector readthrough, macro)
+    are the math layer's DEFAULT assumption — they don't specifically
+    point toward de-rating. The parabola filter is a top-level VETO
+    that should only relax for specific bearish catalysts (overhang
+    closes, secondary offerings, regulatory actions, peer disappoint-
+    ments). Otherwise +92%-in-30-days "two-sided earnings" lets every
+    parabola slip through the gate, defeating the purpose.
+
+    Asymmetry with sacred #14 is intentional:
+      #14 (falling knife):  accepts bullish OR two-sided to override
+                            (anything pointing up rescues a falling knife)
+      #41 (parabola):       requires bearish specifically to override
+                            (only a bearish thesis explains mean-reversion)
+
+    In --no-ai mode effective_ai is None → False (strict reading
+    refuses parabolic dip-buys without a thesis)."""
+    if not effective_ai or not effective_ai.catalysts:
+        return False
+    from datetime import datetime as _dt, timedelta as _td
+    from src.signals import parse_catalyst_date
+    today = _dt.now().date()
+    horizon_end = today + _td(days=horizon_days)
+    for c in effective_ai.catalysts:
+        if not isinstance(c, dict):
+            continue
+        dir_risk = str(c.get("direction_risk", "")).lower()
+        # PR #46: accept any "bearish*" variant (Pass 1/Pass 2 emit
+        # "bearish", "bearish-skew", "bearish/skew" etc.). Still excludes
+        # "two-sided" and "bullish*" — semantic intent unchanged from
+        # PR #45 ("specifically bearish thesis required"), just more
+        # lexically tolerant. Pass 2 commonly emits "bearish-skew" for
+        # mean-reversion catalysts (e.g. "profit-taking after +204% YTD").
+        if not dir_risk.startswith("bearish"):
+            continue
+        cdate = parse_catalyst_date(c.get("date_or_window", ""))
+        if cdate is None:
+            continue
+        if today <= cdate <= horizon_end:
+            return True
+    return False
+
+
 def _has_supporting_catalyst(effective_ai, horizon_days: int) -> bool:
     """Sacred decision #14 helper: returns True iff Pass 1/Pass 2 surfaced at
     least one in-horizon catalyst with direction_risk in (bullish, two-sided).
@@ -254,6 +312,8 @@ def _signals_dict_to_display_list(signals_dict, weights, blend=None):
         "sector": "Sector momentum",
         "macro": "Macro regime (VIX/SPY)",
         "short_interest": "Short interest (squeeze tail)",
+        "fundamentals": "Fundamentals (FCF + leverage + margin trend)",
+        "revision_momentum": "Analyst revision momentum (90d, time-decayed)",
         "peer_rs": "Peer RS (60d)",
         "sector_decoupling": "Sector decoupling (vs sector, 30d)",
         "ai": "AI analyst",
@@ -309,27 +369,38 @@ def scan_dip_rally_grid(
     paths,
     conviction_dip,
     conviction_rally_cond,
-    spread_per_share_round_trip=None,
+    sigma_class,
     vol_schedule=None,
 ):
     """Scan (dip × rally) grid with Brownian bridge correction.
 
     Returns (best, candidates, met_threshold_strict).
 
+    W3 PR #22 (D-W3-1): grid step + depth + reach come from the
+    per-σ-class table in config/diprally.yaml. Step is % of spot, so
+    the engine is price-agnostic across the universe.
+
+    W3 PR #23: friction is per-σ-class round-trip bps applied to the
+    average traded notional (dip+rally)/2 — institutional convention,
+    proportional to what the trader actually transacts on each leg.
+
     Sacred decision #6: no capital concept. EV is reported per-share + as
     a percent of dip-entry price. The trader sizes externally; engine is
     a recommendation tool, not a position-sizer.
     """
-    if spread_per_share_round_trip is None:
-        spread_per_share_round_trip = SPREAD_PER_SHARE_ROUND_TRIP
     n_paths, n_days = paths.shape
-    dip_min = S0 * (1.0 - DIP_GRID_MAX_DEPTH_PCT)
+    class_entry = SIGMA_CLASSES[sigma_class]
+    class_grid = class_entry.grid
+    friction_bps_rt = class_entry.friction_bps_round_trip
+    dip_step = S0 * class_grid.dip_step_pct
+    rally_step = S0 * class_grid.rally_step_pct
+    dip_min = S0 * (1.0 - class_grid.dip_max_depth_pct)
     dip_max = S0 * 0.99
     rally_min = S0 * 1.01
-    rally_max = S0 * (1.0 + RALLY_GRID_MAX_REACH_PCT)
+    rally_max = S0 * (1.0 + class_grid.rally_max_reach_pct)
 
-    dip_grid = np.arange(dip_min, dip_max, DIP_GRID_STEP)
-    rally_grid = np.arange(rally_min, rally_max, RALLY_GRID_STEP)
+    dip_grid = np.arange(dip_min, dip_max, dip_step)
+    rally_grid = np.arange(rally_min, rally_max, rally_step)
 
     print(f"  Precomputing bridge-corrected first-touch days for {len(dip_grid)} dip × {len(rally_grid)} rally barriers...")
     dip_first_days_all = precompute_first_touch_days(
@@ -356,7 +427,13 @@ def scan_dip_rally_grid(
             if p_rally_cond < conviction_rally_cond - GRID_PREFILTER_LOOSENESS:
                 continue
 
-            gain_per_share = float(rally) - float(dip) - spread_per_share_round_trip
+            # PR #23: round-trip friction proportional to average leg
+            # notional. Two legs at their respective prices; bps_rt
+            # spread across the trip.
+            friction_per_share = (
+                (float(dip) + float(rally)) / 2.0 * friction_bps_rt / 10000.0
+            )
+            gain_per_share = float(rally) - float(dip) - friction_per_share
             bag_hold_loss_per_share = float(dip) - result["bag_hold_terminal_median"]
             net_ev_per_share = (
                 result["p_round_trip"] * gain_per_share
@@ -404,7 +481,7 @@ def scan_dip_rally_grid(
 def compute_sensitivity_table(
     S0, base_sigma, base_mu, horizon_days,
     dip_price, rally_price,
-    spread_per_share_round_trip=None,
+    sigma_class,
     catalyst_shocks=None, vol_schedule_base=None, n_paths_sensitivity=10_000,
 ):
     """Small MCs with shifted (drift, sigma) for each scenario.
@@ -413,9 +490,12 @@ def compute_sensitivity_table(
     D-W2-7). Researchers can add/remove/re-parameterize rows via YAML
     without code edits. Per-catalyst stress shocks from AI continue to
     append after these baseline scenarios.
+
+    W3 PR #23: friction is per-σ-class bps applied to (dip+rally)/2,
+    matching the grid scan's institutional round-trip convention.
     """
-    if spread_per_share_round_trip is None:
-        spread_per_share_round_trip = SPREAD_PER_SHARE_ROUND_TRIP
+    friction_bps_rt = SIGMA_CLASSES[sigma_class].friction_bps_round_trip
+    friction_per_share = (dip_price + rally_price) / 2.0 * friction_bps_rt / 10000.0
     if catalyst_shocks is None:
         catalyst_shocks = []
     scenarios = [
@@ -455,7 +535,7 @@ def compute_sensitivity_table(
             paths_s, S0, dip_price, rally_price, horizon_days,
             sigma=sigma_s, vol_schedule=vs,
         )
-        gain_per_share = rally_price - dip_price - spread_per_share_round_trip
+        gain_per_share = rally_price - dip_price - friction_per_share
         bag_hold_loss = dip_price - result["bag_hold_terminal_median"]
         net_ev_per_share = (
             result["p_round_trip"] * gain_per_share
@@ -487,7 +567,8 @@ def compute_sensitivity_table(
 # with the new schema. N=1 day at this point (no calibration accumulated)
 # so the clean break is acceptable.
 CSV_COLUMNS = [
-    "date", "spot", "sigma_blended", "drift_posterior", "drift_posterior_std",
+    "date", "spot", "sigma_blended", "sigma_class",
+    "drift_posterior", "drift_posterior_std",
     "recommended_dip", "p_dip", "expected_days_to_dip",
     "recommended_rally", "p_rally_cond",
     "p_round_trip", "p_bag_hold", "p_no_trade_rally_first", "p_neither",
@@ -496,6 +577,7 @@ CSV_COLUMNS = [
     "narrative_score", "catalyst_proximity_drift",
     "garch_alpha_plus_beta", "horizon_days",
     "method_agreement_flags", "ai_cost_total", "data_source",
+    "ai_tier", "ambiguity_score",
 ]
 
 
@@ -665,8 +747,18 @@ def run_pipeline(args) -> int:
         return 1
 
     horizon_days = args.horizon
-    conviction_dip = args.conviction_dip
-    conviction_rally_cond = args.conviction_rally_cond
+    # W3: conviction thresholds resolved AFTER blended_sigma is known so the
+    # σ-class default table can apply. CLI flags (when supplied) still win.
+    cli_conviction_dip = args.conviction_dip
+    cli_conviction_rally_cond = args.conviction_rally_cond
+
+    # W4 PR #27: resolve AI tier once. --no-ai forces T0 (math only);
+    # otherwise use the explicit --tier (defaults to T3 to preserve
+    # pre-W4 single-ticker behavior). The multi-ticker broker (PR #29)
+    # will override --tier per ticker under the $2/day cap.
+    tier_name = getattr(args, "tier", None) or "T3"
+    tier = t0() if args.no_ai else resolve_tier(tier_name)
+    print(f"AI tier: {tier.name}  (estimated cost ${tier.estimated_cost_usd:.2f})")
 
     output_dir = Path(__file__).resolve().parent.parent / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -762,6 +854,22 @@ def run_pipeline(args) -> int:
     iv_value = (iv_data.get("iv") if iv_data and iv_data.get("is_liquid") else None)
     iv_dte = (iv_data.get("dte") if iv_data else None)
 
+    # W3: classify σ-class from blended_sigma (structural, pre AI vol_regime).
+    # Data wins for current run; registry hint surfaces as advisory only.
+    auto_sigma_class = classify_sigma(blended_sigma)
+    sigma_class, sigma_class_mismatch = reconcile_with_registry(
+        ticker, auto_sigma_class
+    )
+    class_dip, class_rally_cond = class_conviction(sigma_class)
+    conviction_dip = (
+        cli_conviction_dip if cli_conviction_dip is not None else class_dip
+    )
+    conviction_rally_cond = (
+        cli_conviction_rally_cond
+        if cli_conviction_rally_cond is not None
+        else class_rally_cond
+    )
+
     vol_profile = VolatilityProfile(
         garch_sigma=garch_sigma,
         garch_alpha=float(garch["alpha"]),
@@ -797,6 +905,10 @@ def run_pipeline(args) -> int:
     # data_fetch.py for any future audit / analytical use, but does not
     # feed the recommendation blend.
     short_data = fetch_short_interest(ticker, api_key)
+    # W6 PR #34: TTM FCF + leverage + margin trend.
+    fundamentals = fetch_fundamentals(ticker, api_key, market_cap=market_cap)
+    # W6 PR #35: analyst upgrade/downgrade history.
+    grades_history = fetch_grades_history(ticker, api_key)
 
     # Peer resolution via registry (D-W2-1 closed). CLI --peers is an override;
     # absent --peers falls back to config/diprally.yaml's per-ticker entry
@@ -855,6 +967,8 @@ def run_pipeline(args) -> int:
         "macro": signal_from_macro(macro),
         # sacred #15: insider dropped (D-W2-16)
         "short_interest": signal_from_short_interest(short_data),
+        "fundamentals": signal_from_fundamentals(fundamentals),
+        "revision_momentum": signal_from_revision_momentum(grades_history),
         "peer_rs": signal_from_peer_rs(history_df, peer_dfs, lookback_days=60, ticker=ticker),
         "sector_decoupling": signal_from_sector_decoupling(history_df, sector_perf,
                                                             lookback_days=30, ticker=ticker),
@@ -877,7 +991,14 @@ def run_pipeline(args) -> int:
     pass1_sources_for_cache = 0
     pass2_raw_for_cache = None
 
-    cache_payload = None if args.no_ai else ai_cache.get_cached(ticker, spot)
+    # PR #38: --bust-cache forces a fresh AI run even when today's payload
+    # exists. Used to re-validate newly-deployed AI steps (e.g. PR #33
+    # catalyst verification) on tickers whose cache predates the new step.
+    bust_cache = getattr(args, "bust_cache", False)
+    cache_payload = (None if (not tier.runs_ai or bust_cache)
+                     else ai_cache.get_cached(ticker, spot))
+    if bust_cache:
+        print("AI cache bypass (--bust-cache): forcing fresh Pass 1/2/verify/stress")
     if cache_payload:
         print(f"   AI cache HIT for {ticker} ({cache_payload.get('date')}, "
               f"spot ${cache_payload.get('spot'):.2f}) — Pass 1/2/stress replayed at $0.00")
@@ -891,18 +1012,18 @@ def run_pipeline(args) -> int:
             pass2 = parse_ai_pass2(p2_raw, pass1, 0.0)
         cached_stress_results = cache_payload.get("stress_results") or []
         cached_stress_cost = 0.0
-    elif args.no_ai:
-        print("AI Pass 1 skipped (--no-ai)")
+    elif not tier.runs_ai:
+        print(f"AI Pass 1 skipped (tier {tier.name})")
     else:
-        print("AI Pass 1 (data gathering + multi-hypothesis catalysts)...")
+        print(f"AI Pass 1 (data gathering + multi-hypothesis catalysts) — model={tier.pass1_model}, web_search≤{tier.pass1_web_search_max}")
         display_signals_for_prompt = _signals_dict_to_display_list(signals_dict, BLEND_WEIGHTS_V2)
         pass1_prompt = build_ai_pass1_prompt(
             ticker, snapshot, vol_profile, horizon_days, display_signals_for_prompt,
             self_earnings_dt, peer_tickers,
         )
         pass1_raw, pass1_cost, pass1_sources = call_ai_pass(
-            pass1_prompt, max_tokens=8000, pass_label="Pass 1",
-            model=MODEL_OPUS, web_search_max_uses=5,
+            pass1_prompt, max_tokens=tier.pass1_max_tokens, pass_label="Pass 1",
+            model=tier.pass1_model, web_search_max_uses=tier.pass1_web_search_max,
         )
         pass1 = parse_ai_pass1(pass1_raw, pass1_sources, pass1_cost) if pass1_raw else None
         pass1_cost_charged = pass1_cost
@@ -915,8 +1036,11 @@ def run_pipeline(args) -> int:
     if cache_hit:
         # pass2 already loaded from cache_payload above
         pass2_raw_for_cache = cache_payload.get("pass2_raw") if cache_payload else None
-    elif args.no_ai:
-        print("AI Pass 2 skipped (--no-ai)")
+    elif not tier.runs_ai:
+        print(f"AI Pass 2 skipped (tier {tier.name})")
+        pass2_raw_for_cache = None
+    elif tier.pass2_model is None:
+        print(f"AI Pass 2 skipped (tier {tier.name} has no Pass 2)")
         pass2_raw_for_cache = None
     elif pass1:
         print("AI Pass 2 (adversarial critique — revises drift / vol_regime / narrative / catalysts)...")
@@ -946,8 +1070,8 @@ def run_pipeline(args) -> int:
         # sourced material + math context embedded in the prompt). Saves
         # ~$0.40-0.50 per full-AI run vs Opus+web.
         pass2_raw, pass2_cost, _ = call_ai_pass(
-            pass2_prompt, max_tokens=3000, pass_label="Pass 2",
-            model=MODEL_SONNET, web_search_max_uses=0,
+            pass2_prompt, max_tokens=tier.pass2_max_tokens, pass_label="Pass 2",
+            model=tier.pass2_model, web_search_max_uses=0,
         )
         pass2_cost_charged = pass2_cost
         pass2_raw_for_cache = pass2_raw
@@ -960,6 +1084,35 @@ def run_pipeline(args) -> int:
     # `effective_ai`. Pass 2 if it ran and parsed; otherwise Pass 1. None
     # in --no-ai or full AI failure.
     effective_ai = pass2 if pass2 else pass1
+
+    # --- 5a. Catalyst verification (W6 PR #33, closes D-W5-1).
+    # Haiku-constrained primary-source check on top-3 catalysts.
+    # UNVERIFIED → magnitude downgrade to "low"; REFUTED → drop. Same-day
+    # cache replays the verification result with $0 cost.
+    catalyst_verifications = []
+    verification_cost = 0.0
+    if cache_hit and cache_payload is not None:
+        catalyst_verifications = cache_payload.get("catalyst_verifications") or []
+    elif (tier.catalyst_verification_model is not None
+          and effective_ai and effective_ai.catalysts):
+        print(f"AI catalyst verification (model={tier.catalyst_verification_model})...")
+        catalyst_verifications, verification_cost = call_ai_catalyst_verification(
+            ticker, effective_ai.catalysts, horizon_days,
+            verification_model=tier.catalyst_verification_model,
+        )
+    if catalyst_verifications and effective_ai:
+        before = len(effective_ai.catalysts)
+        effective_ai.catalysts = apply_catalyst_verification(
+            effective_ai.catalysts, catalyst_verifications,
+        )
+        n_refuted = sum(1 for v in catalyst_verifications if v.get("verdict") == "REFUTED")
+        n_unverified = sum(1 for v in catalyst_verifications if v.get("verdict") == "UNVERIFIED")
+        n_verified = sum(1 for v in catalyst_verifications if v.get("verdict") == "VERIFIED")
+        print(
+            f"   Verification: {n_verified} VERIFIED, {n_unverified} UNVERIFIED "
+            f"(magnitude → low), {n_refuted} REFUTED (dropped). "
+            f"Catalysts: {before} → {len(effective_ai.catalysts)}"
+        )
 
     # --- 5b. AI-derived signals (catalyst_proximity, narrative, factor bias)
     #          built from Pass 2's revised values when available.
@@ -1084,8 +1237,13 @@ def run_pipeline(args) -> int:
 
     # --- 9. Apply AI vol_regime multiplier (uses Pass 2's revised regime
     #         when available — Pass 2 wins, sacred decision #7).
+    # PR #24: vol_regime multiplier is per-σ-class. The same "HIGH"
+    # vol_regime call means something different on a MID name (already
+    # high σ; amplify more aggressively) vs EXTREME (already extreme;
+    # less room to amplify).
     if effective_ai:
-        vol_mult = AI_VOL_REGIME_MULTIPLIERS.get(effective_ai.vol_regime, 1.0)
+        class_vol_mults = SIGMA_CLASSES[sigma_class].ai_vol_regime_multipliers
+        vol_mult = class_vol_mults.get(effective_ai.vol_regime, 1.0)
         effective_sigma = blended_sigma * vol_mult
     else:
         effective_sigma = blended_sigma
@@ -1110,6 +1268,7 @@ def run_pipeline(args) -> int:
         paths=paths,
         conviction_dip=conviction_dip,
         conviction_rally_cond=conviction_rally_cond,
+        sigma_class=sigma_class,
         vol_schedule=vol_schedule,
     )
 
@@ -1152,6 +1311,23 @@ def run_pipeline(args) -> int:
                   f"no in-horizon bullish/two-sided catalyst")
             met_threshold_strict = False
 
+    # PR #41 / PR #44: mirror of sacred #14 for blow-off tops. 30-day
+    # momentum is the symmetric trigger — sacred #14 refuses on mom_30d
+    # < -25% (falling knife); we refuse on mom_30d > +50% (parabola)
+    # absent a bearish/two-sided de-rating catalyst.
+    # PR #44 redesigned away from RSI+YTD: the INTC smoke (RSI=66.2,
+    # YTD=+204%, mom_30d=+92%) bypassed the original gate because RSI
+    # lags the explosive-move phase by ~10 days.
+    parabola_filter_refused = False
+    if (best is not None
+            and snapshot.mom_30d >= PARABOLA_FILTER_MOM_30D_THRESHOLD):
+        if not _has_bearish_derating_catalyst(effective_ai, horizon_days):
+            parabola_filter_refused = True
+            print(f"⛔ Parabola-filter refusal (PR #41/#44): mom_30d = "
+                  f"{snapshot.mom_30d*100:+.1f}% ≥ {PARABOLA_FILTER_MOM_30D_THRESHOLD*100:+.0f}%, "
+                  f"no in-horizon bearish/two-sided de-rating catalyst")
+            met_threshold_strict = False
+
     # --- 13. AI catalyst stress test — uses Pass 2's revised catalyst list
     #          when available (effective_ai), else Pass 1's. Sacred #7.
     catalyst_stress_results = []
@@ -1160,11 +1336,12 @@ def run_pipeline(args) -> int:
         # Replay from cache. Cost = $0.00.
         catalyst_stress_results = cached_stress_results
         catalyst_stress_cost = 0.0
-    elif not args.no_ai and effective_ai and best:
-        print("AI catalyst impact stress test...")
+    elif tier.stress_model is not None and effective_ai and best:
+        print(f"AI catalyst impact stress test (model={tier.stress_model})...")
         catalyst_stress_results, catalyst_stress_cost = call_ai_catalyst_stress_test(
             ticker, spot, best.dip_price, best.rally_price,
             effective_ai.catalysts, horizon_days,
+            stress_model=tier.stress_model,
         )
 
     # Write the AI cache for this ticker-date AFTER all AI work is complete.
@@ -1178,6 +1355,8 @@ def run_pipeline(args) -> int:
                 "pass1_sources": pass1_sources_for_cache,
                 "pass2_raw": pass2_raw_for_cache,
                 "pass2_cost": pass2_cost_charged,
+                "catalyst_verifications": catalyst_verifications,
+                "verification_cost": verification_cost,
                 "stress_results": catalyst_stress_results,
                 "stress_cost": catalyst_stress_cost,
                 "models_used": {
@@ -1190,33 +1369,75 @@ def run_pipeline(args) -> int:
             print(f"   WARNING: ai_cache.save failed (run still succeeds): {e}")
 
     # --- 14. Three-method math cross-check + hard refusal gate (sacred #16) ---
+    # Sacred #8: math cross-check runs on EVERY run, not just qualified pairs.
+    # PR #25 (D-W3-3 closed): when no pair qualifies, the check runs against
+    # a deterministic class-anchor pair (mid-depth dip × mid-reach rally) so
+    # the math layer's health is observable on WAIT-verdict tickers too.
+    # Verification-anchor runs never trigger the sacred #16 refusal — that
+    # gate only applies to recommendations, and we're not recommending.
     print("Three-method math cross-check...")
-    if best:
-        bridge_best_result = analyze_joint_conditional(
-            paths, spot, best.dip_price, best.rally_price, horizon_days,
-            sigma=effective_sigma, vol_schedule=vol_schedule,
-        )
-        method_check = three_method_cross_check(
-            spot, effective_sigma, post_mu, horizon_days,
-            best.dip_price, best.rally_price, bridge_best_result,
-        )
-        # Sacred decision #16 — hard refusal when MC and PDE/closed-form
-        # diverge beyond the σ-scaled refusal threshold. Publishing a
-        # recommendation under method disagreement = publishing a number
-        # we can't ourselves verify. Suppress the dip/rally pair; keep
-        # the table so the user sees WHY we refused.
-        if method_check.get("refused"):
-            print(f"⛔ Method-disagreement refusal triggered: {'; '.join(method_check['refusals'])}")
-            best = None  # blocks recommendation; report prints refusal headline
-            met_threshold_strict = False
+    method_check_is_anchor = best is None
+    if method_check_is_anchor:
+        class_grid = SIGMA_CLASSES[sigma_class].grid
+        anchor_dip = float(spot * (1.0 - class_grid.dip_max_depth_pct / 2.0))
+        anchor_rally = float(spot * (1.0 + class_grid.rally_max_reach_pct / 2.0))
+        check_dip, check_rally = anchor_dip, anchor_rally
     else:
-        # No qualifying pair — no PDE run. Use None for pde_mass_conservation
-        # so the reporter prints "n/a" instead of a misleading 1.00000 default.
-        # (D-W3-2 in the deferred log; cheap to fix here while we're in this
-        # neighborhood. The full three-method-on-no-pair fix is still W3.)
-        method_check = {"table": [], "flags": [], "refusals": [], "refused": False,
-                        "agreement_status": "n/a — no pair found",
-                        "pde_mass_conservation": None, "pde_p_neither": None}
+        check_dip, check_rally = best.dip_price, best.rally_price
+
+    bridge_check_result = analyze_joint_conditional(
+        paths, spot, check_dip, check_rally, horizon_days,
+        sigma=effective_sigma, vol_schedule=vol_schedule,
+    )
+    method_check = three_method_cross_check(
+        spot, effective_sigma, post_mu, horizon_days,
+        check_dip, check_rally, bridge_check_result,
+    )
+    method_check["is_anchor"] = method_check_is_anchor
+    method_check["anchor_dip"] = check_dip if method_check_is_anchor else None
+    method_check["anchor_rally"] = check_rally if method_check_is_anchor else None
+
+    # Sacred decision #16 — hard refusal when MC and PDE/closed-form
+    # diverge beyond the σ-scaled refusal threshold. Only applied to
+    # actual recommendations; anchor-pair verification never blocks.
+    if not method_check_is_anchor and method_check.get("refused"):
+        print(f"⛔ Method-disagreement refusal triggered: {'; '.join(method_check['refusals'])}")
+        best = None  # blocks recommendation; report prints refusal headline
+        met_threshold_strict = False
+
+    # --- 14a. Ambiguity score (W4 PR #28) ---
+    # Computed AFTER all T0 outputs (math, σ triangulation, method check)
+    # but BEFORE any AI dispatch in batch mode. Single scalar in [0, 1];
+    # the broker (PR #29) ranks tickers by this to allocate T3→T2→T1
+    # within the $2/day cap.
+    method_table = method_check.get("table") or []
+    method_max_delta_pp = max((abs(row[3]) for row in method_table), default=0.0)
+    tols = method_check.get("tolerances") or {}
+    method_refuse_pp = float(tols.get("refuse_first_passage_pp", 999.0))
+    ambiguity = compute_ambiguity(
+        best_p_dip=(best.p_dip_touched if best is not None else None),
+        conviction_dip=conviction_dip,
+        best_ev_pct_of_dip=(best.ev_pct_of_dip if best is not None else None),
+        sigma_divergence_pp=divergence_pp,
+        method_max_delta_pp=method_max_delta_pp,
+        method_refuse_threshold_pp=method_refuse_pp,
+        mom_30d=mom_30d,
+    )
+    print(f"Ambiguity score: {ambiguity.overall:.2f}  (broker sort key)")
+
+    # --- 14b. Sacred T2+ gate (W4 PR #30) — pre-AI net EV positive AND
+    # conviction met. Broker (PR #29) reads this from the snapshot to
+    # decide whether a ticker is eligible for T2/T3 tiers.
+    qualifies_for_t2_plus = bool(
+        best is not None
+        and met_threshold_strict
+        and best.net_ev_per_share > 0
+    )
+    print(
+        f"Pre-AI T2+ gate: {'PASS' if qualifies_for_t2_plus else 'FAIL'} "
+        f"(conviction_met={met_threshold_strict}, "
+        f"ev_positive={best is not None and best.net_ev_per_share > 0})"
+    )
 
     # --- 14b. Sensitivity table ---
     sensitivity = None
@@ -1226,7 +1447,7 @@ def run_pipeline(args) -> int:
             S0=spot, base_sigma=effective_sigma, base_mu=post_mu,
             horizon_days=horizon_days,
             dip_price=best.dip_price, rally_price=best.rally_price,
-            spread_per_share_round_trip=2.0,
+            sigma_class=sigma_class,
             catalyst_shocks=catalyst_stress_results,
             vol_schedule_base=vol_schedule,
             n_paths_sensitivity=10_000,
@@ -1235,17 +1456,22 @@ def run_pipeline(args) -> int:
     # --- 14c. Path metrics ---
     path_metrics = None
     if best is not None:
-        path_metrics = compute_path_metrics(paths, spot, best.dip_price, best.rally_price)
+        path_metrics = compute_path_metrics(
+            paths, spot, best.dip_price, best.rally_price,
+            panic_floor_pct=SIGMA_CLASSES[sigma_class].panic_floor_pct,
+        )
 
     # --- 15. Backtest layer ---
     backtest = run_backtest_layer(history_path, spot)
 
     # --- 16. Persist CSV row ---
-    total_ai_cost = pass1_cost_charged + pass2_cost_charged + catalyst_stress_cost
+    total_ai_cost = (pass1_cost_charged + pass2_cost_charged
+                     + verification_cost + catalyst_stress_cost)
     csv_row = {
         "date": datetime.now().strftime("%Y-%m-%d"),
         "spot": f"{spot:.2f}",
         "sigma_blended": f"{blended_sigma:.4f}",
+        "sigma_class": sigma_class,
         "drift_posterior": f"{post_mu:.4f}",
         "drift_posterior_std": f"{post_std:.4f}",
         "recommended_dip": f"{best.dip_price:.0f}" if best else "",
@@ -1270,6 +1496,8 @@ def run_pipeline(args) -> int:
         "method_agreement_flags": ";".join(method_check["flags"]),
         "ai_cost_total": f"{total_ai_cost:.2f}",
         "data_source": data_source,
+        "ai_tier": tier.name,
+        "ambiguity_score": f"{ambiguity.overall:.4f}",
     }
     append_history_row(history_path, csv_row)
 
@@ -1288,6 +1516,11 @@ def run_pipeline(args) -> int:
         ev_hurdle_refused=ev_hurdle_refused,
         ev_pct_of_dip=ev_pct_of_dip,
         trend_filter_refused=trend_filter_refused,
+        parabola_filter_refused=parabola_filter_refused,
+        sigma_class=sigma_class,
+        sigma_class_mismatch=sigma_class_mismatch,
+        ambiguity=ambiguity,
+        tier=tier,
     )
     print(report)
 
@@ -1299,5 +1532,16 @@ def run_pipeline(args) -> int:
         pass1, pass2, method_check, backtest, history_rows_for_chart,
         conviction_dip, conviction_rally_cond, horizon_days,
     )
+
+    # --- 19. Optional W4 broker snapshot (W5 orchestrator collects these) ---
+    if getattr(args, "emit_snapshot", False):
+        import json
+        snap_payload = {
+            "ticker": ticker,
+            "ambiguity": ambiguity.overall,
+            "qualifies_for_t2_plus": qualifies_for_t2_plus,
+            "sigma_class": sigma_class,
+        }
+        print("BROKER_SNAPSHOT_JSON=" + json.dumps(snap_payload))
 
     return 0

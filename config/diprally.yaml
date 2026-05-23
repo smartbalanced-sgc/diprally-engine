@@ -42,6 +42,75 @@ ai_models:
   haiku: "claude-haiku-4-5-20251001"
 
 # -----------------------------------------------------------
+# AI tier ladder (W4 PR #27). T0/T1/T2/T3 from CLAUDE.md sacred table.
+# Each ticker is assigned a tier by the budget broker (W4 PR #29) under
+# the $2/day hard cap. The single-ticker CLI defaults to T3 (full
+# diagnostic depth); the multi-ticker orchestrator (W5) will use the
+# broker to allocate T3→T2→T1 by ambiguity, T0 floor for the rest.
+#
+# pass1_model / pass2_model / stress_model are model-ID keys into the
+# ai_models block above; null disables that pass entirely. The tier
+# cost estimate is a planning figure used by the broker — actual cost
+# is metered from API responses, not derived from this number.
+ai_tiers:
+  T0:
+    pass1_model: null            # math only, no AI
+    pass2_model: null
+    stress_model: null
+    catalyst_verification_model: null
+    pass1_web_search_max: 0
+    pass1_max_tokens: 0
+    pass2_max_tokens: 0
+    estimated_cost_usd: 0.0
+  T1:
+    pass1_model: haiku           # mild trigger — quick single pass
+    pass2_model: null            # no critique
+    stress_model: null
+    catalyst_verification_model: null  # T1 catalysts are speculative; skip
+    pass1_web_search_max: 1
+    pass1_max_tokens: 4000
+    pass2_max_tokens: 0
+    estimated_cost_usd: 0.02
+  T2:
+    pass1_model: sonnet          # default "qualified" tier
+    pass2_model: sonnet
+    stress_model: null
+    # W6 PR #33: Haiku verifies Pass 2's catalysts against primary
+    # sources (SEC, IR, press wire). ~3×$0.005 = ~$0.015 extra.
+    catalyst_verification_model: haiku
+    pass1_web_search_max: 3
+    pass1_max_tokens: 8000
+    pass2_max_tokens: 4000
+    estimated_cost_usd: 0.12
+  T3:
+    pass1_model: opus            # deepest — current single-ticker default
+    pass2_model: sonnet
+    stress_model: haiku
+    catalyst_verification_model: haiku
+    pass1_web_search_max: 5
+    pass1_max_tokens: 8000
+    pass2_max_tokens: 4000
+    estimated_cost_usd: 0.32
+
+# Per-day total AI cost cap. Hard ceiling — broker refuses to allocate
+# beyond this even if every ticker has high ambiguity.
+ai_daily_budget_cap_usd: 2.00
+
+# Budget broker (W4 PR #29). Ambiguity gates for AI spend.
+# Sacred constraint: T2+ also requires pre-AI conviction met AND pre-AI
+# net EV positive — those are gates on the ticker's math state, not on
+# ambiguity. The two thresholds below gate AI eligibility on the
+# uncertainty signal independently of qualification:
+#   ambig < ai_min_ambiguity              → T0 (math decisive, AI wasted)
+#   ai_min ≤ ambig < t3_min, qualified    → T2
+#   ai_min ≤ ambig < t3_min, NOT qualified→ T1 (cheap diagnostic)
+#   ambig ≥ t3_min, qualified             → T3
+#   ambig ≥ t3_min, NOT qualified         → T1 (T1 ceiling without qual)
+ai_broker:
+  ai_min_ambiguity: 0.20   # below this, any AI spend is wasteful
+  t3_min_ambiguity: 0.50   # T3 (~$0.30) reserved for high-ambiguity setups
+
+# -----------------------------------------------------------
 # Blend weights. Sum need not equal 1.0 — blend_with_uncertainty normalizes.
 # -----------------------------------------------------------
 # Sacred decision #15: insider signal dropped (Form 4 lag + noise).
@@ -70,9 +139,11 @@ blend_weights_v2:
   short_interest: 0.02
   peer_rs: 0.10
   sector_decoupling: 0.10
-  ai: 0.26
+  ai: 0.17                              # W6 PR #34/#35: trimmed to make room
   catalyst_proximity: 0.10
-  narrative: 0.10
+  narrative: 0.07                       # W6 PR #35: trimmed from 0.08
+  fundamentals: 0.08                    # W6 PR #34: FCF + leverage + margin trend
+  revision_momentum: 0.04               # W6 PR #35: analyst upgrades-downgrades
 
 # Standard error per qualitative confidence tier (decimal annualised return).
 confidence_to_se:
@@ -84,9 +155,97 @@ confidence_to_se:
 # Conviction thresholds (sacred decisions #1, #13)
 # -----------------------------------------------------------
 conviction:
-  dip_marginal: 0.65            # P(touch dip) threshold
-  rally_conditional: 0.75       # P(rally | dip touched) threshold
+  dip_marginal: 0.65            # P(touch dip) threshold (used when sigma_class disabled or fallback)
+  rally_conditional: 0.75       # P(rally | dip touched) threshold (fallback)
   ev_hurdle_bps_of_dip: 50      # sacred #13: refuse if EV < 50bps of dip
+
+# -----------------------------------------------------------
+# σ-class auto-detection (W3 / D-W2-X / sacred decision spec from CLAUDE.md).
+# Detector picks a class from blended σ; class-specific defaults override
+# the flat conviction above. PR #39 recalibration (2026-05-23 smoke):
+# the original boundaries (extreme_min=0.95, high_min=0.50) were calibrated
+# for normal-cycle tech vol (15-50% annualised). The current AI/semis regime
+# is running 50-150% annualised across the universe — 4 of 5 representative
+# tickers (INTC 83%, AMAT 51%, MU 81%, RKLB 107%) auto-classed differently
+# than the static registry hint. Boundaries widened to match: EXTREME now
+# starts at 120% (truly extreme even for hot tech), HIGH starts at 65%.
+# Re-run the registry-hint review after this PR; tickers at the boundary
+# will see fewer false mismatches.
+# -----------------------------------------------------------
+sigma_class_boundaries:
+  extreme_min: 1.20             # σ ≥ this → EXTREME (raised from 0.95)
+  high_min: 0.65                # this ≤ σ < extreme_min → HIGH; below → MID (raised from 0.50)
+
+# Per-class threshold table. Other class-keyed config (friction,
+# panic floor, AI vol_regime mult) lands in subsequent W3 PRs — this
+# block carries conviction (PR #21) and grid (PR #22).
+#
+# Grid sizing (PR #22, D-W3-1): step expressed as percent-of-spot so
+# the engine is price-agnostic across the universe (LWLG $13 ↔ ASTS
+# $40+ ↔ any future ticker). Step calibrated to match v2's SNDK
+# baseline cardinality (~3000-5000 candidate pairs per class) — fine
+# enough that the EV optimum isn't a discretisation artifact. Tighter
+# step on lower-vol names where EV gradients are shallower.
+#   EXTREME: 1.0% step  → 50 dip × 60 rally = 3000 pairs
+#   HIGH:    0.75% step → 47 dip × 67 rally ≈ 3149 pairs
+#   MID:     0.5% step  → 40 dip × 60 rally = 2400 pairs
+sigma_classes:
+  EXTREME:
+    conviction:
+      dip: 0.60
+      rally_conditional: 0.75
+    grid:
+      dip_step_pct: 0.010
+      rally_step_pct: 0.010
+      dip_max_depth_pct: 0.50
+      rally_max_reach_pct: 0.60
+    # Round-trip friction in bps of average traded notional (PR #23).
+    # Institutional convention: total RT cost = (dip+rally)/2 × bps/10000
+    # — proportional to the average price across both legs. EXTREME
+    # ticks wider, has higher impact, lower liquidity → 70 bps RT.
+    friction_bps_round_trip: 70.0
+    # Panic-floor depth (PR #24) — flagged as "below this, the trader
+    # needs a structural thesis, not a swing setup." Deeper for higher-
+    # vol classes because the natural distribution extends further left.
+    panic_floor_pct: 0.35
+    # AI vol_regime → effective_sigma multiplier (PR #24). Class-tuned
+    # because the same "HIGH vol_regime" call from AI means something
+    # different on a MID name (already high σ to begin with) vs EXTREME
+    # (already extreme; less room to amplify). Sacred CLAUDE.md numbers.
+    ai_vol_regime_multipliers:
+      HIGH: 1.10
+      MEDIUM: 1.00
+      LOW: 0.90
+  HIGH:
+    conviction:
+      dip: 0.65
+      rally_conditional: 0.75
+    grid:
+      dip_step_pct: 0.0075
+      rally_step_pct: 0.0075
+      dip_max_depth_pct: 0.35
+      rally_max_reach_pct: 0.50
+    friction_bps_round_trip: 35.0
+    panic_floor_pct: 0.25
+    ai_vol_regime_multipliers:
+      HIGH: 1.15
+      MEDIUM: 1.00
+      LOW: 0.90
+  MID:
+    conviction:
+      dip: 0.65
+      rally_conditional: 0.70
+    grid:
+      dip_step_pct: 0.005
+      rally_step_pct: 0.005
+      dip_max_depth_pct: 0.20
+      rally_max_reach_pct: 0.30
+    friction_bps_round_trip: 18.0
+    panic_floor_pct: 0.18
+    ai_vol_regime_multipliers:
+      HIGH: 1.25
+      MEDIUM: 1.00
+      LOW: 0.80
 
 # -----------------------------------------------------------
 # Horizon + MC paths
@@ -98,22 +257,13 @@ horizon:
   deep_dip_autoscale_paths: 200000
 
 # -----------------------------------------------------------
-# Grid scan (dip × rally) — D-W3-1 will σ-class the step in W3
+# Legacy global blocks RETIRED in W3:
+#   - grid.step/depth/reach        → PR #22 (sigma_classes.<CLASS>.grid)
+#   - grid.panic_floor_pct          → PR #24 (sigma_classes.<CLASS>.panic_floor_pct)
+#   - ai_vol_regime_multipliers     → PR #24 (sigma_classes.<CLASS>.ai_vol_regime_multipliers)
+#   - engine.spread_per_share_round_trip → PR #23 (sigma_classes.<CLASS>.friction_bps_round_trip)
+# Engine reads everything class-keyed; no global fallback path remains.
 # -----------------------------------------------------------
-grid:
-  dip_step_dollars: 10.0
-  rally_step_dollars: 10.0
-  dip_max_depth_pct: 0.40       # scan down to (1 - 0.40) × spot
-  rally_max_reach_pct: 0.60     # scan up to (1 + 0.60) × spot
-  panic_floor_pct: 0.30         # path-metrics panic floor (W3 σ-class varying)
-
-# -----------------------------------------------------------
-# AI vol_regime → vol multiplier (drives effective σ in MC)
-# -----------------------------------------------------------
-ai_vol_regime_multipliers:
-  HIGH: 1.15
-  MEDIUM: 1.00
-  LOW: 0.90
 
 # -----------------------------------------------------------
 # Structural narrative score → drift adjustment (annualised pp)
@@ -197,6 +347,28 @@ trend_filter:
   mom_30d_threshold: -0.25
 
 # -----------------------------------------------------------
+# Post-parabola refusal gate (PR #41 / PR #44 — mirror of sacred #14).
+# Refuses dip-buy recommendations on a parabolic blow-off when:
+#   30d momentum ≥ mom_30d_threshold (recent explosive move — same
+#     scale as sacred #14's falling-knife trigger but inverted sign)
+#   AND no AI-surfaced bearish/two-sided de-rating catalyst in horizon
+#     (without a structural reason to mean-revert, dip-buying a name
+#      that's up 50%+ in a month is gravity-betting on a swing horizon)
+# Gate fires AFTER the math layer recommends BUY but BEFORE the
+# recommendation reaches the trader — sacred-style hard refusal.
+#
+# PR #44 redesign: the original PR #41 used RSI + YTD as triggers. INTC
+# at RSI 66 + YTD +204% + mom_30d +92% bypassed the gate because RSI
+# was below 70 — but +92% in a month is by definition parabolic. RSI
+# is a 14-period lagging indicator that doesn't trigger until AFTER
+# the blow-off resolves. 30d momentum is the symmetric pair to sacred
+# #14's mom_30d_threshold = -25%, and the natural mirror for the
+# institutional "you missed the move" criterion.
+# -----------------------------------------------------------
+parabola_filter:
+  mom_30d_threshold: 0.50               # ≥ +50% in 30 trading days → parabolic
+
+# -----------------------------------------------------------
 # Macro regime detection (data_fetch.fetch_macro_indicators).
 # Sourced from VIX level + SPY-vs-MA50 trend.
 # D-W2-8: lifted from inline literals in data_fetch.py.
@@ -255,7 +427,8 @@ realized_vol_windows: [30, 60, 90]
 # -----------------------------------------------------------
 engine:
   drift_cap: 1.0                          # |mu_hist| capped at this before enrichment
-  spread_per_share_round_trip: 2.0        # friction proxy (W3 will σ-class-vary)
+  # spread_per_share_round_trip RETIRED in W3 PR #23 — friction is now
+  # per-σ-class bps under sigma_classes.<CLASS>.friction_bps_round_trip
   garch_fallback_sigma: 0.30              # used when GARCH fit fails AND realized < 90 bars
   grid_prefilter_looseness: 0.08          # candidates within (threshold - this) survive
 
@@ -341,6 +514,51 @@ signals:
     drift_cap_abs: 0.15
     in_window_count_high_conf: 3        # ≥ this in-horizon catalysts → HIGH conf
     in_window_count_medium_conf: 1
+
+  # W6 PR #35 — analyst revision momentum. Net upgrades/downgrades
+  # over the last 90 days, time-decay-weighted (recent revisions count
+  # more — institutional convention). Each rating action contributes
+  # ±drift_per_unit_pp × time-decay weight. Cap on combined drift.
+  # Confidence ladder based on total revision count in window:
+  #   ≥ conf_high_count    → HIGH
+  #   conf_medium_count..  → MEDIUM
+  #   1..conf_medium_count → LOW
+  #   0                    → _none_signal (no activity)
+  revision_momentum:
+    recent_weight: 1.0                  # actions in last 30 days
+    medium_weight: 0.6                  # actions in 30-60d
+    older_weight: 0.3                   # actions in 60-90d
+    drift_per_unit_pp: 0.008            # per weighted unit (signed)
+    drift_cap_abs: 0.06                 # combined drift capped here
+    conf_high_count: 6
+    conf_medium_count: 3
+    lookback_days: 90                   # rolling window
+
+  # W6 PR #34 — fundamentals signal. Three sub-components combined to
+  # an annualised drift contribution: FCF yield (cash-generative names
+  # get a structural bid), net debt / EBITDA (over-levered balance
+  # sheet drags drift down), operating-margin trend (improving =
+  # bullish). EXTREME/pre-revenue names often have ≤0 EBITDA + ≤0 FCF
+  # — the signal degrades to LOW confidence rather than crashing.
+  fundamentals:
+    # FCF yield = TTM FCF / market cap. Brackets are decimal (0.05 = 5%).
+    fcf_yield_strong_bull: 0.05         # ≥ this → +bullish_drift_pp
+    fcf_yield_mild_bull:   0.02         # ≥ this → +mild_drift_pp
+    fcf_yield_neutral_low: 0.00         # below 0 starts bearish
+    fcf_yield_strong_bear: -0.05        # ≤ this → -bullish_drift_pp
+    bullish_drift_pp:      0.04
+    mild_drift_pp:         0.02
+    # Net debt / EBITDA (only computable when EBITDA > 0).
+    leverage_strong_bull:  1.0          # ≤ this multiple → +mild_drift_pp
+    leverage_neutral_high: 3.0          # within neutral band
+    leverage_mild_bear:    5.0          # > 3× and ≤ this → -mild_drift_pp
+    # > leverage_mild_bear → -bullish_drift_pp.
+    # Operating-margin trend: avg margin last 4Q vs prior 4Q (decimal).
+    margin_trend_bull:     0.05         # +5pp = bullish
+    margin_trend_bear:    -0.05         # -5pp = bearish
+    margin_trend_drift_pp: 0.02         # contribution per side
+    # Drift cap on the combined fundamentals signal.
+    drift_cap_abs:         0.08         # combined signal capped here
 
 # -----------------------------------------------------------
 # Sensitivity scenarios (D-W2-7) — already declared above.

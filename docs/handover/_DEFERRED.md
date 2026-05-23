@@ -328,9 +328,9 @@ Each of these is a tunable buried inside a function. Lift to YAML under a
 
 ---
 
-## To W3 (σ-class auto-detection + class-specific defaults)
+## To W3 (σ-class auto-detection + class-specific defaults)  [WAVE CLOSED — all items shipped in PRs #21–#26]
 
-### D-W3-1. Grid step must be percent-based, not absolute dollars
+### D-W3-1. Grid step must be percent-based, not absolute dollars  [CLOSED in W3 PR #22]
 - **Discovered**: LWLG W0 smoke run, 2026-05-22 12:31
 - **Symptom**: `Precomputing bridge-corrected first-touch days for 1 dip × 1
   rally barriers...` — the dip × rally search grid collapsed to a single
@@ -355,7 +355,7 @@ Each of these is a tunable buried inside a function. Lift to YAML under a
   yields similar cardinality; per-ticker dashboard's recommendation pair no
   longer snaps to a single-cell artifact.
 
-### D-W3-2. Fake `pde_mass_conservation: 1.0` default
+### D-W3-2. Fake `pde_mass_conservation: 1.0` default  [CLOSED — earlier patch handled None; PR #25 anchor now runs real PDE]
 - **File**: `src/engine.py` ~line 770 (the `else:` branch where `best is None`)
 - **Symptom** (LWLG run): report prints
   `PDE mass conservation: 1.00000 (should be ~1.0)` — even though no PDE
@@ -367,7 +367,7 @@ Each of these is a tunable buried inside a function. Lift to YAML under a
   In `src/reporter.py`, when `pde_mass_conservation is None`, print "n/a"
   instead of the formatted float.
 
-### D-W3-3. Three-method check skipped when no qualifying pair
+### D-W3-3. Three-method check skipped when no qualifying pair  [CLOSED in W3 PR #25]
 - **Sacred decision violated (sort of)**: #8 (three-method math cross-check
   on every run). Currently only triggers if `best is not None`. For tickers
   where the grid finds nothing, MC vs PDE vs closed-form agreement is never
@@ -384,9 +384,56 @@ Each of these is a tunable buried inside a function. Lift to YAML under a
 
 ---
 
+## W4 (budget broker + ambiguity)  [WAVE CLOSED — PRs #27-#30]
+
+PR #27 — AI tier ladder (T0/T1/T2/T3) parametric in YAML; engine
+        reads three dispatch sites from tier spec
+PR #28 — Per-ticker AmbiguityScore (5-component weighted [0,1] sort
+        key for broker)
+PR #29 — Budget broker greedy-allocator (T3→T2→T1 within $2/day);
+        broker_preview.py CLI for dry-runs
+PR #30 — Engine emits qualifies_for_t2_plus (sacred T2+ gate);
+        --emit-snapshot prints BrokerSnapshot JSON for orchestrator
+        consumption
+
+## W5 (orchestrator + cron + dashboard)  [WAVE CLOSED — PRs #31-#32]
+
+PR #31 — Multi-ticker orchestrator (subprocess-based, two-phase):
+        Phase 1 T0 snapshot collection, broker allocates, Phase 2 AI
+        dispatch at assigned tiers. src/orchestrator.py library +
+        tools/orchestrate.py CLI shim. Per-ticker logs in
+        output/orchestrator_<ts>/. Summary table at completion.
+PR #32 — Aggregate dashboard: output/index.html (stable bookmark) +
+        output/orchestrator_<ts>/index.html (audit copy). Sortable
+        per-ticker table: ticker / σ-class / tier / ambiguity /
+        verdict / spot / dip / rally / P(RT) / EV bps / status.
+        Cron docs in docs/cron.md with sample crontab + log
+        rotation + flock budget-guard pattern.
+
+## W6 (institutional signals)  [WAVE CLOSED — PRs #33-#36]
+
+PR #33 — D-W5-1 catalyst verification (Haiku-constrained primary-
+        source check at T2 + T3; UNVERIFIED→magnitude=low,
+        REFUTED→drop). Closes the RKLB-convertible hallucination
+        class.
+PR #34 — Fundamentals signal (TTM FCF yield + ND/EBITDA leverage +
+        operating margin trend). Blend weight 0.08; FMP key-metrics-
+        ttm + income-statement endpoints. Graceful degradation for
+        pre-revenue names (LOW confidence on 1-2 sub-components).
+PR #35 — Analyst revision momentum (time-decay-weighted net
+        upgrades/downgrades over 90d). Blend weight 0.04; FMP
+        upgrades-downgrades endpoint. 1.0 / 0.6 / 0.3 weighting by
+        30d / 30-60d / 60-90d age buckets.
+PR #36 — Integration tests + W6 close-out (this).
+
+Net W6 blend impact:
+  v2 signals: 10 → 12 (added fundamentals + revision_momentum)
+  ai weight: 0.26 → 0.17 (AI's outsized voice trimmed for institutional
+                          structural signals to occupy)
+
 ## To W5 / W6 (AI quality — catalyst verification)
 
-### D-W5-1. AI catalyst-detail hallucination layer
+### D-W5-1. AI catalyst-detail hallucination layer  [CLOSED in W6 PR #33]
 - **Discovered**: RKLB W1 full-AI smoke (2026-05-22 15:47)
 - **Symptom**: Pass 1 produced "Convertible note conversion window
   (2026-04-01/2026-06-30, bearish, magnitude med)" and Pass 2 carried the
