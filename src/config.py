@@ -130,6 +130,30 @@ class HorizonConfig(_StrictModel):
     deep_dip_autoscale_paths: int = Field(gt=0)
 
 
+class MCDistributionConfig(_StrictModel):
+    """W9 PR #48: Monte Carlo innovation distribution. Switches between
+    classic lognormal GBM ("normal") and fat-tail Student-t innovations
+    ("student_t"). df > 2 required for Student-t (variance df/(df-2)
+    needs finite mean and variance). Per-σ-class df allows EXTREME to
+    use heavier tails than MID."""
+    default: str
+    default_df: float = Field(gt=2.0, le=30.0)
+    per_class: dict[str, float] = {}
+
+    def model_post_init(self, _ctx):
+        if self.default not in ("normal", "student_t"):
+            raise ValueError(
+                f"mc_distribution.default must be 'normal' or 'student_t', "
+                f"got {self.default!r}"
+            )
+        for cls, df in self.per_class.items():
+            if df <= 2.0 or df > 30.0:
+                raise ValueError(
+                    f"mc_distribution.per_class.{cls} df={df} must be > 2 "
+                    f"and ≤ 30"
+                )
+
+
 class MethodToleranceConfig(_StrictModel):
     marginal_floor_pp: float = Field(ge=0.0)
     marginal_multiplier: float = Field(ge=0.0)
@@ -406,6 +430,7 @@ class DiprallyConfig(_StrictModel):
     sigma_class_boundaries: SigmaClassBoundariesConfig
     sigma_classes: dict[str, SigmaClassThresholdConfig]
     horizon: HorizonConfig
+    mc_distribution: MCDistributionConfig
     narrative_drift_adjustment: dict[str, float]
     factor_arithmetic: FactorArithmeticConfig
     catalyst: CatalystConfig
@@ -578,6 +603,9 @@ def _rebind_module_constants() -> None:
     g["DEFAULT_MC_PATHS"] = _CONFIG.horizon.default_mc_paths
     g["DEEP_DIP_AUTOSCALE_THRESHOLD"] = _CONFIG.horizon.deep_dip_autoscale_threshold
     g["DEEP_DIP_AUTOSCALE_PATHS"] = _CONFIG.horizon.deep_dip_autoscale_paths
+
+    # W9 PR #48: MC distribution config (normal vs student_t per σ-class).
+    g["MC_DISTRIBUTION"] = _CONFIG.mc_distribution
 
     # Narrative drift (panic_floor + ai_vol_regime_multipliers are now
     # per-σ-class — accessed via SIGMA_CLASSES[class].<field>).

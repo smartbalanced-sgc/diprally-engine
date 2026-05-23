@@ -272,6 +272,42 @@ def pde_two_barrier(S0, U, L, T, mu, sigma, n_space=None, n_time=None):
 # Monte Carlo — joint conditional with bridge correction
 # =============================================================================
 
+def _draw_innovations(rng, n_paths: int, horizon_days: int,
+                       distribution: str = "normal",
+                       df: float = 5.0) -> np.ndarray:
+    """W9 PR #48: draw daily innovation matrix shape (n_paths, horizon_days)
+    with unit variance, suitable for GBM step σ * sqrt(dt) * z.
+
+    distribution="normal"     → standard normal draws (classic GBM).
+    distribution="student_t"  → Student-t(df) draws rescaled to unit
+                                variance (raw T(df) variance is df/(df-2),
+                                so we divide by sqrt(df/(df-2)) to make
+                                σ-scaling work identically to the normal
+                                case). df must be > 2.
+
+    Student-t innovations preserve the σ-input interpretation (annual
+    vol) while making daily moves fat-tailed. Kurtosis at df=5 is 6
+    vs normal's 3 — captures the parabolic / panic moves the
+    diprally universe routinely produces.
+    """
+    if distribution == "normal":
+        return rng.standard_normal((n_paths, horizon_days))
+    if distribution == "student_t":
+        if df <= 2.0:
+            raise ValueError(
+                f"Student-t df must be > 2 for finite variance (got {df})"
+            )
+        # Raw Student-t has variance df/(df-2); rescale to unit variance
+        # so σ * sqrt(dt) * z keeps the same σ interpretation as normal.
+        raw = rng.standard_t(df, size=(n_paths, horizon_days))
+        scale = np.sqrt(df / (df - 2.0))
+        return raw / scale
+    raise ValueError(
+        f"Unknown MC distribution {distribution!r} "
+        f"(expected 'normal' or 'student_t')"
+    )
+
+
 def run_mc_joint_conditional(
     S0: float,
     sigma: float,
@@ -282,6 +318,8 @@ def run_mc_joint_conditional(
     mean_reversion_strength: float = 0.0,
     mean_reversion_anchor: Optional[float] = None,
     seed: int = 42,
+    distribution: str = "normal",
+    df: float = 5.0,
 ) -> np.ndarray:
     """Generate Monte Carlo paths with optional time-varying vol and mean reversion.
 
@@ -291,11 +329,15 @@ def run_mc_joint_conditional(
 
     Mean reversion OFF by default.
     """
-    np.random.seed(seed)
+    # W9 PR #48: use a local Generator so distribution-switching is
+    # deterministic and doesn't poison the global RNG. Student-t draws
+    # go through _draw_innovations which rescales to unit variance.
+    rng = np.random.default_rng(seed)
     dt = 1.0 / 252.0
     sd = sigma * np.sqrt(dt)
 
-    z = np.random.standard_normal((n_paths, horizon_days))
+    z = _draw_innovations(rng, n_paths, horizon_days,
+                            distribution=distribution, df=df)
     paths = np.zeros((n_paths, horizon_days + 1))
     paths[:, 0] = S0
 

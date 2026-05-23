@@ -257,6 +257,32 @@ horizon:
   deep_dip_autoscale_paths: 200000
 
 # -----------------------------------------------------------
+# W9 PR #48 — fat-tail Monte Carlo.
+# Lognormal GBM (normal innovations) systematically underprices
+# parabolic / panic moves that are routine in the diprally universe
+# (INTC +92% mom_30d, LWLG +251% YTD, RKLB +99% mom_30d all observed
+# in the W3-W6 smokes). At σ=83% annualized, a +50% 30d move is a
+# +3.4σ event under normal — but happens monthly in this universe.
+#
+# Student-t innovations with df=5 (kurtosis 6 vs normal's 3) capture
+# fat tails without rebuilding the GBM scaffold. Daily Student-t
+# innovations are rescaled to unit variance so σ remains interpretable
+# the same way (annualized vol). df is per-σ-class because EXTREME
+# names have heavier tails than MID names — empirical kurtosis on
+# the universe shows df ~4-5 for EXTREME, ~6-7 for MID.
+#
+# distribution: "normal" | "student_t"
+# df:           only used when distribution == "student_t"; must be > 2
+#               (Student-t variance df/(df-2) requires df > 2)
+mc_distribution:
+  default: "student_t"          # universe-wide default; sacred design after smoke audit
+  default_df: 5.0
+  per_class:                     # σ-class-aware df (overrides default_df)
+    EXTREME: 4.0                 # heaviest tails — pre-revenue / momentum names
+    HIGH:    5.0
+    MID:     7.0                 # mature large-caps — closer to normal
+
+# -----------------------------------------------------------
 # Legacy global blocks RETIRED in W3:
 #   - grid.step/depth/reach        → PR #22 (sigma_classes.<CLASS>.grid)
 #   - grid.panic_floor_pct          → PR #24 (sigma_classes.<CLASS>.panic_floor_pct)

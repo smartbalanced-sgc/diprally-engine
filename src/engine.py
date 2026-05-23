@@ -56,6 +56,7 @@ from src.config import (
     DEFAULT_HORIZON_DAYS,
     DEFAULT_LOOKBACK_DAYS,
     DEFAULT_MC_PATHS,
+    MC_DISTRIBUTION,
     MODEL_OPUS,
     MODEL_SONNET,
 )
@@ -526,10 +527,17 @@ def compute_sensitivity_table(
             vs = vol_schedule_base * scale
         else:
             vs = None
+        # W9 PR #48: sensitivity MCs use the same distribution/df as
+        # the main MC — keep stress-test innovations consistent with
+        # the recommendation's underlying assumption.
         paths_s = run_mc_joint_conditional(
             S0=S0, sigma=sigma_s, mu=mu_s,
             horizon_days=horizon_days, n_paths=n_paths_sensitivity,
             vol_schedule=vs, seed=42 + len(rows),
+            distribution=MC_DISTRIBUTION.default,
+            df=MC_DISTRIBUTION.per_class.get(
+                sigma_class, MC_DISTRIBUTION.default_df,
+            ),
         )
         result = analyze_joint_conditional(
             paths_s, S0, dip_price, rally_price, horizon_days,
@@ -1263,7 +1271,12 @@ def run_pipeline(args) -> int:
         effective_sigma = blended_sigma
 
     # --- 10. Run MC ---
-    print(f"Running Monte Carlo ({DEFAULT_MC_PATHS} paths)...")
+    # W9 PR #48: fat-tail innovations (Student-t) when configured;
+    # df is per-σ-class so EXTREME names use heavier tails than MID.
+    mc_dist = MC_DISTRIBUTION.default
+    mc_df = MC_DISTRIBUTION.per_class.get(sigma_class, MC_DISTRIBUTION.default_df)
+    print(f"Running Monte Carlo ({DEFAULT_MC_PATHS} paths, "
+          f"distribution={mc_dist}{f', df={mc_df}' if mc_dist == 'student_t' else ''})...")
     paths = run_mc_joint_conditional(
         S0=spot,
         sigma=effective_sigma,
@@ -1273,6 +1286,8 @@ def run_pipeline(args) -> int:
         vol_schedule=vol_schedule,
         mean_reversion_strength=args.mean_reversion,
         mean_reversion_anchor=spot * (1.0 - MEAN_REVERSION_ANCHOR_PCT_BELOW_SPOT) if args.mean_reversion > 0 else None,
+        distribution=mc_dist,
+        df=mc_df,
     )
 
     # --- 11. Scan grid ---
