@@ -73,16 +73,21 @@ def test_bearish_catalyst_in_horizon_blocks_refusal():
     assert _has_bearish_derating_catalyst(ai2, horizon_days=60) is True
 
 
-def test_twosided_catalyst_counts_as_derating():
-    """A two-sided catalyst carries the possibility of a de-rating
-    event — counts as enough to allow the parabolic-dip thesis."""
+def test_twosided_catalyst_does_NOT_count_as_derating():
+    """PR #45 design change: two-sided catalysts (generic earnings,
+    sector readthrough, macro events) are the math layer's default
+    assumption and do NOT specifically point toward de-rating.
+    Asymmetry with sacred #14 is intentional — the parabola filter
+    requires a BEARISH thesis, not a bidirectional one. Otherwise
+    every parabola slips through on a generic 'earnings in horizon'
+    catalyst, defeating the gate's purpose."""
     from datetime import datetime as _dt
     today = _dt.now().date()
     d = today + timedelta(days=20)
-    ai = _ai({"name": "guidance", "type": "guidance",
+    ai = _ai({"name": "Q2 earnings", "type": "earnings",
                "date_or_window": d.strftime("%Y-%m-%d"),
                "magnitude": "high", "direction_risk": "two-sided"})
-    assert _has_bearish_derating_catalyst(ai, horizon_days=60) is True
+    assert _has_bearish_derating_catalyst(ai, horizon_days=60) is False
 
 
 def test_bullish_only_catalyst_does_not_block_refusal():

@@ -213,14 +213,26 @@ def _truncate_at_word_boundary(text: str, max_chars: int) -> str:
 
 
 def _has_bearish_derating_catalyst(effective_ai, horizon_days: int) -> bool:
-    """PR #41 helper (mirror of sacred #14): returns True iff Pass 1/Pass 2
-    surfaced at least one in-horizon catalyst with direction_risk in
-    (bearish, two-sided). These are the only structural reasons a
-    parabolic stock mean-reverts within a swing window. Without one,
-    buying the dip on a +RSI+YTD-pegged name is betting against gravity.
+    """PR #41 / #45 helper (mirror of sacred #14, tightened): returns True
+    iff Pass 1/Pass 2 surfaced at least one in-horizon catalyst with
+    direction_risk == "bearish". This is the ONLY structural reason to
+    expect a parabolic stock to mean-revert within a swing window.
 
-    A two-sided catalyst counts: it carries the possibility of a
-    de-rating event that lets the math anchor on mean-reversion.
+    PR #45 design change: dropped "two-sided" from the accepted set.
+    Two-sided catalysts (generic earnings, sector readthrough, macro)
+    are the math layer's DEFAULT assumption — they don't specifically
+    point toward de-rating. The parabola filter is a top-level VETO
+    that should only relax for specific bearish catalysts (overhang
+    closes, secondary offerings, regulatory actions, peer disappoint-
+    ments). Otherwise +92%-in-30-days "two-sided earnings" lets every
+    parabola slip through the gate, defeating the purpose.
+
+    Asymmetry with sacred #14 is intentional:
+      #14 (falling knife):  accepts bullish OR two-sided to override
+                            (anything pointing up rescues a falling knife)
+      #41 (parabola):       requires bearish specifically to override
+                            (only a bearish thesis explains mean-reversion)
+
     In --no-ai mode effective_ai is None → False (strict reading
     refuses parabolic dip-buys without a thesis)."""
     if not effective_ai or not effective_ai.catalysts:
@@ -233,7 +245,7 @@ def _has_bearish_derating_catalyst(effective_ai, horizon_days: int) -> bool:
         if not isinstance(c, dict):
             continue
         dir_risk = str(c.get("direction_risk", "")).lower()
-        if dir_risk not in ("bearish", "two-sided"):
+        if dir_risk != "bearish":
             continue
         cdate = parse_catalyst_date(c.get("date_or_window", ""))
         if cdate is None:

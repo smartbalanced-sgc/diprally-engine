@@ -479,6 +479,37 @@ Return ONLY valid JSON list, one entry per catalyst in the SAME ORDER:
             raw = raw.strip()
         cost = compute_ai_cost(response, model_id=verification_model,
                                 had_web_search=True)
+        # PR #45: if the constrained-search path returned empty text
+        # (e.g. SEC.gov has no recent hit on these specific catalysts;
+        # Haiku used the tools but didn't synthesize a final response),
+        # fall back to a no-search call that lets the model verify from
+        # training data. Less authoritative but at least produces a
+        # verdict — better than silent skip-everything.
+        if not raw:
+            print(f"   ⓘ Catalyst verification: constrained-search call "
+                  f"returned empty text (block types: "
+                  f"{[type(b).__name__ for b in response.content]}); "
+                  f"retrying without web_search...")
+            fallback = client.messages.create(
+                model=verification_model,
+                max_tokens=2000,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            fb_text = [b.text for b in fallback.content if hasattr(b, "text")]
+            raw = "\n".join(fb_text).strip()
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+                raw = raw.strip()
+            cost += compute_ai_cost(fallback, model_id=verification_model,
+                                     had_web_search=False)
+        if not raw:
+            # Both calls returned nothing — surface diagnostically and skip.
+            print(f"   ⚠️ Catalyst verification: empty response on both "
+                  f"primary and fallback calls; skipping verification "
+                  f"(catalysts pass through unchanged).")
+            return [], cost
         parsed = json.loads(raw)
         if not isinstance(parsed, list):
             return [], cost
