@@ -736,7 +736,12 @@ tickers:
     sector_expected: "Healthcare / Biotechnology"
     stock_peers: []
     etf_peer: "XBI"            # SPDR S&P Biotech ETF (per CLAUDE.md hint)
-  VELO3D:
+  # VELO3D delisted Aug 2024 (then-symbol VLD), relisted Aug 2025 as VELO
+  # after restructuring. Registry now tracks the current ticker.
+  # Keep EXTREME tentatively; first daily cycle on VELO will re-validate
+  # via the auto-detector (PR #62 advisor will flag mismatch if it sees
+  # ≥5 consecutive runs disagreeing).
+  VELO:
     sigma_class: EXTREME
     sector_expected: "Industrials / Aerospace & Defense"
     stock_peers: []

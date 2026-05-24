@@ -167,7 +167,7 @@ def test_realistic_17_ticker_universe_under_budget():
         ("LWLG",  0.78, True,  "EXTREME"),
         ("MRAM",  0.72, True,  "EXTREME"),
         ("ENGN",  0.66, True,  "EXTREME"),
-        ("VELO3D",0.60, True,  "EXTREME"),
+        ("VELO",  0.60, True,  "EXTREME"),
         ("ASTS",  0.55, True,  "HIGH"),
         ("RKLB",  0.48, True,  "HIGH"),
         ("PL",    0.41, False, "HIGH"),

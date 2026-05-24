@@ -40,9 +40,11 @@ def test_universe_has_17_tickers():
 
 
 def test_extreme_class_membership():
-    """CLAUDE.md: EXTREME = LWLG, MRAM, ENGN, VELO3D."""
+    """CLAUDE.md: EXTREME = LWLG, MRAM, ENGN, VELO.
+    (VELO3D delisted 2024, relisted Aug 2025 as VELO — registry tracks
+    the live ticker, not the historical symbol.)"""
     extreme = {t for t in list_universe() if classify(t) == "EXTREME"}
-    assert extreme == {"LWLG", "MRAM", "ENGN", "VELO3D"}, extreme
+    assert extreme == {"LWLG", "MRAM", "ENGN", "VELO"}, extreme
 
 
 def test_high_class_membership():
@@ -80,7 +82,7 @@ def test_resolve_peers_falls_back_to_etf_for_extreme_names():
     assert resolve_peers("MRAM") == ["SOXX"]
     assert resolve_peers("LWLG") == ["SOXX"]
     assert resolve_peers("ENGN") == ["XBI"]
-    assert resolve_peers("VELO3D") == ["PPA"]
+    assert resolve_peers("VELO") == ["PPA"]
 
 
 def test_resolve_peers_handles_mog_dash_a():
