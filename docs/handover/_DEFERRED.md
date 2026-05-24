@@ -6,14 +6,44 @@ first and clear its items as part of that wave's scope.
 
 ---
 
-## To W2 (config-driven multi-ticker engine — Path A "big bang" lift)
+## Current open state (audit 2026-05-24)
+
+**Closed in code**: 22 of 25 items (W2 ×16, W3 ×3, W5 ×1, W6 wraps W5-1, plus the
+two W4/W5/W6 wave-closure markers below). Closure markers have been
+back-filled inline on each item.
+
+**Remaining open**: 3 items, all calibration-data-dependent:
+- **D-W2-17 + D-W2-18** — multi-saturation + cap saturation: PR #58/#59
+  shipped INTERIM mitigations. Full data-driven parameter choice waits
+  for ~30 days of realized-outcome CSV history to settle which of the
+  three remediation candidates wins on Brier score.
+- **D-W10-1** — catalyst-detail accuracy tracking: PR #54/#61 shipped
+  the DATA CAPTURE layer (CSV columns + tests). The ANALYSIS layer
+  (per-ticker hallucination rate, auto-downweight, banner warning) is
+  NOT YET BUILT. Same ~30-day data dependency.
+- **D-W10-2** — sector_decoupling cap saturation: PR #58 cut the blend
+  weight (interim). Full cap/weight decision waits on calibration.
+
+**Implication**: there is no further pre-data engineering work that is
+institution-grade and non-speculative. Building before data ≠ building
+the right thing. The next material improvement to the engine has to come
+from outcome data the daily orchestrator collects.
+
+---
+
+## To W2 (config-driven multi-ticker engine — Path A "big bang" lift)  [WAVE CLOSED — all items shipped; closure ledger below]
+
+> **Closure audit 2026-05-24**: D-W2-1 through D-W2-16 all shipped in
+> W2/W3/W4/W6 PRs. D-W2-17 and D-W2-18 received interim mitigations in
+> PR #58/#59; full data-driven fix waits for calibration (re-tracked
+> under W10).
 
 W2 lifts EVERY configurable value out of `src/` and into a single source of
 truth `config/diprally.yaml`. Sacred decision #17. The catalog below is the
 full punch list, audited at the close of W1. Researcher must be able to
 sweep any threshold without a code edit.
 
-### D-W2-1. SNDK peer-fallback shim
+### D-W2-1. SNDK peer-fallback shim  [CLOSED — registry in src/registry.py; resolve_peers() used everywhere]
 - **File**: `src/engine.py` lines ~675–682
 - **Current**: `if --peers omitted AND ticker == "SNDK": peer_tickers = ["MU", "WDC"]`
 - **Why temp**: preserved W0 byte-for-byte SNDK acceptance test without baking
@@ -21,7 +51,7 @@ sweep any threshold without a code edit.
 - **Fix in W2**: replace with `peer_tickers = REGISTRY[ticker].peers`.
   Registry sourced from YAML.
 
-### D-W2-2. EV reporting in dollar capital units
+### D-W2-2. EV reporting in dollar capital units  [CLOSED — capital_usd removed; reporter shows EV/share + EV bps of dip (sacred #6)]
 - **Files**: `src/engine.py` (run_pipeline + scan_dip_rally_grid),
   `src/reporter.py` (format_report)
 - **Current**: `capital_usd` parameter; reports `Net expected $/trade` and
@@ -30,13 +60,13 @@ sweep any threshold without a code edit.
   reporter to EV/share + EV% of dip entry price. Sacred decision #6 (no
   capital concept).
 
-### D-W2-3. SNDK-shaped Pass 1 prompt
+### D-W2-3. SNDK-shaped Pass 1 prompt  [CLOSED — horizon_days parameterized; no ticker-class assumptions]
 - **File**: `src/ai_layer.py` (build_ai_pass1_prompt)
 - **Current**: "Analyse {ticker} for a 60-day round-trip swing trade" hardcoded.
 - **Fix in W2**: parameterize horizon from config; remove any other
   ticker-class assumptions in the prompt.
 
-### D-W2-4. Top-level config.py constants → YAML
+### D-W2-4. Top-level config.py constants → YAML  [CLOSED — src/config.py is now an 800-line pydantic-validated YAML loader; all ~40 keys live in config/diprally.yaml]
 - **File**: `src/config.py` (entire file)
 - **Migration target**: `config/diprally.yaml` (single source of truth) loaded
   by a refactored `src/config.py` that validates schema and exposes typed
@@ -60,13 +90,13 @@ sweep any threshold without a code edit.
   - **Bag-hold + backtest**: BAG_HOLD_TERMINAL_ASSUMPTION, BACKTEST_MIN_SAMPLES
   - **v3 review**: V3_REVIEW_CRITERIA (6 keys)
 
-### D-W2-5. Scattered named constants outside config.py
+### D-W2-5. Scattered named constants outside config.py  [CLOSED — all imported from src/config (ai_cache SPOT_MOVE_INVALIDATION_PCT, signals PHANTOM_SIGNAL_SE, engine DRIFT_CAP + SPREAD_PER_SHARE_ROUND_TRIP)]
 - `src/ai_cache.py` — `SPOT_MOVE_INVALIDATION_PCT = 0.01`
 - `src/signals.py` — `PHANTOM_SIGNAL_SE = 0.20`, `_AI_DERIVED_SIGNAL_NAMES`
 - `src/engine.py:670` — `DRIFT_CAP = 1.0` (function-local!)
 - `src/engine.py:229, 1061` — `spread_per_share_round_trip=2.0` default
 
-### D-W2-6. Embedded signal thresholds in src/signals.py
+### D-W2-6. Embedded signal thresholds in src/signals.py  [CLOSED — full signals: namespace in YAML; signals.py imports SIGNAL_* dataclasses from config]
 Each of these is a tunable buried inside a function. Lift to YAML under a
 `signals:` namespace keyed by signal name.
 - **analyst_targets**: confidence spread brackets (0.10, 0.25); staleness
@@ -89,7 +119,7 @@ Each of these is a tunable buried inside a function. Lift to YAML under a
 - **bayesian_update**: prior age inflation coefficient 0.2, default
   prior_std fallback 0.15
 
-### D-W2-7. Scattered tunables in src/engine.py workflow
+### D-W2-7. Scattered tunables in src/engine.py workflow  [CLOSED — sensitivity_scenarios, Bayesian fallbacks, MR anchor, Pass 2 bracket all sourced from config (per src/config.py:262-289 docstrings)]
 - Sensitivity scenarios: 6 hardcoded rows (Drift ±15pp, σ ±20%, Hostile).
   Move to YAML `sensitivity_scenarios:` list. Lets researchers add/edit
   without code touch.
@@ -105,25 +135,25 @@ Each of these is a tunable buried inside a function. Lift to YAML under a
   callers should pass from YAML, not duplicate literals
 - Realized vol windows `(30, 60, 90)` — also in math_utils.compute_realized_vol
 
-### D-W2-8. src/data_fetch.py macro + liquidity thresholds
+### D-W2-8. src/data_fetch.py macro + liquidity thresholds  [CLOSED — VIX_RISK_OFF_THRESHOLD / VIX_RISK_ON_THRESHOLD / SPY_RISK_OFF_THRESHOLD / SPY_RISK_ON_THRESHOLD / VIX_DEFAULT_FALLBACK all imported from config]
 - VIX brackets: risk_off >25, risk_on <15, default fallback 18.0
 - SPY trend: risk_on >0.02, risk_off <-0.03
 - Options liquidity threshold: bid-ask spread <0.10
 - Sector perf default window `days=30`
 - Options DTE window `7 <= dte <= target*2`
 
-### D-W2-9. src/math_utils.py — borderline structural, but tunable
+### D-W2-9. src/math_utils.py — borderline structural, but tunable  [CLOSED — PDE_N_SPACE / PDE_N_TIME from config; GARCH params + realized-vol windows YAML-sourced]
 - PDE grid: `n_space=400, n_time=2000` (performance/accuracy knobs)
 - GARCH min-data `50`, fallback `n=90` bars
 - GARCH optimizer initial values `[0.01, 0.05, 0.90]` and `[0.0001, 0.05, 0.90]`
 - compute_realized_vol windows `(30, 60, 90)` (duplicated in engine.py)
 
-### D-W2-10. Remove W1's --debug-spot-override flag
+### D-W2-10. Remove W1's --debug-spot-override flag  [CLOSED — flag gone from tools/run.py and src/engine.py]
 - **File**: `tools/run.py` + `src/engine.py:573-578`
 - **Reason**: W1-only debug for cache testing; YAGNI in W2+. W4's broker
   will need different debug knobs; build the right one when needed.
 
-### D-W2-11. Sensitivity table label widening bug
+### D-W2-11. Sensitivity table label widening bug  [CLOSED — `[:35]` truncation removed; sensitivity rows now use word-boundary truncation]
 - **File**: `src/reporter.py` (sensitivity row)
 - **Symptom** (visible in W1 SNDK full-AI smoke): some catalyst names get
   truncated awkwardly: `"Q4 guidance bar very high (rev $7.7 (-16pp)"` —
@@ -132,7 +162,7 @@ Each of these is a tunable buried inside a function. Lift to YAML under a
   truncate sanely (end at word boundary, append ellipsis), or widen the
   column to accommodate.
 
-### D-W2-12. Drift Intelligence display shows nominal weights, not effective
+### D-W2-12. Drift Intelligence display shows nominal weights, not effective  [CLOSED — DriftSignal.effective_weight field shipped; reporter prints Nominal | Effective columns in text + HTML]
 - **Discovered**: INTC W1 full-AI smoke (2026-05-22 16:29)
 - **Symptom**: report's "DRIFT INTELLIGENCE (11 signals)" table prints the
   `BLEND_WEIGHTS_V2[name]` value in the Weight column — the NOMINAL design
@@ -161,7 +191,7 @@ Each of these is a tunable buried inside a function. Lift to YAML under a
   several signals are LOW-conf to confirm the halving + renormalization
   produces the expected effective weight.
 
-### D-W2-13. Analyst signal needs extreme-outlier sanity check + yfinance fallback
+### D-W2-13. Analyst signal needs extreme-outlier sanity check + yfinance fallback  [CLOSED — sanity gate at signals.py:42 (extreme-outlier downgrade); yfinance cross-check shipped]
 - **Discovered**: MOG-A no-AI smoke (2026-05-22 17:05). FMP's
   `price-target-summary` returned an implied drift of -58.9% HIGH conf —
   meaning consensus 12-month PT for MOG-A sits at ~$131 vs spot $319.
@@ -190,7 +220,7 @@ Each of these is a tunable buried inside a function. Lift to YAML under a
   yfinance (HIGH stays, but with explicit "verified extreme" note) or
   gets downgraded with a flag. Trader sees the uncertainty.
 
-### D-W2-14. Yfinance fallback when FMP fails (resilience)
+### D-W2-14. Yfinance fallback when FMP fails (resilience)  [CLOSED — _fetch_history_yfinance + _safe_get pattern shipped; apikey redaction in place; FetchError typed]
 - **Discovered**: MOG.A (dot form) smoke earlier today returned HTTPError
   402 from FMP, killing the entire pipeline. Single-ticker mode prints
   a Python stack trace; W5 batch mode would lose the entire daily run.
@@ -218,7 +248,7 @@ Each of these is a tunable buried inside a function. Lift to YAML under a
   `data_source: yfinance` in the CSV row. Restore key, run again; FMP
   path used, `data_source: fmp` in CSV.
 
-### D-W2-15. Sacred decision #14 — trend filter (NOT yet enforced)
+### D-W2-15. Sacred decision #14 — trend filter (NOT yet enforced)  [CLOSED — engine.py:1430-1445 enforces trend_filter_refused when mom_30d < -25% AND no bullish in-horizon catalyst]
 - **Discovered**: post-hotfix sacred-decisions audit (2026-05-22 18:24).
   CLAUDE.md sacred decision #14: "Refuse dip if 30d momentum < -25%
   AND no fundamental catalyst." Currently paper-only — never wired
@@ -242,7 +272,7 @@ Each of these is a tunable buried inside a function. Lift to YAML under a
   Sacred #13 is math-only; sacred #14 is AI-conditional. Cleaner
   to land in W2 with explicit AI-presence handling.
 
-### D-W2-16. Sacred decision #15 — insider signal still in blend (partial)
+### D-W2-16. Sacred decision #15 — insider signal still in blend (partial)  [CLOSED — insider removed from BLEND_WEIGHTS_V2; no fetch_insider_activity call in engine; signal_from_insider remains as unused legacy function (cosmetic dead code, not blended)]
 - **Discovered**: post-hotfix sacred-decisions audit (2026-05-22 18:24).
   CLAUDE.md sacred decision #15: "Insider signal dropped (Form 4 lag
   + noise)." Reality: insider signal is still in BLEND_WEIGHTS_V2
@@ -267,7 +297,7 @@ Each of these is a tunable buried inside a function. Lift to YAML under a
   shows 10 signals not 11 (after AI-derived); CSV row no longer
   has insider columns.
 
-### D-W2-17. peer_rs ±0.30 cap saturation (extend D-W10-2)
+### D-W2-17. peer_rs ±0.30 cap saturation (extend D-W10-2)  [INTERIM — PR #58 reduced peer_rs blend weight from 0.10 → 0.05 as interim mitigation; full data-driven decision (a/b/c) waits for ~30 days calibration data, tracked under D-W10-2]
 - **Discovered**: post-hotfix SNDK smoke (2026-05-22 18:24). With
   peer_rs finally working, SNDK at +449% YTD vs MU+WDC peers
   produced +30.0% MEDIUM — capped at the +0.30 limit in
@@ -285,7 +315,7 @@ Each of these is a tunable buried inside a function. Lift to YAML under a
     (c) Reduce weights when cap saturating
   Pick by lowest Brier score from realized 60d outcomes (N≥30 days).
 
-### D-W2-18. Multi-saturation: blend over-confident when N signals all hit caps
+### D-W2-18. Multi-saturation: blend over-confident when N signals all hit caps  [INTERIM — PR #59 shipped multi_saturation.min_count=3 + multiplier=1.30 std inflation (config-driven); tests in test_multi_saturation.py. Full parameter calibration (N value + magnitude) waits for ~30 days realized-outcome data, tracked under D-W10-2]
 - **Discovered**: post-hotfix SNDK smoke (2026-05-22 18:24). 4 of 8
   active signals were at extreme values in the bullish direction:
     historical +88.9% (no cap),
@@ -476,7 +506,7 @@ Net W6 blend impact:
 
 ## To W10 (calibration)
 
-### D-W10-1. Pass 1 catalyst-detail accuracy tracking
+### D-W10-1. Pass 1 catalyst-detail accuracy tracking  [PARTIAL — PR #54 added catalyst capture to CSV (date/type/magnitude/direction columns); PR #61 added catalyst-stress capture; tests in test_catalyst_capture.py + test_catalyst_stress_capture.py. ANALYSIS LAYER (per-ticker hallucination rate, auto-downweight, banner warning) NOT BUILT — needs N≥30 days outcome data first]
 - **Discovered**: RKLB W1 full-AI smoke (2026-05-22 15:47) — same root
   hallucination event as D-W5-1.
 - **Symptom**: Pass 1 catalyst details can be fabricated even when the
@@ -504,7 +534,7 @@ Net W6 blend impact:
   D-W10-1 is calibrative — measure how well preventative + Pass 2 are
   working, adjust weights accordingly. Both are needed.
 
-### D-W10-2. Sector-decoupling signal saturates on every momentum name
+### D-W10-2. Sector-decoupling signal saturates on every momentum name  [INTERIM — PR #58 cut sector_decoupling weight from 0.10 → 0.05 (config/diprally.yaml:166). This is the interim mitigation noted in the W2 punch list (D-W2-12's display fix made it visible; PR #58 partially addressed magnitude). Full data-driven choice between (a) wider cap / (b) σ-class-aware cap / (c) weight reduction still pending Brier-score validation from N≥30 days realized outcomes]
 - **Discovered**: pattern across SNDK / LWLG / RKLB / INTC / MOG-A W1
   smokes (2026-05-22). All FIVE tickers reported `Sector decoupling
   +20.0%` (HIGH conf on the parabolic names, MEDIUM on MOG-A which is
