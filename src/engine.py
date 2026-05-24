@@ -610,6 +610,14 @@ CSV_COLUMNS = [
     "pass1_catalysts_json",      # JSON list of Pass 1 catalysts (name/date/type/direction/magnitude)
     "pass2_catalysts_json",      # JSON list of Pass 2 revised catalysts (same shape)
     "verification_verdicts_json",# JSON list aligned to top-3 Pass 2 catalysts: verdict + reasoning
+    # W10 PR #61 — catalyst-stress capture. The AI stress test models
+    # "drift shock if catalyst disappoints 20%" per top-3 catalyst.
+    # Currently shown in the report but not persisted. Capturing now
+    # so future W10 analysis can correlate predicted stress shocks
+    # against realized drawdowns once 30+ days of resolved predictions
+    # accumulate ("did the predicted -12pp earnings shock match the
+    # realized post-earnings drift?").
+    "catalyst_stress_json",      # JSON list of stress shocks (name + drift_shock_pp)
 ]
 
 
@@ -652,6 +660,32 @@ def _compact_verdicts_json(verifications) -> str:
             "catalyst_name": v.get("catalyst_name", ""),
             "verdict": v.get("verdict", "UNVERIFIED"),
             "reasoning": v.get("reasoning", ""),
+        })
+    if not keep:
+        return ""
+    return _json.dumps(keep, separators=(",", ":"))
+
+
+def _compact_stress_json(stress_results) -> str:
+    """W10 PR #61 helper: serialize catalyst stress test results for
+    CSV capture. AI emits {catalyst_name, drift_shock_pp_on_disappointment,
+    reasoning} per top-3 catalyst. We keep name + shock for the future
+    W10 analysis ("did the predicted shock match realized drift?"),
+    drop reasoning (too verbose for CSV; available in stdout log)."""
+    import json as _json
+    if not stress_results:
+        return ""
+    keep = []
+    for s in stress_results:
+        if not isinstance(s, dict):
+            continue
+        try:
+            shock = float(s.get("drift_shock_pp_on_disappointment") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        keep.append({
+            "name": str(s.get("catalyst_name", "")),
+            "shock_pp": shock,
         })
     if not keep:
         return ""
@@ -1618,6 +1652,7 @@ def run_pipeline(args) -> int:
         "verification_verdicts_json": _compact_verdicts_json(
             catalyst_verifications
         ),
+        "catalyst_stress_json": _compact_stress_json(catalyst_stress_results),
     }
     append_history_row(history_path, csv_row)
 
