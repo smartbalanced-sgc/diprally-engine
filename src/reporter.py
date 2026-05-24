@@ -412,32 +412,73 @@ def format_report(
         lines.append(f"    Catalysts identified: {len(pass1.catalysts)}")
         for c in pass1.catalysts[:5]:
             if isinstance(c, dict):
-                lines.append(f"      • {c.get('name','?')} ({c.get('date_or_window','?')}, {c.get('direction_risk','?')}, magnitude {c.get('magnitude','?')})")
+                # 2026-05-24 audit fix: surface the catalyst-verification verdict
+                # alongside each Pass 1 catalyst when verification ran. Operator now
+                # sees whether Pass 1's claim passed primary-source check.
+                verdict = c.get("verification_verdict") or ""
+                verdict_tag = f"  [{verdict}]" if verdict else ""
+                lines.append(f"      • {c.get('name','?')} ({c.get('date_or_window','?')}, {c.get('direction_risk','?')}, magnitude {c.get('magnitude','?')}){verdict_tag}")
+                v_reason = c.get("verification_reasoning") or ""
+                if v_reason:
+                    lines.append(f"          ↳ verify: {v_reason[:160]}")
             else:
                 lines.append(f"      • {c}")
         lines.append(f"    Bull factors HIGH-weight: {sum(1 for f in pass1.bull_factors if _factor_weight(f) == 'high')}")
         lines.append(f"    Bear factors HIGH-weight: {sum(1 for f in pass1.bear_factors if _factor_weight(f) == 'high')}")
+        # 2026-05-24 audit fix: narrative_evidence captured (Pass 1 prompt requested,
+        # parser previously discarded). Each {claim, source} grounds the narrative score.
+        if getattr(pass1, "narrative_evidence", None):
+            for ev in pass1.narrative_evidence[:3]:
+                if isinstance(ev, dict) and ev.get("claim"):
+                    lines.append(f"    narrative ev: \"{ev.get('claim','')[:120]}\" — {ev.get('source','?')}")
+        # 2026-05-24 audit fix: Pass 1 key_risks were captured but never displayed
+        # (only Pass 2's were rendered). Show top-3 Pass 1 risks.
+        if pass1.key_risks:
+            for risk in pass1.key_risks[:3]:
+                if risk:
+                    lines.append(f"    risk: {str(risk)[:200]}")
     else:
         lines.append("  PASS 1: failed or skipped")
     if pass2:
         rev = pass2.revision_from_prior_pass
         rev_str = f"({rev:+.1%} from Pass 1)" if rev is not None else ""
-        lines.append(f"  PASS 2: drift={pass2.drift_estimate:+.1%}/yr  conf={pass2.confidence}  {rev_str}  cost=${pass2.cost_usd:.2f}")
+        # 2026-05-24 audit fix: surface agreement_with_pass1 prominently — it's
+        # a structured 3-state signal that flags "Pass 2 STRONGLY disagrees" at
+        # a glance, previously discarded.
+        agree_tag = ""
+        if getattr(pass2, "agreement_with_pass1", ""):
+            tag_map = {
+                "agree":             "AGREE",
+                "partial_disagree":  "PARTIAL DISAGREE",
+                "strong_disagree":   "STRONG DISAGREE",
+            }
+            agree_tag = f"  [{tag_map.get(pass2.agreement_with_pass1, pass2.agreement_with_pass1.upper())}]"
+        lines.append(f"  PASS 2: drift={pass2.drift_estimate:+.1%}/yr  conf={pass2.confidence}  {rev_str}{agree_tag}  cost=${pass2.cost_usd:.2f}")
+        # 2026-05-24 audit fix: per-revision reasoning (5 fields previously
+        # discarded by parse_ai_pass2). Operator now sees WHY Pass 2 made each
+        # revision instead of having to read the long primary_critique essay.
+        if getattr(pass2, "revision_reasoning", ""):
+            lines.append(f"    drift rationale: {pass2.revision_reasoning[:240]}")
         # Pass 2 revisions of vol_regime / narrative / catalysts (sacred #7).
         # Show only the deltas — concurrence is implicit.
         if pass1:
             if pass2.vol_regime != pass1.vol_regime:
-                lines.append(f"    vol_regime: {pass1.vol_regime} → {pass2.vol_regime}")
+                detail = f" — {pass2.vol_regime_reasoning[:160]}" if getattr(pass2, "vol_regime_reasoning", "") else ""
+                lines.append(f"    vol_regime: {pass1.vol_regime} → {pass2.vol_regime}{detail}")
             if pass2.narrative_score != pass1.narrative_score:
-                lines.append(f"    narrative: {pass1.narrative_score} → {pass2.narrative_score}")
+                detail = f" — {pass2.narrative_reasoning[:160]}" if getattr(pass2, "narrative_reasoning", "") else ""
+                lines.append(f"    narrative: {pass1.narrative_score} → {pass2.narrative_score}{detail}")
             p1_names = {(c.get('name') if isinstance(c, dict) else str(c)) for c in pass1.catalysts}
             p2_names = {(c.get('name') if isinstance(c, dict) else str(c)) for c in pass2.catalysts}
             added = p2_names - p1_names
             dropped = p1_names - p2_names
-            if added:
-                lines.append(f"    catalysts +{len(added)}: {', '.join(list(added)[:3])}")
-            if dropped:
-                lines.append(f"    catalysts -{len(dropped)}: {', '.join(list(dropped)[:3])}")
+            if added or dropped:
+                if added:
+                    lines.append(f"    catalysts +{len(added)}: {', '.join(list(added)[:3])}")
+                if dropped:
+                    lines.append(f"    catalysts -{len(dropped)}: {', '.join(list(dropped)[:3])}")
+                if getattr(pass2, "catalysts_reasoning", ""):
+                    lines.append(f"      ↳ {pass2.catalysts_reasoning[:200]}")
         if pass2.key_risks:
             for risk in pass2.key_risks[:3]:
                 if risk:
@@ -455,6 +496,11 @@ def format_report(
         lines.append(hr("CATALYST IMPACT STRESS TEST (top 3, on 20% disappointment)"))
         for c in catalyst_stress[:3]:
             lines.append(f"  {c.get('catalyst_name','?'):<40} drift shock: {c.get('drift_shock_pp_on_disappointment', 0):+.1f}pp")
+            # 2026-05-24 audit fix: stress test `reasoning` was paid for by
+            # Haiku tokens but dropped from both CSV and report. Surface it.
+            reasoning = c.get("reasoning") or ""
+            if reasoning:
+                lines.append(f"      ↳ {reasoning[:200]}")
 
     # BACKTEST LAYER
     lines.append(hr("BACKTESTING — model performance to date"))

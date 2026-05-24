@@ -421,7 +421,10 @@ def _decision_from_run(run: TickerRun) -> TickerDecision:
         ev_pct = _parse_float(row.get("ev_pct_of_dip"))
         if ev_pct is not None:
             decision.ev_bps_of_dip = ev_pct * 10000.0
-    # Verdict logic — mirror reporter.py's headline decision tree.
+    # Verdict: engine writes verdict_state to CSV directly (audit fix
+    # 2026-05-24). Read it from CSV rather than reconstructing from
+    # dip/EV alone — the old reconstruction silently misclassified
+    # sacred-#14 / #18 / #16 refusals as BUY/WAIT.
     if snap is None:
         # PR #57: distinguish DELISTED from generic Phase 1 failure.
         if run.delisted:
@@ -433,26 +436,76 @@ def _decision_from_run(run: TickerRun) -> TickerDecision:
         else:
             decision.verdict = "FAIL"
             decision.status_note = run.phase1_error or "Phase 1 failed"
-    elif decision.dip_target is None or decision.dip_target == 0.0:
-        decision.verdict = "WAIT"
-        decision.status_note = "No qualifying pair at current spot"
-    elif decision.ev_bps_of_dip is not None and decision.ev_bps_of_dip < 50.0:
-        decision.verdict = "REFUSED-EV"
-        decision.status_note = (
+    else:
+        decision.verdict, decision.status_note = _verdict_from_row(row, decision)
+    return decision
+
+
+# Status-note templates per engine verdict_state. Kept in orchestrator
+# (not engine) so the per-ticker report and aggregate dashboard can
+# evolve their wording independently.
+_VERDICT_NOTES = {
+    "BUY": lambda d: (
+        f"Dip ${d.dip_target:.2f} → Rally ${d.rally_target:.2f}, "
+        f"P(round-trip) = {(d.p_round_trip or 0) * 100:.0f}%"
+    ),
+    "WAIT": lambda d: "No qualifying pair at current spot",
+    "BELOW-THRESHOLD": lambda d: (
+        f"Best-EV fallback ${d.dip_target or 0:.2f}/${d.rally_target or 0:.2f} — "
+        f"did not meet strict conviction. DO NOT TRADE."
+    ),
+    "NEGATIVE-EV": lambda d: (
+        f"${d.dip_target or 0:.2f}/${d.rally_target or 0:.2f} meets conviction "
+        f"but EV {d.ev_bps_of_dip:+.1f}bps negative. SKIP."
+        if d.ev_bps_of_dip is not None else "EV negative — SKIP"
+    ),
+    "REFUSED-EV": lambda d: (
+        f"EV/dip {d.ev_bps_of_dip:.1f}bps below 50bps hurdle (sacred #13)"
+        if d.ev_bps_of_dip is not None
+        else "EV below 50bps hurdle (sacred #13)"
+    ),
+    "REFUSED-TREND": lambda d: (
+        "Refused on sacred #14 trend filter — falling-knife regime with "
+        "no in-horizon bullish/two-sided catalyst"
+    ),
+    "REFUSED-PARABOLA": lambda d: (
+        "Refused on sacred #18 parabola filter — blow-off momentum with "
+        "no in-horizon bearish de-rating catalyst"
+    ),
+    "REFUSED-METHOD": lambda d: (
+        "Refused on sacred #16 — MC / PDE / closed-form disagree beyond "
+        "tolerance. Investigate σ / drift inputs."
+    ),
+}
+
+
+def _verdict_from_row(row: dict, decision) -> tuple[str, str]:
+    """Read engine-emitted verdict_state from the latest CSV row.
+    Falls back to legacy reconstruction if the column is absent (CSV
+    written by a pre-audit engine build)."""
+    raw = ((row or {}).get("verdict_state") or "").strip() if row else ""
+    if raw in _VERDICT_NOTES:
+        return raw, _VERDICT_NOTES[raw](decision)
+    # Legacy CSV (no verdict_state column) — reconstruct from dip/EV.
+    # This is the pre-audit logic, preserved for old history rows so
+    # the dashboard doesn't break on a mixed-history universe.
+    if decision.dip_target is None or decision.dip_target == 0.0:
+        return "WAIT", "No qualifying pair at current spot"
+    if decision.ev_bps_of_dip is not None and decision.ev_bps_of_dip < 50.0:
+        return "REFUSED-EV", (
             f"EV/dip {decision.ev_bps_of_dip:.1f}bps below 50bps hurdle (sacred #13)"
         )
-    else:
-        decision.verdict = "BUY"
-        decision.status_note = (
-            f"Dip ${decision.dip_target:.2f} → Rally ${decision.rally_target:.2f}, "
-            f"P(round-trip) = {(decision.p_round_trip or 0) * 100:.0f}%"
-        )
-    return decision
+    return "BUY", (
+        f"Dip ${decision.dip_target:.2f} → Rally ${decision.rally_target:.2f}, "
+        f"P(round-trip) = {(decision.p_round_trip or 0) * 100:.0f}%"
+    )
 
 
 _VERDICT_COLORS = {
     "BUY":                "#1a7f37",     # green
     "WAIT":               "#6e7781",     # neutral gray
+    "BELOW-THRESHOLD":    "#6e7781",     # neutral gray — best-EV fallback, do not trade
+    "NEGATIVE-EV":        "#bc4c00",     # orange — meets conviction but loses on average
     "REFUSED-EV":         "#bc4c00",     # orange
     "REFUSED-TREND":      "#bc4c00",
     "REFUSED-PARABOLA":   "#bc4c00",

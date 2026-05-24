@@ -605,6 +605,11 @@ def parse_ai_pass1(raw, sources_count, cost):
     """Convert Pass 1 JSON to AIPassOutput."""
     from src.engine import AIPassOutput
     drift_range = raw.get("drift_range_low_high", [0.0, 0.0])
+    # 2026-05-24 audit fix: narrative_evidence was prompted for but never
+    # captured. Tokens were paid; output discarded.
+    narrative_evidence = raw.get("narrative_evidence", []) or []
+    if not isinstance(narrative_evidence, list):
+        narrative_evidence = []
     return AIPassOutput(
         pass_number=1,
         drift_estimate=float(raw.get("drift_estimate_annualized", 0.0)),
@@ -619,6 +624,7 @@ def parse_ai_pass1(raw, sources_count, cost):
         revision_from_prior_pass=None,
         cost_usd=cost,
         raw_sources_cited=sources_count,
+        narrative_evidence=narrative_evidence,
     )
 
 
@@ -660,6 +666,19 @@ def parse_ai_pass2(raw, pass1, cost):
             if isinstance(e, dict) and e not in revised_catalysts:
                 revised_catalysts.append(e)
 
+    # 2026-05-24 audit fix: capture Pass 2 reasoning fields. The prompt
+    # requests these 5 fields + agreement_with_pass1, the parser
+    # previously discarded all of them. Sonnet output tokens paid for
+    # rationale text that was then thrown away — operator had no audit
+    # trail for WHY each revision was made.
+    def _str_field(name: str) -> str:
+        v = raw.get(name, "")
+        return v.strip() if isinstance(v, str) else ""
+
+    agreement_with_pass1 = _str_field("agreement_with_pass1").lower()
+    if agreement_with_pass1 not in ("agree", "partial_disagree", "strong_disagree"):
+        agreement_with_pass1 = ""  # unrecognized → blank, don't fabricate
+
     return AIPassOutput(
         pass_number=2,
         drift_estimate=revised,
@@ -674,4 +693,9 @@ def parse_ai_pass2(raw, pass1, cost):
         revision_from_prior_pass=revised - pass1_drift,
         cost_usd=cost,
         raw_sources_cited=0,
+        agreement_with_pass1=agreement_with_pass1,
+        revision_reasoning=_str_field("revision_reasoning"),
+        vol_regime_reasoning=_str_field("vol_regime_reasoning"),
+        narrative_reasoning=_str_field("narrative_reasoning"),
+        catalysts_reasoning=_str_field("catalysts_reasoning"),
     )
