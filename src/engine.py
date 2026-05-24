@@ -10,7 +10,7 @@ import csv
 import os
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -175,6 +175,16 @@ class AIPassOutput:
     revision_from_prior_pass: Optional[float]
     cost_usd: float
     raw_sources_cited: int
+    # 2026-05-24 audit fix: capture AI reasoning fields previously
+    # requested in the prompt but discarded by the parser. Token cost
+    # was already being paid; without capture the operator had no
+    # audit trail for WHY each Pass 2 revision was made.
+    narrative_evidence: list = field(default_factory=list)   # Pass 1 — [{claim, source}, ...]
+    agreement_with_pass1: str = ""                            # Pass 2 — agree / partial_disagree / strong_disagree
+    revision_reasoning: str = ""                              # Pass 2 — why drift was revised
+    vol_regime_reasoning: str = ""                            # Pass 2 — why vol_regime
+    narrative_reasoning: str = ""                             # Pass 2 — why narrative_score
+    catalysts_reasoning: str = ""                             # Pass 2 — why catalyst set differs
 
 
 @dataclass
@@ -479,6 +489,47 @@ def scan_dip_rally_grid(
     return best, candidates, met_threshold_strict
 
 
+# Sacred-decision verdict tree — single source of truth shared between
+# the engine (writes verdict_state to CSV), the reporter headline_card
+# (per-ticker view), and the orchestrator dashboard (aggregate view).
+# Mirrors reporter._headline_card priority exactly; if the priority
+# changes there, change it here. Audit finding 2026-05-24: previously
+# the dashboard reconstructed verdict from CSV dip/EV alone, which
+# silently misclassified sacred-#14 / #18 / #16 refusals as BUY or
+# WAIT.
+ENGINE_VERDICT_STATES = (
+    "REFUSED-TREND", "REFUSED-PARABOLA", "REFUSED-METHOD",
+    "REFUSED-EV", "WAIT", "BELOW-THRESHOLD", "NEGATIVE-EV", "BUY",
+)
+
+
+def _compute_verdict_state(*, best, met_threshold_strict, method_check,
+                            trend_filter_refused: bool,
+                            parabola_filter_refused: bool,
+                            ev_hurdle_refused: bool) -> str:
+    """Compute the engine-level verdict state for this run. Pure
+    function; no side effects."""
+    if trend_filter_refused and best is not None:
+        return "REFUSED-TREND"
+    if parabola_filter_refused and best is not None:
+        return "REFUSED-PARABOLA"
+    # Method-disagreement nulls `best`; distinguish from genuine
+    # no-qualifying-pair WAIT.
+    if (best is None and method_check
+            and method_check.get("refused")
+            and not method_check.get("is_anchor")):
+        return "REFUSED-METHOD"
+    if ev_hurdle_refused and best is not None:
+        return "REFUSED-EV"
+    if best is None:
+        return "WAIT"
+    if not met_threshold_strict:
+        return "BELOW-THRESHOLD"
+    if best.net_ev_per_share < 0:
+        return "NEGATIVE-EV"
+    return "BUY"
+
+
 def compute_sensitivity_table(
     S0, base_sigma, base_mu, horizon_days,
     dip_price, rally_price,
@@ -618,6 +669,12 @@ CSV_COLUMNS = [
     # accumulate ("did the predicted -12pp earnings shock match the
     # realized post-earnings drift?").
     "catalyst_stress_json",      # JSON list of stress shocks (name + drift_shock_pp)
+    # 2026-05-24 audit fix — engine-level verdict_state, single source of
+    # truth for sacred-decision refusals. Mirrors reporter headline_card
+    # priority. Orchestrator aggregate dashboard reads this directly
+    # instead of reconstructing from dip/EV (which silently misclassified
+    # sacred-#14 / #18 / #16 refusals as BUY/WAIT).
+    "verdict_state",
 ]
 
 
@@ -1668,6 +1725,14 @@ def run_pipeline(args) -> int:
             catalyst_verifications
         ),
         "catalyst_stress_json": _compact_stress_json(catalyst_stress_results),
+        "verdict_state": _compute_verdict_state(
+            best=best,
+            met_threshold_strict=met_threshold_strict,
+            method_check=method_check,
+            trend_filter_refused=trend_filter_refused,
+            parabola_filter_refused=parabola_filter_refused,
+            ev_hurdle_refused=ev_hurdle_refused,
+        ),
     }
     append_history_row(history_path, csv_row)
 

@@ -75,7 +75,7 @@ days. Refuses negative-EV setups.
     thesis. Codified by PRs #41 / #44 / #45 / #46 / #51 (this PR formalizes).
 
 ## Ticker universe (current roster — adjust via YAML)
-- **EXTREME (4)**: LWLG, MRAM, ENGN, VELO3D
+- **EXTREME (4)**: LWLG, MRAM, ENGN, VELO  (was VELO3D until 2024 delisting; relisted Aug 2025 as VELO)
 - **HIGH (5)**: ASTS, RKLB, PL, SATS, GHM
 - **MID (8)**: INTC, IPGP, LITE, MU, STX, AMAT, MOG-A, GLW
 

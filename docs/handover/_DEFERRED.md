@@ -12,7 +12,8 @@ first and clear its items as part of that wave's scope.
 two W4/W5/W6 wave-closure markers below). Closure markers have been
 back-filled inline on each item.
 
-**Remaining open**: 3 items, all calibration-data-dependent:
+**Remaining open**: 4 items, all calibration-data-dependent (or
+architectural decisions awaiting empirical guidance):
 - **D-W2-17 + D-W2-18** — multi-saturation + cap saturation: PR #58/#59
   shipped INTERIM mitigations. Full data-driven parameter choice waits
   for ~30 days of realized-outcome CSV history to settle which of the
@@ -23,6 +24,9 @@ back-filled inline on each item.
   NOT YET BUILT. Same ~30-day data dependency.
 - **D-W10-2** — sector_decoupling cap saturation: PR #58 cut the blend
   weight (interim). Full cap/weight decision waits on calibration.
+- **D-W2-19** — Pass 2 cannot override `factor_bias` (added 2026-05-24).
+  Architectural: latent in current universe, but real. Choice between
+  three fix candidates needs calibration data.
 
 **Implication**: there is no further pre-data engineering work that is
 institution-grade and non-speculative. Building before data ≠ building
@@ -316,6 +320,38 @@ Each of these is a tunable buried inside a function. Lift to YAML under a
   Pick by lowest Brier score from realized 60d outcomes (N≥30 days).
 
 ### D-W2-18. Multi-saturation: blend over-confident when N signals all hit caps  [INTERIM — PR #59 shipped multi_saturation.min_count=3 + multiplier=1.30 std inflation (config-driven); tests in test_multi_saturation.py. Full parameter calibration (N value + magnitude) waits for ~30 days realized-outcome data, tracked under D-W10-2]
+
+### D-W2-19. Pass 2 cannot override factor_bias arithmetic  [OPEN — architectural, latent]
+- **Discovered**: 2026-05-24 full-system audit
+- **Symptom**: `apply_bull_bear_arithmetic` computes a ±5pp additive
+  drift bias from `pass1.bull_factors / bear_factors` when |bull_high -
+  bear_high| > FACTOR_NET_THRESHOLD (currently 4). Pass 2's `primary_critique`
+  often critiques Pass 1's factor classification (today's LITE smoke
+  did exactly this — "Pass 1 characterises narrative_score as 'strong'
+  while simultaneously flagging sector decoupling HIGH-conf"), but
+  Pass 2 has no schema field for `revised_bull_factors` /
+  `revised_bear_factors`. The audit-fix PR captured Pass 2's reasoning
+  text but the additive factor_bias still uses Pass 1's unchanged factor
+  list. Pass 2's drift critique reaches the AI signal slot (22% blend
+  weight) but cannot defeat the additive bias from outside the slot —
+  to neutralize +5pp factor_bias through a 22%-weighted signal, Pass 2
+  would have to push drift down by ~23pp.
+- **Severity**: LATENT. FACTOR_NET_THRESHOLD = 4 (i.e., need ≥5 net
+  HIGH-weighted factor difference) rarely fires in the current 17-ticker
+  universe. Today's two T2 smokes had 2-2 HIGH factors. But on a deep-
+  value setup with 5 HIGH bull factors, Pass 2's most institutional
+  critique class will be silently overridden by the additive path.
+- **Fix candidates** (pick one when calibration data justifies the choice):
+    (a) Disable factor_bias when Pass 2 ran — Pass 2's drift already
+        captures whatever it thinks is right. Cleanest.
+    (b) Extend Pass 2 schema with `revised_bull_factors` /
+        `revised_bear_factors`. Verbose; output tokens grow.
+    (c) Add `revised_factor_bias_override: <signed float>` field — Pass 2
+        emits a tilt-override delta. Minimal schema growth.
+- **Why not fix now**: choosing between (a/b/c) without calibration
+  data on factor_bias's actual contribution to outcomes is guessing.
+  Confirm via Brier-score analysis once realized-outcome data
+  accumulates (D-W10 venue).
 - **Discovered**: post-hotfix SNDK smoke (2026-05-22 18:24). 4 of 8
   active signals were at extreme values in the bullish direction:
     historical +88.9% (no cap),
