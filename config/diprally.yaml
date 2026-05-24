@@ -175,6 +175,27 @@ blend_weights_v2:
   fundamentals: 0.10                     # was 0.08 (+0.02 from PR #58)
   revision_momentum: 0.04
 
+# Multi-saturation detector (PR #59 — D-W2-18 interim mitigation).
+# When N≥min_count signals all saturate at their caps in the SAME
+# direction, the blend reads them as N independent strong signals
+# and tightens the Bayesian band. But really they're all expressing
+# the same underlying "this stock has been up/down a lot" — high
+# inter-signal correlation that the blend's between/within variance
+# decomposition assumes away. Fix: detect, inflate posterior std.
+#
+# Signals that can saturate (have hard caps):
+#   peer_rs, sector_decoupling, sector_momentum, catalyst_proximity,
+#   fundamentals, revision_momentum.
+#
+# A signal counts as "at-cap" when |drift| ≥ saturation_threshold ×
+# its configured cap_abs (default 0.95 = within 5pp of the cap).
+# When N≥min_count saturate same-direction, multiply std by
+# inflation_multiplier.
+multi_saturation:
+  min_count: 3
+  saturation_threshold: 0.95            # fraction of cap to count as saturated
+  inflation_multiplier: 1.30            # std × this when multi-saturation detected
+
 # Standard error per qualitative confidence tier (decimal annualised return).
 confidence_to_se:
   HIGH: 0.05

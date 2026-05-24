@@ -385,6 +385,16 @@ class FundamentalsSignalConfig(_StrictModel):
     drift_cap_abs: float = Field(gt=0.0)
 
 
+class MultiSaturationConfig(_StrictModel):
+    """PR #59 — D-W2-18 interim mitigation. Detect when N≥min_count
+    capped signals all hit cap same-direction → inflate posterior
+    std by inflation_multiplier. Avoids the blend's over-confidence
+    when momentum-driven signals all saturate together."""
+    min_count: int = Field(ge=2)
+    saturation_threshold: float = Field(gt=0.0, le=1.0)
+    inflation_multiplier: float = Field(gt=1.0, le=5.0)
+
+
 class SignalsConfig(_StrictModel):
     """D-W2-6: aggregate of all signal-level embedded thresholds."""
     analyst: AnalystSignalConfig
@@ -463,6 +473,7 @@ class DiprallyConfig(_StrictModel):
     pass2_prompt: Pass2PromptConfig
     sensitivity_scenarios: list[SensitivityScenarioConfig]
     signals: SignalsConfig
+    multi_saturation: MultiSaturationConfig
     phantom_signal_se: float = Field(gt=0.0, le=1.0)
     ai_cache: AICacheConfig
     bag_hold_terminal_assumption: str
@@ -734,6 +745,7 @@ def _rebind_module_constants() -> None:
     g["SIGNAL_CATALYST_PROXIMITY"] = sig.catalyst_proximity
     g["SIGNAL_FUNDAMENTALS"] = sig.fundamentals
     g["SIGNAL_REVISION_MOMENTUM"] = sig.revision_momentum
+    g["MULTI_SATURATION"] = _CONFIG.multi_saturation
     g["PHANTOM_SIGNAL_SE_CONFIG"] = _CONFIG.phantom_signal_se  # signals.py reads PHANTOM_SIGNAL_SE locally
 
     # AI cache
