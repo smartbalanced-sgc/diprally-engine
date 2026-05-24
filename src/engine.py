@@ -1191,6 +1191,24 @@ def run_pipeline(args) -> int:
     else:
         pass2_raw_for_cache = None
 
+    # PR #63: Pass 2 fact-discipline programmatic enforcer. Validates
+    # Pass 2's critique text against ground-truth spot, flags dollar
+    # mentions that contradict reality. Phase 1: detect-and-flag only
+    # (operator sees violations in report, judges severity); future
+    # PR #64+ will decide enforcement actions based on real patterns.
+    pass2_fact_violations = []
+    if pass2 and pass2.key_risks:
+        from src.pass2_fact_check import validate_pass2_critique
+        # parse_ai_pass2 stores primary_critique as first element of key_risks.
+        critique_text = pass2.key_risks[0] if pass2.key_risks else ""
+        pass2_fact_violations = validate_pass2_critique(critique_text, spot)
+        if pass2_fact_violations:
+            n_high = sum(1 for v in pass2_fact_violations
+                          if v.kind == "spot_contradiction")
+            n_low = len(pass2_fact_violations) - n_high
+            print(f"⚠ Pass 2 fact-discipline: {n_high} high-conf contradiction(s), "
+                  f"{n_low} outlier price(s) — see report for details")
+
     # The "Pass 2 wins" projection: every downstream consumer reads from
     # `effective_ai`. Pass 2 if it ran and parsed; otherwise Pass 1. None
     # in --no-ai or full AI failure.
@@ -1676,6 +1694,7 @@ def run_pipeline(args) -> int:
         sigma_class_mismatch=sigma_class_mismatch,
         ambiguity=ambiguity,
         tier=tier,
+        pass2_fact_violations=pass2_fact_violations,
     )
     print(report)
 

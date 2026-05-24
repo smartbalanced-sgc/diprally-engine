@@ -114,7 +114,10 @@ def format_report(
     sigma_class_mismatch=None,
     ambiguity=None,
     tier=None,
+    pass2_fact_violations=None,
 ) -> str:
+    if pass2_fact_violations is None:
+        pass2_fact_violations = []
     lines: list[str] = []
     lines.append(hr(f"DIPRALLY ENGINE ({V2_VERSION}) — {snapshot.ticker} — {snapshot.timestamp:%Y-%m-%d %H:%M}"))
 
@@ -439,6 +442,11 @@ def format_report(
             for risk in pass2.key_risks[:3]:
                 if risk:
                     lines.append(f"    → {risk}")
+        # PR #63: Pass 2 fact-discipline violations (if any).
+        if pass2_fact_violations:
+            from src.pass2_fact_check import format_violations
+            for line in format_violations(pass2_fact_violations).split("\n"):
+                lines.append(f"  {line}")
     else:
         lines.append("  PASS 2: failed or skipped")
 
