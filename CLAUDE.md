@@ -67,6 +67,12 @@ days. Refuses negative-EV setups.
     Python constants. `src/config.py` is a YAML loader with schema validation
     that exposes typed constants for import convenience. Changing a threshold
     must NEVER require a code edit, a PR, or a deploy.
+18. **Parabola filter** — refuse dip-buy when `mom_30d ≥ +50%` AND no
+    in-horizon bearish-direction catalyst surfaced by AI Pass 1/Pass 2.
+    Mirror of sacred #14 (falling-knife trend filter) for blow-off tops.
+    Asymmetric exception: requires SPECIFICALLY bearish catalyst — generic
+    "two-sided earnings" is the math layer's default, not a de-rating
+    thesis. Codified by PRs #41 / #44 / #45 / #46 / #51 (this PR formalizes).
 
 ## Ticker universe (current roster — adjust via YAML)
 - **EXTREME (4)**: LWLG, MRAM, ENGN, VELO3D

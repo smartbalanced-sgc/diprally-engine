@@ -149,13 +149,52 @@ blend_weights_v2:
   sector: 0.04
   macro: 0.07
   short_interest: 0.02
-  peer_rs: 0.10
-  sector_decoupling: 0.10
-  ai: 0.17                              # W6 PR #34/#35: trimmed to make room
-  catalyst_proximity: 0.10
-  narrative: 0.07                       # W6 PR #35: trimmed from 0.08
-  fundamentals: 0.08                    # W6 PR #34: FCF + leverage + margin trend
-  revision_momentum: 0.04               # W6 PR #35: analyst upgrades-downgrades
+  # PR #58 (D-W2-17, D-W10-2) interim mitigation: peer_rs and
+  # sector_decoupling both consistently saturate at their ±0.30 /
+  # ±0.20 caps across the universe (smoke evidence: every momentum
+  # name reports peer_rs +30%, sector_decoupling +20%). Saturated
+  # signals contribute near-constant drift regardless of ticker —
+  # the design weight is allocated to information that isn't being
+  # delivered. Until W10 calibration data (~30 days) lets us
+  # auto-tune via Brier-score regression, the conservative path is
+  # to halve both weights (deferred-log option B for D-W10-2,
+  # option C for D-W2-17). Net effect: ~10% of blend weight that
+  # was producing noise gets redistributed to the other 10 signals
+  # proportionally by the blend's normalization. Reverse this
+  # mitigation in PR #61+ once calibration says the right cap.
+  peer_rs: 0.05                          # was 0.10 (D-W2-17 interim)
+  sector_decoupling: 0.05                # was 0.10 (D-W10-2 interim)
+  # Freed 0.10 redistributed to the three signals with the strongest
+  # institutional information value (post-W6 smoke evidence):
+  #   ai +0.05 (Pass 2 critique consistently catches Pass 1 errors)
+  #   catalyst_proximity +0.03 (post-PR-#33 verification working)
+  #   fundamentals +0.02 (real TTM FCF / leverage data from FMP)
+  ai: 0.22                               # was 0.17 (+0.05 from PR #58 redistribution)
+  catalyst_proximity: 0.13               # was 0.10 (+0.03 from PR #58)
+  narrative: 0.07
+  fundamentals: 0.10                     # was 0.08 (+0.02 from PR #58)
+  revision_momentum: 0.04
+
+# Multi-saturation detector (PR #59 — D-W2-18 interim mitigation).
+# When N≥min_count signals all saturate at their caps in the SAME
+# direction, the blend reads them as N independent strong signals
+# and tightens the Bayesian band. But really they're all expressing
+# the same underlying "this stock has been up/down a lot" — high
+# inter-signal correlation that the blend's between/within variance
+# decomposition assumes away. Fix: detect, inflate posterior std.
+#
+# Signals that can saturate (have hard caps):
+#   peer_rs, sector_decoupling, sector_momentum, catalyst_proximity,
+#   fundamentals, revision_momentum.
+#
+# A signal counts as "at-cap" when |drift| ≥ saturation_threshold ×
+# its configured cap_abs (default 0.95 = within 5pp of the cap).
+# When N≥min_count saturate same-direction, multiply std by
+# inflation_multiplier.
+multi_saturation:
+  min_count: 3
+  saturation_threshold: 0.95            # fraction of cap to count as saturated
+  inflation_multiplier: 1.30            # std × this when multi-saturation detected
 
 # Standard error per qualitative confidence tier (decimal annualised return).
 confidence_to_se:

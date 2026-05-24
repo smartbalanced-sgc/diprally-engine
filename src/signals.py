@@ -673,6 +673,67 @@ _AI_DERIVED_SIGNAL_NAMES = ("ai", "catalyst_proximity", "narrative")
 from src.config import PHANTOM_SIGNAL_SE_CONFIG as PHANTOM_SIGNAL_SE  # noqa: E402
 
 
+# PR #59 — D-W2-18: per-signal saturation caps for the multi-saturation
+# detector. When |drift| ≥ MULTI_SATURATION.saturation_threshold × cap,
+# the signal counts as "at cap". This dict knows each saturating
+# signal's cap_abs; signals not listed never count as saturated.
+def _signal_saturation_caps() -> dict:
+    """Build the {signal_name → cap_abs} dict at module-load time
+    from each signal's individual config. New signals with caps
+    should be added here so the multi-saturation detector sees them."""
+    from src.config import (
+        SIGNAL_CATALYST_PROXIMITY,
+        SIGNAL_FUNDAMENTALS,
+        SIGNAL_PEER_RS,
+        SIGNAL_REVISION_MOMENTUM,
+        SIGNAL_SECTOR_DECOUPLING,
+    )
+    caps = {
+        "peer_rs": SIGNAL_PEER_RS.drift_cap_abs,
+        "sector_decoupling": SIGNAL_SECTOR_DECOUPLING.drift_cap_abs,
+        "catalyst_proximity": SIGNAL_CATALYST_PROXIMITY.drift_cap_abs,
+        "fundamentals": SIGNAL_FUNDAMENTALS.drift_cap_abs,
+        "revision_momentum": SIGNAL_REVISION_MOMENTUM.drift_cap_abs,
+    }
+    return caps
+
+
+_SIGNAL_SATURATION_CAPS = _signal_saturation_caps()
+
+
+def _detect_multi_saturation(signals, effective_weights) -> dict:
+    """PR #59 — count signals saturating at cap, same direction.
+    Returns {n_saturated_pos, n_saturated_neg, max_count}.
+    Only counts signals that:
+      1. Have a known cap (in _SIGNAL_SATURATION_CAPS)
+      2. Have effective_weight > 0 (passed quality gates)
+      3. |drift| ≥ saturation_threshold × cap
+    """
+    from src.config import MULTI_SATURATION
+    threshold = MULTI_SATURATION.saturation_threshold
+    n_pos = 0
+    n_neg = 0
+    for name, info in signals.items():
+        if name not in _SIGNAL_SATURATION_CAPS:
+            continue
+        if effective_weights.get(name, 0.0) <= 0:
+            continue
+        drift = info.get("drift")
+        if drift is None:
+            continue
+        cap = _SIGNAL_SATURATION_CAPS[name]
+        if abs(drift) >= threshold * cap:
+            if drift > 0:
+                n_pos += 1
+            else:
+                n_neg += 1
+    return {
+        "n_saturated_pos": n_pos,
+        "n_saturated_neg": n_neg,
+        "max_count": max(n_pos, n_neg),
+    }
+
+
 def blend_with_uncertainty(signals, weights_dict=None):
     """Blend with confidence intervals via signal-weighted variance.
 
@@ -750,8 +811,21 @@ def blend_with_uncertainty(signals, weights_dict=None):
         for w in phantom_weights.values()
     )
     total_var = within_var + between_var + phantom_within
-    std = total_var ** 0.5
+    pre_saturation_std = total_var ** 0.5
+
+    # PR #59 — D-W2-18 multi-saturation std inflation. When N≥min_count
+    # capped signals all hit cap same-direction, the blend is reading
+    # what's really ONE correlated signal as N independent ones →
+    # over-confident posterior. Inflate std proportionally.
+    from src.config import MULTI_SATURATION
+    sat = _detect_multi_saturation(signals, effective)
+    if sat["max_count"] >= MULTI_SATURATION.min_count:
+        std = pre_saturation_std * MULTI_SATURATION.inflation_multiplier
+    else:
+        std = pre_saturation_std
+
     phantom_std_inflation = (total_var ** 0.5) - ((within_var + between_var) ** 0.5)
+    multi_saturation_std_inflation = std - pre_saturation_std
 
     active_drifts = [signals[n]["drift"] for n in signals
                      if norm[n] > 0 and signals[n]["drift"] is not None]
@@ -770,6 +844,10 @@ def blend_with_uncertainty(signals, weights_dict=None):
         "n_active": sum(1 for w in effective.values() if w > 0),
         "phantom_signals": list(phantom_weights.keys()),
         "phantom_std_inflation": float(phantom_std_inflation),
+        # PR #59 — D-W2-18 multi-saturation diagnostics.
+        "n_saturated_pos": sat["n_saturated_pos"],
+        "n_saturated_neg": sat["n_saturated_neg"],
+        "multi_saturation_std_inflation": float(multi_saturation_std_inflation),
     }
 
 
