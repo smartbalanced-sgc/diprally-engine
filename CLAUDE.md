@@ -75,9 +75,13 @@ days. Refuses negative-EV setups.
     thesis. Codified by PRs #41 / #44 / #45 / #46 / #51 (this PR formalizes).
 
 ## Ticker universe (current roster — adjust via YAML)
-- **EXTREME (4)**: LWLG, MRAM, ENGN, VELO  (was VELO3D until 2024 delisting; relisted Aug 2025 as VELO)
-- **HIGH (5)**: ASTS, RKLB, PL, SATS, GHM
-- **MID (8)**: INTC, IPGP, LITE, MU, STX, AMAT, MOG-A, GLW
+- **EXTREME (11)**: LWLG, MRAM, ENGN, VELO, SNDK, ARM, CRWV, NBIS, INOD, CRDO, ANAB
+  - VELO replaces VELO3D (delisted 2024, relisted Aug 2025 as VELO)
+  - SNDK = WDC Flash spinoff (Feb 2025 IPO); ARM IPO Sep 2023; CRWV IPO Mar 2025;
+    NBIS = post-Yandex restructure. Limited history names — auto-detector may
+    flag class shifts in early cycles.
+- **HIGH (6)**: ASTS, RKLB, PL, SATS, GHM, MRVL
+- **MID (9)**: INTC, IPGP, LITE, MU, STX, AMAT, MOG-A, GLW, LRCX
 
 > **Ticker convention**: canonical form across this repo uses dashes for
 > class shares (MOG-A, BRK-B, BF-B) — the Yahoo Finance / industry-standard
