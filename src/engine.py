@@ -1012,9 +1012,6 @@ def run_pipeline(args) -> int:
                                   blended_sigma, ytd_return * 100)
     macro = fetch_macro_indicators(api_key)
     # Sacred decision #15: insider signal dropped (Form 4 lag + noise).
-    # No fetch_insider_activity call. fetch_insider_activity remains in
-    # data_fetch.py for any future audit / analytical use, but does not
-    # feed the recommendation blend.
     short_data = fetch_short_interest(ticker, api_key)
     # W6 PR #34: TTM FCF + leverage + margin trend.
     fundamentals = fetch_fundamentals(ticker, api_key, market_cap=market_cap)
