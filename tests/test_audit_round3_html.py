@@ -126,6 +126,33 @@ def test_html_one_chip_only_renders_bar_once():
     assert "registry hint stale" not in html
 
 
+def test_chips_use_real_volprofile_divergence_pp_attribute():
+    """Regression guard against the round-3 mock-vs-reality bug:
+    the real VolProfile dataclass exposes divergence as the
+    `divergence_pp` attribute (engine.py:147), NOT as a triangulation
+    dict. The chip helper must handle both shapes."""
+    from src.engine import VolatilityProfile
+    # Real dataclass instance — mirrors what engine.run_pipeline builds.
+    real_vp = VolatilityProfile(
+        garch_sigma=0.58, garch_alpha=0.05, garch_beta=0.95,
+        garch_alpha_plus_beta=0.9999,
+        realized_30d=0.56, realized_60d=0.58, realized_90d=0.58,
+        options_iv=0.755, options_dte=54,
+        blended_sigma=0.612, anchors_count=5, divergence_pp=19.3,
+        near_unit_root=True,
+    )
+    chips = _reliability_chips(
+        vol_profile=real_vp,
+        base_signals=[_make_signal("HIGH")] * 12,
+        sigma_class_mismatch=None,
+    )
+    chip_labels = [label for label, _ in chips]
+    # Both near-IGARCH AND σ divergence must fire with real data
+    assert any("near-IGARCH" in label for label in chip_labels), chip_labels
+    assert any("σ divergence" in label and "19.3pp" in label
+               for label in chip_labels), chip_labels
+
+
 def test_html_defensive_on_missing_vol_profile_attrs():
     """Bare SimpleNamespace without expected attrs → empty HTML,
     no crash. Defensive against test mocks / future schema changes."""
