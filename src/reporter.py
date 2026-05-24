@@ -128,7 +128,15 @@ def _reliability_chips(*, vol_profile, base_signals, sigma_class_mismatch):
         chips.append((f"near-IGARCH (α+β={ab:.4f})", "red"))
 
     triangulation = getattr(vol_profile, "triangulation", None) or {}
-    divergence = float(triangulation.get("divergence", 0.0) or 0.0)
+    # 2026-05-24 audit round 4 hotfix: the real VolProfile dataclass
+    # exposes divergence as `divergence_pp` directly (engine.py:147),
+    # not as a triangulation dict. Round-3 tests used a mock with a
+    # triangulation dict and didn't catch this. Try both surfaces.
+    divergence = float(
+        triangulation.get("divergence", None)
+        if isinstance(triangulation, dict) and "divergence" in triangulation
+        else getattr(vol_profile, "divergence_pp", 0.0) or 0.0
+    )
     if divergence > 15.0:
         chips.append((f"σ divergence {divergence:.1f}pp", "orange"))
 
