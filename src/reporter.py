@@ -106,21 +106,32 @@ def _reliability_warnings_line(*, vol_profile, base_signals,
     Returns empty string when no flag trips — keeps the report clean
     on healthy runs.
     """
-    chips = []
+    chips = _reliability_chips(
+        vol_profile=vol_profile,
+        base_signals=base_signals,
+        sigma_class_mismatch=sigma_class_mismatch,
+    )
+    if not chips:
+        return ""
+    return f"  ⚠ RELIABILITY: {' · '.join(label for label, _ in chips)}"
 
-    # Near-IGARCH flag (already surfaced in σ-triangulation section,
-    # also in RELIABILITY COMPONENTS section, but worth top-of-report)
+
+def _reliability_chips(*, vol_profile, base_signals, sigma_class_mismatch):
+    """Compute the list of reliability-flag chips as (label, severity)
+    tuples. Severity: 'red' (math instability), 'orange' (regime stress),
+    'yellow' (informational). Pure function — shared by the text-report
+    and HTML-dashboard renderers so both surfaces stay in sync."""
+    chips: list[tuple[str, str]] = []
+
     ab = getattr(vol_profile, "garch_alpha_plus_beta", 0.0) or 0.0
     if ab > 0.98:
-        chips.append(f"near-IGARCH (α+β={ab:.4f})")
+        chips.append((f"near-IGARCH (α+β={ab:.4f})", "red"))
 
-    # Wide σ-divergence: compare blended to its anchors
     triangulation = getattr(vol_profile, "triangulation", None) or {}
     divergence = float(triangulation.get("divergence", 0.0) or 0.0)
     if divergence > 15.0:
-        chips.append(f"σ divergence {divergence:.1f}pp")
+        chips.append((f"σ divergence {divergence:.1f}pp", "orange"))
 
-    # Signal aggregation strength
     try:
         n_total = len(base_signals)
         if n_total > 0:
@@ -130,18 +141,42 @@ def _reliability_warnings_line(*, vol_profile, base_signals,
                 and not getattr(s, "is_absent", False)
             )
             if n_active < n_total // 2:
-                chips.append(f"{n_active}/{n_total} signals active")
+                chips.append((f"{n_active}/{n_total} signals active", "orange"))
     except (TypeError, AttributeError):
         pass
 
-    # σ-class registry mismatch — already surfaced inline but flag
-    # operator visibility at top-of-report.
     if sigma_class_mismatch:
-        chips.append("σ-class registry hint stale")
+        chips.append(("σ-class registry hint stale", "yellow"))
 
+    return chips
+
+
+def _reliability_chips_html(*, vol_profile, base_signals, sigma_class_mismatch) -> str:
+    """Render reliability chips as an HTML block for the dashboard.
+    Returns empty string when no flag trips (no noise on clean runs).
+    Mirrors _reliability_warnings_line for the text report."""
+    chips = _reliability_chips(
+        vol_profile=vol_profile,
+        base_signals=base_signals,
+        sigma_class_mismatch=sigma_class_mismatch,
+    )
     if not chips:
         return ""
-    return f"  ⚠ RELIABILITY: {' · '.join(chips)}"
+    # Severity → background color (dark-theme palette matching the rest
+    # of the dashboard). Red = math instability, orange = regime stress,
+    # yellow = informational.
+    color_map = {"red": "#7f1d1d", "orange": "#7c2d12", "yellow": "#713f12"}
+    chip_html = "".join(
+        f'<span class="rel-chip" style="background:{color_map.get(sev, "#374151")}">'
+        f'{label}</span>'
+        for label, sev in chips
+    )
+    return (
+        '<div class="reliability-bar">'
+        '<span class="rel-prefix">⚠ RELIABILITY:</span>'
+        f'{chip_html}'
+        '</div>'
+    )
 
 
 def format_report(
@@ -664,11 +699,22 @@ def generate_html_dashboard(
     conviction_dip,
     conviction_rally_cond,
     horizon_days,
+    sigma_class_mismatch=None,
 ):
     """Single-file HTML dashboard. Clean CSS, no JS, embedded matplotlib PNGs."""
     chart_signals_png = _make_signal_contribution_chart(base_signals)
     chart_history_png = _make_history_trajectory_chart(history_rows, snapshot.spot, best)
     chart_method_png = _make_method_agreement_chart(method_check)
+
+    # 2026-05-24 audit fix round 3: reliability-chip block in HTML.
+    # The text report has had this since round 2 (PR #67); the HTML
+    # dashboard didn't. Operator looks at the dashboard, not the text
+    # log — chips must appear on the operator-facing surface.
+    reliability_html = _reliability_chips_html(
+        vol_profile=vol_profile,
+        base_signals=base_signals,
+        sigma_class_mismatch=sigma_class_mismatch,
+    )
 
     best_block = ""
     if best:
@@ -711,10 +757,70 @@ def generate_html_dashboard(
     )
     ai_block = ""
     if pass1 and pass2:
+        # 2026-05-24 audit round 3: surface Pass 2's agreement tag,
+        # per-revision reasoning, and verified-catalyst enumeration in
+        # the HTML dashboard (previously only in the text report).
+        import html as _html  # local — pure stdlib, scope-narrow
+        agreement_html = ""
+        agree_map = {
+            "agree":            ("AGREE",            "#166534"),
+            "partial_disagree": ("PARTIAL DISAGREE", "#854d0e"),
+            "strong_disagree":  ("STRONG DISAGREE",  "#7f1d1d"),
+        }
+        agreement_raw = (getattr(pass2, "agreement_with_pass1", "") or "").lower()
+        if agreement_raw in agree_map:
+            label, bg = agree_map[agreement_raw]
+            agreement_html = (
+                f' <span class="agree-chip" style="background:{bg}">{label}</span>'
+            )
+
+        rev_reasoning = getattr(pass2, "revision_reasoning", "") or ""
+        rev_reasoning_html = (
+            f'<div class="ai-reasoning"><strong>Drift rationale:</strong> '
+            f'{_html.escape(rev_reasoning[:280])}</div>'
+            if rev_reasoning else ""
+        )
+
+        # Pass 2 catalyst enumeration with verification verdict tags.
+        verdict_color = {
+            "VERIFIED":   "#166534",
+            "UNVERIFIED": "#854d0e",
+            "REFUTED":    "#7f1d1d",
+        }
+        cat_rows = []
+        for c in pass2.catalysts[:5]:
+            if not isinstance(c, dict):
+                continue
+            verdict = (c.get("verification_verdict") or "").upper()
+            verdict_html = ""
+            if verdict in verdict_color:
+                verdict_html = (
+                    f'<span class="v-chip" style="background:{verdict_color[verdict]}">'
+                    f'{verdict}</span>'
+                )
+            name = _html.escape(str(c.get("name", "?")))
+            mag = _html.escape(str(c.get("magnitude", "?")))
+            direction = _html.escape(str(c.get("direction_risk", "?")))
+            cat_rows.append(
+                f'<div class="cat-row">{verdict_html} '
+                f'<strong>{name}</strong> '
+                f'<span class="cat-meta">(mag {mag}, {direction})</span></div>'
+            )
+        cats_block = (
+            f'<div class="ai-cats"><strong>Pass 2 catalysts (post-verification):</strong>'
+            f'{"".join(cat_rows)}</div>'
+            if cat_rows and any(
+                isinstance(c, dict) and c.get("verification_verdict")
+                for c in pass2.catalysts
+            ) else ""
+        )
+
         ai_block = f"""
     <div class="ai-block">
       <div class="ai-pass"><strong>Pass 1:</strong> drift {pass1.drift_estimate:+.1%}/yr, conf {pass1.confidence}, narrative {pass1.narrative_score}, {len(pass1.catalysts)} catalysts, ${pass1.cost_usd:.2f}</div>
-      <div class="ai-pass"><strong>Pass 2:</strong> revised drift {pass2.drift_estimate:+.1%}/yr ({(pass2.revision_from_prior_pass or 0):+.1%} from Pass 1), conf {pass2.confidence}, ${pass2.cost_usd:.2f}</div>
+      <div class="ai-pass"><strong>Pass 2:</strong> revised drift {pass2.drift_estimate:+.1%}/yr ({(pass2.revision_from_prior_pass or 0):+.1%} from Pass 1), conf {pass2.confidence}, ${pass2.cost_usd:.2f}{agreement_html}</div>
+      {rev_reasoning_html}
+      {cats_block}
     </div>
 """
 
@@ -753,8 +859,22 @@ def generate_html_dashboard(
   .chart img {{ width: 100%; display: block; }}
   .ai-block {{ background: #1a1d24; border-left: 3px solid #3b82f6; padding: 12px 16px; margin: 12px 0; }}
   .ai-pass {{ font-size: 13px; margin: 4px 0; }}
+  .ai-reasoning {{ font-size: 12px; color: #d1d5db; margin: 6px 0; padding-left: 8px; border-left: 2px solid #374151; }}
+  .ai-cats {{ font-size: 12px; margin: 8px 0 0 0; }}
+  .cat-row {{ margin: 4px 0; }}
+  .cat-meta {{ color: #9ca3af; font-size: 11px; }}
+  .v-chip, .agree-chip {{ display: inline-block; padding: 2px 6px; border-radius: 4px;
+                          font-size: 10px; font-weight: 600; color: #fff; margin-right: 6px; vertical-align: middle; }}
   .footer {{ color: #6b7280; font-size: 11px; margin-top: 32px; text-align: center; }}
   .flag {{ color: #f59e0b; }}
+  /* 2026-05-24 audit round 3: reliability-chips bar under headline card */
+  .reliability-bar {{ margin: 12px 0 20px 0; padding: 10px 14px;
+                      background: #1a1418; border: 1px solid #4b1d1d;
+                      border-radius: 6px; font-size: 12px;
+                      display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }}
+  .rel-prefix {{ font-weight: 600; color: #fca5a5; }}
+  .rel-chip {{ display: inline-block; padding: 3px 10px; border-radius: 12px;
+               color: #fff; font-weight: 500; font-size: 11px; }}
 </style>
 </head>
 <body>
@@ -765,6 +885,7 @@ def generate_html_dashboard(
     · thresholds {conviction_dip:.0%}/{conviction_rally_cond:.0%}
     · horizon {horizon_days}d</div>
   {best_block}
+  {reliability_html}
 
   <h2>11-Day Trajectory</h2>
   <div class="chart"><img src="data:image/png;base64,{chart_history_png}"></div>
