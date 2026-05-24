@@ -119,6 +119,60 @@ Real bugs look different from disciplined refusals:
 5. If `DELISTED ≥ 1`: edit `config/diprally.yaml`, remove the
    ticker, commit
 
+## Reading BUY-verdict shape in different market regimes
+
+The engine targets dip-and-rally setups. In a **strongly trending
+regime** (e.g. mid-2026 AI/semi rally) the conviction threshold
+(P(touch dip) ≥ 65%) biases the grid scan toward **shallow dip
+targets** in trending names — bigger dip levels have lower touch
+probability and don't clear conviction. Empirical pattern from the
+2026-05-24 smoke:
+
+  AMAT BUY  dip target -1.5% from spot  (spot $432, dip $426)
+  LRCX BUY  dip target -1.0% from spot  (spot $305, dip $302)
+  SATS BUY  dip target -1.5% from spot  (spot $124, dip $122)
+
+These are **trend-continuation buys on small pullbacks**, NOT
+contrarian deep-dip buys. The engine is being honest about what's
+available — in a parabolic market, deep dips don't happen often
+enough to clear the 65% probability gate. In a correction regime
+the same engine will surface deeper, higher-EV dip buys because
+the conviction math swings the other way.
+
+Operator implication: a BUY in a frothy regime carries less margin
+of safety than a BUY in a correction regime, even at identical
+P(RT) values. Account for the regime in your external sizing
+(sacred #6 — engine doesn't size).
+
+## Reliability-warning chip line under the headline card
+
+Audit 2026-05-24 round 2 added a unified reliability-warning line
+directly under the verdict headline. Surfaces math-layer warnings
+that exist but were previously buried mid-report:
+
+  ⚠ RELIABILITY: near-IGARCH (α+β=0.9999) · σ divergence 19.3pp · ...
+
+Read the chips in this order of severity:
+
+1. **near-IGARCH** (GARCH α+β > 0.98): vol forecast is at the
+   boundary of stationarity — σ estimate is structurally
+   untradeable. The engine still computes everything but operator
+   should NOT auto-execute on this name. Investigate options chain
+   for an upcoming event the IV is pricing.
+2. **σ divergence > 15pp**: blended σ disagrees with anchors by
+   more than 15 percentage points. Usually a pre-event signal —
+   options market is pricing vol the realized data hasn't seen yet.
+   Check earnings calendar / catalysts.
+3. **N/M signals active**: blend is weakly aggregated. Drift
+   estimate carries more uncertainty than the band shows.
+4. **σ-class registry hint stale**: auto-detector and YAML hint
+   disagree. PR #62 advisor will emit a YAML patch after 5+ cycles
+   of consistent mismatch — until then, the engine uses the
+   detector value (sacred #1, data wins).
+
+Empty line = no flags trip = clean run. No noise on healthy
+tickers.
+
 ## Calibration timeline
 
 - **Day 0**: harness shipped (W10 PR #47, #54); no data yet

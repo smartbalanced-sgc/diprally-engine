@@ -23,6 +23,7 @@ import concurrent.futures
 import csv
 import html
 import json
+import os
 import re
 import subprocess
 import sys
@@ -355,13 +356,51 @@ def _latest_history_row(ticker: str) -> Optional[dict]:
 
 
 def _history_as_price_df(ticker: str):
-    """Read all rows from output/round_trip_history_<TICKER>.csv and
-    return a pandas DataFrame with 'Date' + 'Close' columns. 'Close'
-    is the engine-run-time spot price for that prediction date —
-    a daily-close proxy that's good enough for 60d-correlation
-    computation in the portfolio gate (PR #55 wiring of PR #49).
-    Returns None when the file is absent or has < 5 rows (gate
-    accepts defensively below the minimum-data threshold)."""
+    """Return a pandas DataFrame with 'Date' + 'Close' columns covering
+    the last ~90 daily bars for `ticker`.
+
+    2026-05-24 audit fix: previously read from
+    output/round_trip_history_<TICKER>.csv (the engine's own outcome
+    log) which only has 1 row per engine-run. With <5 engine runs the
+    portfolio gate received None for every ticker and silently never
+    deduplicated — defeating sacred #6's substitute-idea protection
+    until day 5+ of running. Worse, even at day 30 only 30 snapshots
+    would be available, vs the gate's design target of 60d daily-bar
+    correlation.
+
+    Fixed: now calls fetch_history() to pull real FMP/yfinance daily
+    bars (years of history available immediately). Correlation gate
+    becomes functional on day 1 — exactly as the W8 design intended.
+
+    Returns None when FMP+yfinance both fail (gate accepts defensively
+    when correlation cannot be computed)."""
+    try:
+        import pandas as pd  # noqa: F401
+    except ImportError:
+        return None
+    api_key = os.getenv("FMP_API_KEY")
+    if not api_key:
+        # No API access — fall back to engine-CSV best-effort to keep
+        # the gate alive in degraded mode (e.g. unit tests, --no-fetch).
+        return _history_from_csv_fallback(ticker)
+    try:
+        from src.data_fetch import fetch_history
+        # 90 bars > 60d window + buffer; fetch_history returns the
+        # provider's full daily-bar set within lookback.
+        df = fetch_history(ticker, api_key, lookback_days=90)
+        if df is None or len(df) < 30:
+            return None
+        return df
+    except Exception:
+        # Provider failure — try CSV fallback rather than blocking the gate
+        return _history_from_csv_fallback(ticker)
+
+
+def _history_from_csv_fallback(ticker: str):
+    """Read engine outcome CSV. Pre-audit-2026-05-24 implementation
+    retained as a degraded fallback when FMP+yfinance are unavailable
+    (CI / tests / network-down). Returns DataFrame with 'Date' + 'Close'
+    or None when the file is absent or has < 5 rows."""
     path = _OUTPUT_ROOT / f"round_trip_history_{ticker}.csv"
     if not path.exists():
         return None
@@ -688,29 +727,47 @@ def generate_aggregate_dashboard(results: list[TickerRun],
     # recommendation to dedupe). Dropped BUYs get re-tagged with the
     # gate's reason in status_note + verdict flipped to REFUSED-
     # CORRELATED so the dashboard shows it clearly.
+    #
+    # 2026-05-24 audit fix #2: always log the gate's outcome so the
+    # operator can verify it ran. Previously the gate was silent on
+    # the success path, indistinguishable from "didn't run".
     try:
         from src.portfolio import (
             PortfolioRecommendation,
             gate_by_correlation,
         )
         buy_decisions = [d for d in decisions if d.verdict == "BUY"]
-        if len(buy_decisions) >= 2:
+        if len(buy_decisions) < 2:
+            print(f"   Portfolio gate: skipped — only {len(buy_decisions)} "
+                  f"BUY(s) (need ≥2 to evaluate correlation)")
+        else:
             recs = []
+            skipped_for_history = []
             for d in buy_decisions:
                 hist_df = _history_as_price_df(d.ticker)
                 if hist_df is None:
+                    skipped_for_history.append(d.ticker)
                     continue
                 recs.append(PortfolioRecommendation(
                     ticker=d.ticker,
                     ev_bps=d.ev_bps_of_dip if d.ev_bps_of_dip is not None else 0.0,
                     history_df=hist_df,
                 ))
-            if len(recs) >= 2:
+            if len(recs) < 2:
+                print(f"   Portfolio gate: skipped — only {len(recs)} "
+                      f"BUY(s) have usable price history "
+                      f"(skipped: {', '.join(skipped_for_history) or 'none'})")
+            else:
                 gate = gate_by_correlation(recs)
                 for d in decisions:
                     if d.ticker in gate.dropped:
                         d.verdict = "REFUSED-CORRELATED"
                         d.status_note = gate.dropped[d.ticker]
+                print(f"   Portfolio gate: evaluated {len(recs)} BUY(s), "
+                      f"dropped {len(gate.dropped)} as substitute ideas "
+                      f"(threshold ρ ≥ {_gate_threshold_for_log():.2f})")
+                for t, reason in gate.dropped.items():
+                    print(f"     • {t}: {reason}")
     except Exception as _e:
         # Gate failure must NOT block dashboard generation. Log + skip.
         print(f"   WARNING: portfolio gate skipped: {_e}")
@@ -724,3 +781,14 @@ def generate_aggregate_dashboard(results: list[TickerRun],
     stable_html = _render_dashboard_html(decisions, allocation, href_prefix="")
     (_OUTPUT_ROOT / "index.html").write_text(stable_html)
     return run_target
+
+
+def _gate_threshold_for_log() -> float:
+    """Pull the configured threshold for the gate's log line. Defensive —
+    if config isn't loadable for some reason (tests, missing YAML),
+    return the documented default."""
+    try:
+        from src.config import PORTFOLIO_GATE
+        return float(PORTFOLIO_GATE.correlation_threshold)
+    except Exception:
+        return 0.85
