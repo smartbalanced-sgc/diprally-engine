@@ -41,7 +41,12 @@ _SNAPSHOT_RE = re.compile(r"^BROKER_SNAPSHOT_JSON=(\{.*\})\s*$", re.MULTILINE)
 @dataclass
 class TickerRun:
     """One ticker's two-phase result. Mutable so the orchestrator
-    can fill phase-2 fields after phase-1 + broker decision."""
+    can fill phase-2 fields after phase-1 + broker decision.
+
+    PR #57 adds `delisted` flag — distinguishes "ticker is gone from
+    market" (operator should remove from universe) from "engine
+    failed for transient reason" (operator should investigate).
+    """
     ticker: str
     phase1_returncode: Optional[int] = None
     snapshot: Optional[BrokerSnapshot] = None
@@ -50,6 +55,7 @@ class TickerRun:
     phase2_returncode: Optional[int] = None
     phase2_error: Optional[str] = None
     elapsed_seconds: float = 0.0
+    delisted: bool = False
     log_path: Optional[Path] = None
 
 
@@ -116,11 +122,40 @@ def _phase1_single(ticker: str, run_dir: Path) -> TickerRun:
             (line for line in reversed(err) if line.startswith("ERROR")),
             err[-1] if err else f"returncode {rc}",
         )
+        # PR #57: distinguish DELISTED from generic failures so the
+        # dashboard doesn't surface noise. yfinance fallback emits
+        # "possibly delisted; no timezone found" on bankrupt /
+        # de-listed names; FMP returns 404. Either marker → delisted.
+        combined = (stderr or "") + "\n" + (stdout or "")
+        if _looks_delisted(combined, ticker):
+            result.delisted = True
         return result
     result.snapshot = parse_snapshot(stdout)
     if result.snapshot is None:
         result.phase1_error = "BROKER_SNAPSHOT_JSON missing from stdout"
     return result
+
+
+def _looks_delisted(text: str, ticker: str) -> bool:
+    """PR #57: pattern-match delisted-ticker markers in subprocess
+    output. Conservative — only flips on STRONG indicators (the
+    'delisted' substring is yfinance's own framing; FMP 404 on
+    profile is the other strong signal). Doesn't flip on transient
+    network errors, AI failures, or unrelated FetchError types."""
+    if not text:
+        return False
+    lower = text.lower()
+    if "delisted" in lower:
+        return True
+    # FMP 404 on the ticker's profile endpoint = ticker not in the
+    # provider's universe. Distinguish from other 404s (e.g. missing
+    # earnings calendar) by requiring the symbol in the URL.
+    if "404" in lower and (
+        f"profile?symbol={ticker.lower()}" in lower
+        or f"profile/{ticker.lower()}" in lower
+    ):
+        return True
+    return False
 
 
 def _phase2_single(ticker: str, tier: str, run_dir: Path
@@ -254,7 +289,10 @@ def format_summary(results: list[TickerRun],
         qual = ("✓" if r.snapshot and r.snapshot.qualifies_for_t2_plus
                 else (" " if r.snapshot else "?"))
         if r.snapshot is None:
-            status = f"P1 FAIL: {r.phase1_error or 'unknown'}"
+            if r.delisted:
+                status = "DELISTED — remove from universe"
+            else:
+                status = f"P1 FAIL: {r.phase1_error or 'unknown'}"
         elif r.phase2_returncode not in (None, 0):
             status = f"P2 FAIL: {r.phase2_error or 'unknown'}"
         else:
@@ -380,8 +418,16 @@ def _decision_from_run(run: TickerRun) -> TickerDecision:
             decision.ev_bps_of_dip = ev_pct * 10000.0
     # Verdict logic — mirror reporter.py's headline decision tree.
     if snap is None:
-        decision.verdict = "FAIL"
-        decision.status_note = run.phase1_error or "Phase 1 failed"
+        # PR #57: distinguish DELISTED from generic Phase 1 failure.
+        if run.delisted:
+            decision.verdict = "DELISTED"
+            decision.status_note = (
+                "Ticker delisted / removed from data provider — "
+                "consider removing from config/diprally.yaml universe"
+            )
+        else:
+            decision.verdict = "FAIL"
+            decision.status_note = run.phase1_error or "Phase 1 failed"
     elif decision.dip_target is None or decision.dip_target == 0.0:
         decision.verdict = "WAIT"
         decision.status_note = "No qualifying pair at current spot"
@@ -408,6 +454,7 @@ _VERDICT_COLORS = {
     "REFUSED-CORRELATED": "#8250df",     # purple (PR #55 — substitute idea)
     "REFUSED-METHOD":     "#cf222e",     # red
     "FAIL":               "#cf222e",
+    "DELISTED":           "#57606a",     # darker gray — operator action ≠ trader action
 }
 
 
@@ -451,6 +498,7 @@ def _render_dashboard_html(decisions: list[TickerDecision], allocation,
     n_wait = sum(1 for d in decisions if d.verdict == "WAIT")
     n_refused = sum(1 for d in decisions if d.verdict.startswith("REFUSED"))
     n_fail = sum(1 for d in decisions if d.verdict == "FAIL")
+    n_delisted = sum(1 for d in decisions if d.verdict == "DELISTED")
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -495,6 +543,7 @@ def _render_dashboard_html(decisions: list[TickerDecision], allocation,
     <div><strong>{n_wait}</strong>WAIT</div>
     <div><strong>{n_refused}</strong>REFUSED</div>
     <div><strong>{n_fail}</strong>FAIL</div>
+    <div><strong>{n_delisted}</strong>DELISTED</div>
   </div>
   <table id="universe">
     <thead>
