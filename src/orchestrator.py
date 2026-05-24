@@ -199,7 +199,8 @@ def run_phase1(tickers: list[str], run_dir: Path,
                     f"({r.elapsed_seconds:.0f}s)"
                 )
             else:
-                progress(f"     FAILED — {r.phase1_error}")
+                tag = "DELISTED" if r.delisted else f"FAILED — {r.phase1_error}"
+                progress(f"     {tag}")
     else:
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel) as ex:
             future_to_idx = {ex.submit(_phase1_single, t, run_dir): i
@@ -208,8 +209,12 @@ def run_phase1(tickers: list[str], run_dir: Path,
                 i = future_to_idx[fut]
                 r = fut.result()
                 results[i] = r
-                tag = (f"ambiguity={r.snapshot.ambiguity:.2f}"
-                       if r.snapshot else f"FAILED — {r.phase1_error}")
+                if r.snapshot:
+                    tag = f"ambiguity={r.snapshot.ambiguity:.2f}"
+                elif r.delisted:
+                    tag = "DELISTED"
+                else:
+                    tag = f"FAILED — {r.phase1_error}"
                 progress(f"  {r.ticker:<8} {tag}  ({r.elapsed_seconds:.0f}s)")
     return results
 

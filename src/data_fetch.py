@@ -431,49 +431,6 @@ def fetch_sector_perf(sector, api_key, days=None, exchange_filter="NASDAQ"):
     }
 
 
-def fetch_insider_activity(ticker, api_key, days=90):
-    """FMP insider-trading/search (canon endpoint)."""
-    data = _fmp_get("insider-trading/search", api_key,
-                    {"symbol": ticker, "limit": 100})
-    if not data or not isinstance(data, list):
-        return None
-    cutoff = datetime.now() - timedelta(days=days)
-    net_value = 0.0
-    n_buys = 0
-    n_sells = 0
-    for tx in data:
-        tx_type = (tx.get("transactionType") or "").upper()
-        is_purchase = tx_type.startswith("P")
-        is_sale = tx_type.startswith("S")
-        if not (is_purchase or is_sale):
-            continue
-        try:
-            tx_date = datetime.strptime(tx.get("transactionDate", "")[:10],
-                                        "%Y-%m-%d")
-            if tx_date < cutoff:
-                continue
-        except (ValueError, TypeError):
-            continue
-        try:
-            shares = float(tx.get("securitiesTransacted", 0) or 0)
-            price = float(tx.get("price", 0) or 0)
-            value = shares * price
-            if is_purchase:
-                net_value += value
-                n_buys += 1
-            else:
-                net_value -= value
-                n_sells += 1
-        except (ValueError, TypeError):
-            continue
-    return {
-        "net_value_usd": net_value,
-        "n_buys": n_buys,
-        "n_sells": n_sells,
-        "days": days,
-    }
-
-
 def fetch_recent_news(ticker, api_key, limit=20):
     """FMP news/stock — recent headlines."""
     data = _fmp_get("news/stock", api_key,

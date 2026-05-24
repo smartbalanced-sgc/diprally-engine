@@ -208,38 +208,6 @@ def signal_from_macro(macro):
     }
 
 
-def signal_from_insider(insider, market_cap_usd=None):
-    """Mcap-relative insider flow → drift tilt (audit fix #7)."""
-    if not insider:
-        return _none_signal("insider data unavailable")
-    n_total = insider.get("n_buys", 0) + insider.get("n_sells", 0)
-    if n_total == 0:
-        return {"drift": 0.0, "confidence": "LOW",
-                "source_quality": "PRIMARY", "sources_count": 1,
-                "notes": "no insider P+S transactions in window"}
-    net = insider.get("net_value_usd", 0)
-    if market_cap_usd and market_cap_usd > 0:
-        flow_pct_of_mcap = net / market_cap_usd
-        drift = max(-0.10, min(0.10, flow_pct_of_mcap * 5.0))
-        scaling_note = f" (mcap-relative: {flow_pct_of_mcap*100:.3f}% of $US{market_cap_usd/1e9:.0f}B)"
-    else:
-        drift = max(-0.10, min(0.10, net / 100_000_000))
-        scaling_note = " (absolute scaling — no mcap available)"
-    direction = "buying" if net > 0 else "selling"
-    if market_cap_usd and market_cap_usd > 0 and abs(net) / market_cap_usd < 0.001:
-        conf = "LOW"
-        scaling_note += " — NOISE-LEVEL relative to mcap, downgraded LOW"
-    else:
-        conf = "MEDIUM"
-    return {
-        "drift": float(drift), "confidence": conf,
-        "source_quality": "PRIMARY", "sources_count": 1,
-        "notes": (f"net {direction} ${abs(net)/1e6:.1f}M "
-                  f"({insider['n_buys']}P/{insider['n_sells']}S in "
-                  f"{insider['days']}d){scaling_note}"),
-    }
-
-
 def signal_from_historical(mu_capped, mu_raw, sigma):
     """Historical mean-return drift, cap-gated to LOW confidence when binding.
     Thresholds in config signals.historical (D-W2-6)."""
