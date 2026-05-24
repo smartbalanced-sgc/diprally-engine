@@ -746,6 +746,44 @@ tickers:
     sector_expected: "Industrials / Aerospace & Defense"
     stock_peers: []
     etf_peer: "PPA"            # Invesco Aerospace & Defense ETF
+  # 2026-05-24 universe expansion — added per operator direction. Initial
+  # σ-class guesses below; sacred #1 (data wins) → PR #62 advisor will
+  # surface mismatches after ~5 cycles per name.
+  SNDK:
+    sigma_class: EXTREME
+    sector_expected: "Technology / Semiconductors"
+    stock_peers: ["MU", "STX", "WDC"]
+    etf_peer: "SOXX"           # post-Feb-2025 WDC Flash spinoff — limited history
+  ARM:
+    sigma_class: EXTREME
+    sector_expected: "Technology / Semiconductors"
+    stock_peers: ["AVGO"]      # IP-heavy semi peer (not in universe; price-series peer)
+    etf_peer: "SOXX"
+  CRWV:
+    sigma_class: EXTREME
+    sector_expected: "Technology / Software-Infrastructure"
+    stock_peers: ["NBIS"]      # GPU cloud peer
+    etf_peer: "IGV"            # iShares Software ETF (AI infra adjacent)
+  NBIS:
+    sigma_class: EXTREME
+    sector_expected: "Technology / Software-Infrastructure"
+    stock_peers: ["CRWV"]
+    etf_peer: "IGV"
+  INOD:
+    sigma_class: EXTREME
+    sector_expected: "Technology / Information Technology Services"
+    stock_peers: []            # small-cap AI data services — no clean stock peer
+    etf_peer: "IGV"
+  CRDO:
+    sigma_class: EXTREME
+    sector_expected: "Technology / Semiconductors"
+    stock_peers: ["MRVL", "AVGO"]
+    etf_peer: "SOXX"
+  ANAB:
+    sigma_class: EXTREME
+    sector_expected: "Healthcare / Biotechnology"
+    stock_peers: []            # sister to ENGN in catalyst-binary biotech bucket
+    etf_peer: "XBI"            # SPDR S&P Biotech ETF
 
   # ---- HIGH class (σ 60-100% typical; mid-caps, momentum / space / defense) ----
   ASTS:
@@ -773,6 +811,11 @@ tickers:
     sector_expected: "Industrials / Specialty Industrial Machinery"
     stock_peers: ["ROP", "WTS"]
     etf_peer: ""
+  MRVL:
+    sigma_class: HIGH
+    sector_expected: "Technology / Semiconductors"
+    stock_peers: ["AVGO", "MU"]
+    etf_peer: "SOXX"
 
   # ---- MID class (σ 30-60% typical; large caps, mature) ----
   INTC:
@@ -815,6 +858,11 @@ tickers:
     sector_expected: "Technology / Communication Equipment"
     stock_peers: ["AAOI", "CIEN"]
     etf_peer: ""
+  LRCX:
+    sigma_class: MID
+    sector_expected: "Technology / Semiconductor Equipment"
+    stock_peers: ["AMAT", "KLAC"]
+    etf_peer: "SOXX"
 
 # -----------------------------------------------------------
 # v3 review criteria — LOCKED at v2 ship, executed at 30 days of runtime

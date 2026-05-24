@@ -31,32 +31,37 @@ from src.registry import (
 
 # ---------- Universe membership ----------
 
-def test_universe_has_17_tickers():
-    """Current roster per CLAUDE.md. NOT a hard constraint on universe size
-    (universe is config) — just a check that the YAML hasn't drifted from
-    the documented roster without an explicit update."""
+def test_universe_has_26_tickers():
+    """Current roster per CLAUDE.md (2026-05-24 expansion: +9 names).
+    NOT a hard constraint on universe size (universe is config) —
+    just a check that the YAML hasn't drifted from the documented
+    roster without an explicit update."""
     universe = list_universe()
-    assert len(universe) == 17, f"Universe drifted: {len(universe)} tickers"
+    assert len(universe) == 26, f"Universe drifted: {len(universe)} tickers"
 
 
 def test_extreme_class_membership():
-    """CLAUDE.md: EXTREME = LWLG, MRAM, ENGN, VELO.
-    (VELO3D delisted 2024, relisted Aug 2025 as VELO — registry tracks
-    the live ticker, not the historical symbol.)"""
+    """CLAUDE.md EXTREME group as of 2026-05-24 expansion:
+    LWLG, MRAM, ENGN, VELO + 7 additions (SNDK, ARM, CRWV, NBIS, INOD,
+    CRDO, ANAB). Class assignments are initial — PR #62 advisor will
+    flag any that need rebalancing after ~5 cycles per name."""
     extreme = {t for t in list_universe() if classify(t) == "EXTREME"}
-    assert extreme == {"LWLG", "MRAM", "ENGN", "VELO"}, extreme
+    assert extreme == {
+        "LWLG", "MRAM", "ENGN", "VELO",
+        "SNDK", "ARM", "CRWV", "NBIS", "INOD", "CRDO", "ANAB",
+    }, extreme
 
 
 def test_high_class_membership():
-    """CLAUDE.md: HIGH = ASTS, RKLB, PL, SATS, GHM."""
+    """CLAUDE.md HIGH group as of 2026-05-24 expansion: original 5 + MRVL."""
     high = {t for t in list_universe() if classify(t) == "HIGH"}
-    assert high == {"ASTS", "RKLB", "PL", "SATS", "GHM"}, high
+    assert high == {"ASTS", "RKLB", "PL", "SATS", "GHM", "MRVL"}, high
 
 
 def test_mid_class_membership():
-    """CLAUDE.md: MID = INTC, IPGP, LITE, MU, STX, AMAT, MOG-A, GLW."""
+    """CLAUDE.md MID group as of 2026-05-24 expansion: original 8 + LRCX."""
     mid = {t for t in list_universe() if classify(t) == "MID"}
-    assert mid == {"INTC", "IPGP", "LITE", "MU", "STX", "AMAT", "MOG-A", "GLW"}, mid
+    assert mid == {"INTC", "IPGP", "LITE", "MU", "STX", "AMAT", "MOG-A", "GLW", "LRCX"}, mid
 
 
 def test_class_counts_sum_to_universe():
@@ -93,10 +98,11 @@ def test_resolve_peers_handles_mog_dash_a():
 
 
 def test_resolve_peers_unknown_ticker_returns_empty():
-    """Unknown tickers (e.g. SNDK — the seed source, NOT in production universe)
-    return empty peers. Caller can override with --peers explicitly."""
-    assert resolve_peers("SNDK") == []
+    """Unknown tickers return empty peers. Caller can override with
+    --peers explicitly. (SNDK was promoted to the universe in the
+    2026-05-24 expansion — use a random unknown symbol instead.)"""
     assert resolve_peers("RANDOM123") == []
+    assert resolve_peers("ZZZNOTREAL") == []
 
 
 def test_resolve_peers_case_insensitive():
@@ -145,20 +151,19 @@ def test_expected_sector_matches_known_tickers():
     assert "Biotechnology" in expected_sector("ENGN")
 
 
-# ---------- Sacred #4 (no SNDK hardcode) ----------
+# ---------- Sacred #4 (no SNDK-specific hardcodes) ----------
 
-def test_no_sndk_in_universe_yaml():
-    """Sacred #4: 'No SNDK-specific hardcodes.' SNDK was the seed source
-    from sgc-dip-engine and is not part of the production universe.
-    Adding SNDK back to the YAML is a deliberate decision, not an accident."""
-    assert "SNDK" not in list_universe()
-
-
-def test_no_sndk_via_resolve_peers():
-    """Even if a user passes 'SNDK', resolve_peers returns [] (no hardcoded
-    MU+WDC fallback). The W0 TEMP shim is dead. Operator can still pass
-    --peers MU WDC explicitly for development smokes."""
-    assert resolve_peers("SNDK") == []
+def test_sndk_resolves_through_registry_only():
+    """Sacred #4: 'No SNDK-specific hardcodes.' SNDK was deliberately added
+    to the universe in the 2026-05-24 expansion as a tradeable name (post
+    Feb-2025 WDC Flash spinoff). Sacred #4 forbids HARDCODES in code, not
+    presence in the YAML universe. This test verifies SNDK is treated like
+    any other ticker — peers come from the YAML entry, not from a special-
+    case shim in src/."""
+    assert "SNDK" in list_universe()
+    peers = resolve_peers("SNDK")
+    # SNDK's YAML entry declares stock_peers: ["MU", "STX", "WDC"]
+    assert peers == ["MU", "STX", "WDC"]
 
 
 if __name__ == "__main__":
