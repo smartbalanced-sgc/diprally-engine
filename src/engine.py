@@ -675,6 +675,13 @@ CSV_COLUMNS = [
     # instead of reconstructing from dip/EV (which silently misclassified
     # sacred-#14 / #18 / #16 refusals as BUY/WAIT).
     "verdict_state",
+    # 2026-05-24 audit fix round 2 — capture Pass 2's agreement classification
+    # and per-revision reasoning to CSV. The reporter already surfaces them
+    # (audit-round-1 work) but they weren't being persisted, breaking the
+    # D-W10-1 future analysis that wants to correlate "strong_disagree"
+    # frequency / revision rationale patterns with realized outcomes.
+    "pass2_agreement",           # "" / "agree" / "partial_disagree" / "strong_disagree"
+    "pass2_revision_reasoning",  # truncated text
 ]
 
 
@@ -1732,6 +1739,16 @@ def run_pipeline(args) -> int:
             trend_filter_refused=trend_filter_refused,
             parabola_filter_refused=parabola_filter_refused,
             ev_hurdle_refused=ev_hurdle_refused,
+        ),
+        # 2026-05-24 audit fix round 2 — persist Pass 2 reasoning + agreement.
+        # Stored on the dataclass by parse_ai_pass2 (round-1 audit fix);
+        # this is the CSV write so future calibration analysis (D-W10-1)
+        # can correlate "strong_disagree" frequency with realized outcomes.
+        # Truncate reasoning to keep CSV row width manageable.
+        "pass2_agreement": (getattr(pass2, "agreement_with_pass1", "") or "") if pass2 else "",
+        "pass2_revision_reasoning": (
+            (getattr(pass2, "revision_reasoning", "") or "")[:300]
+            if pass2 else ""
         ),
     }
     append_history_row(history_path, csv_row)

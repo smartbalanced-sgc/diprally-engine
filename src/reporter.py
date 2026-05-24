@@ -86,6 +86,64 @@ def _headline_card(ticker, spot, horizon_days, best, ev_pct_of_dip,
     )
 
 
+def _reliability_warnings_line(*, vol_profile, base_signals,
+                                 sigma_class_mismatch) -> str:
+    """Build a single-line reliability-warning chip surfaced under the
+    headline card. Audit 2026-05-24: these flags exist as inline
+    paragraphs deep in the report — surfacing them at the top so the
+    operator can spot reliability stress at a glance.
+
+    Flags evaluated (each contributes one chip when triggered):
+      - near-IGARCH: GARCH α+β > 0.98 (vol forecast persistence at
+        the boundary of stationarity — σ untradeable as forecast)
+      - wide σ-divergence: blended σ vs anchors > 15pp (often a
+        pre-event vol-pricing signal worth investigating)
+      - few signals active: fewer than 50% of drift signals at
+        MEDIUM+ confidence (blend is weakly aggregated)
+      - σ-class registry mismatch: detector and YAML disagree
+        (engine using detector value, hint stale)
+
+    Returns empty string when no flag trips — keeps the report clean
+    on healthy runs.
+    """
+    chips = []
+
+    # Near-IGARCH flag (already surfaced in σ-triangulation section,
+    # also in RELIABILITY COMPONENTS section, but worth top-of-report)
+    ab = getattr(vol_profile, "garch_alpha_plus_beta", 0.0) or 0.0
+    if ab > 0.98:
+        chips.append(f"near-IGARCH (α+β={ab:.4f})")
+
+    # Wide σ-divergence: compare blended to its anchors
+    triangulation = getattr(vol_profile, "triangulation", None) or {}
+    divergence = float(triangulation.get("divergence", 0.0) or 0.0)
+    if divergence > 15.0:
+        chips.append(f"σ divergence {divergence:.1f}pp")
+
+    # Signal aggregation strength
+    try:
+        n_total = len(base_signals)
+        if n_total > 0:
+            n_active = sum(
+                1 for s in base_signals
+                if getattr(s, "confidence", "LOW") != "LOW"
+                and not getattr(s, "is_absent", False)
+            )
+            if n_active < n_total // 2:
+                chips.append(f"{n_active}/{n_total} signals active")
+    except (TypeError, AttributeError):
+        pass
+
+    # σ-class registry mismatch — already surfaced inline but flag
+    # operator visibility at top-of-report.
+    if sigma_class_mismatch:
+        chips.append("σ-class registry hint stale")
+
+    if not chips:
+        return ""
+    return f"  ⚠ RELIABILITY: {' · '.join(chips)}"
+
+
 def format_report(
     snapshot,
     vol_profile,
@@ -138,6 +196,19 @@ def format_report(
         ev_hurdle_refused=ev_hurdle_refused,
         snapshot=snapshot,
     ))
+    # 2026-05-24 audit fix (round 2): unified reliability-flag line under
+    # the verdict headline. Surfaces math-layer warnings that are real
+    # but currently buried in mid-report sections (near-IGARCH, wide σ
+    # divergence, few signals active, registry mismatch). Operator sees
+    # them at a glance instead of having to scroll. Empty when no flags
+    # trip — no noise on clean runs.
+    reliability_line = _reliability_warnings_line(
+        vol_profile=vol_profile,
+        base_signals=base_signals,
+        sigma_class_mismatch=sigma_class_mismatch,
+    )
+    if reliability_line:
+        lines.append(reliability_line)
 
     lines.append(f"  Ticker: {snapshot.ticker}")
     lines.append(f"  Spot: ${snapshot.spot:.2f}   Market cap: ${snapshot.market_cap/1e9:.1f}B")
@@ -479,6 +550,35 @@ def format_report(
                     lines.append(f"    catalysts -{len(dropped)}: {', '.join(list(dropped)[:3])}")
                 if getattr(pass2, "catalysts_reasoning", ""):
                     lines.append(f"      ↳ {pass2.catalysts_reasoning[:200]}")
+        # 2026-05-24 audit fix (round 2): catalyst-verification verdicts are
+        # applied to Pass 2's catalysts (effective_ai.catalysts), but PR #65
+        # surfaced the tag on Pass 1's enumeration only — the wrong section.
+        # Now enumerate Pass 2's final catalyst set with verification verdict
+        # tags so the operator sees which Pass 2 catalysts passed/failed the
+        # primary-source check. Skipped silently when no Pass 2 catalysts have
+        # been verified (T1 runs, verification disabled, etc.).
+        if pass2.catalysts:
+            verified_any = any(
+                isinstance(c, dict) and c.get("verification_verdict")
+                for c in pass2.catalysts
+            )
+            if verified_any:
+                lines.append(f"    Pass 2 catalysts (post-verification):")
+                for c in pass2.catalysts[:5]:
+                    if not isinstance(c, dict):
+                        continue
+                    verdict = c.get("verification_verdict") or ""
+                    if not verdict:
+                        continue
+                    name = c.get("name", "?")
+                    mag = c.get("magnitude", "?")
+                    lines.append(
+                        f"      • [{verdict}] {name} "
+                        f"(mag {mag}, {c.get('direction_risk', '?')})"
+                    )
+                    v_reason = c.get("verification_reasoning") or ""
+                    if v_reason:
+                        lines.append(f"          ↳ {v_reason[:160]}")
         if pass2.key_risks:
             for risk in pass2.key_risks[:3]:
                 if risk:
