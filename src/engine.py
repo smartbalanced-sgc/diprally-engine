@@ -1784,6 +1784,7 @@ def run_pipeline(args) -> int:
         dashboard_path, snapshot, best, vol_profile, base_signals,
         pass1, pass2, method_check, backtest, history_rows_for_chart,
         conviction_dip, conviction_rally_cond, horizon_days,
+        sigma_class_mismatch=sigma_class_mismatch,
     )
 
     # --- 19. Optional W4 broker snapshot (W5 orchestrator collects these) ---
