@@ -247,3 +247,42 @@ def test_legend_describes_correlated_as_informational():
     assert "CORRELATED note" in html or "engine surfaces the correlation" in html
     # Indicates operator decides
     assert "operator decides" in html.lower() or "operator" in html.lower()
+
+
+# =============================================================================
+# 7. Regression — calendar-vs-trading-day lookback bug (2026-05-25 hotfix)
+# =============================================================================
+
+def test_fetch_history_lookback_covers_window_in_trading_days(monkeypatch, tmp_path):
+    """2026-05-25 hotfix: the gate's `correlation_window_days = 90` is
+    in TRADING days, but `fetch_history(lookback_days=N)` interprets N
+    as CALENDAR days. 90 calendar days ≈ 63 trading days, which is
+    below the gate's minimum-bars requirement → gate accepts defensively
+    → real correlations like AMAT/LRCX (ρ=0.911) get silently missed.
+
+    Fix: orchestrator._history_as_price_df requests lookback_days=140
+    (≈ 90+ trading days even with holiday density). Regression guard
+    against future revert.
+    """
+    monkeypatch.setattr(orch, "_OUTPUT_ROOT", tmp_path)
+    monkeypatch.setenv("FMP_API_KEY", "test-key")
+
+    captured = {}
+    def fake_fetch(ticker, api_key, lookback_days):
+        captured["lookback_days"] = lookback_days
+        import pandas as pd
+        return pd.DataFrame({
+            "Date": pd.date_range(end="2026-05-25", periods=100, freq="D"),
+            "Close": [100.0 + i for i in range(100)],
+        })
+
+    with patch("src.data_fetch.fetch_history", side_effect=fake_fetch):
+        orch._history_as_price_df("ANY")
+
+    # Must request enough calendar days to cover a 90-trading-day window
+    # (90 × 7/5 = 126, plus holiday buffer). 140 is the chosen value.
+    assert captured["lookback_days"] >= 126, (
+        f"lookback_days {captured['lookback_days']} insufficient for "
+        f"90-trading-day correlation window — gate will silently fail to "
+        f"detect real correlations"
+    )
