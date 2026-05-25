@@ -41,7 +41,21 @@ def _cache_path(ticker: str, date_str: str) -> Path:
 
 
 def today_str() -> str:
-    return datetime.now().strftime("%Y-%m-%d")
+    """Cache key date — uses the most recent TRADING day, not the wall-clock
+    calendar day. PR #76 rationale: running on a market-holiday Monday with
+    FMP returning Friday's quote would otherwise write a cache file dated
+    Monday containing Friday's data — contaminating Tuesday's run if the
+    cache invalidation skews. Keying on last_trading_day collapses Friday's
+    original entry + weekend re-runs + Monday-holiday re-runs into the
+    same key, with the spot-move guard handling actual price changes.
+    """
+    try:
+        from src.market_calendar import last_trading_day
+        return last_trading_day(datetime.now().date()).strftime("%Y-%m-%d")
+    except Exception:
+        # Defensive: if the calendar module is broken, fall back to
+        # wall-clock date — better to over-write cache than crash.
+        return datetime.now().strftime("%Y-%m-%d")
 
 
 def get_cached(ticker: str, spot: float, date_str: Optional[str] = None) -> Optional[dict]:

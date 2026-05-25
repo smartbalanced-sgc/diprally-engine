@@ -97,9 +97,19 @@ def resolve_one_row(row: dict, history_df, today=None) -> ResolvedOutcome:
     if dip_target <= 0 or rally_target <= 0:
         return _open_outcome()
 
-    # Window check (calendar-day basis matches CSV row.date semantics).
-    days_elapsed = (today - row_date).days
-    if days_elapsed < horizon_days:
+    # PR #76: gate on TRADING days elapsed (was calendar). today must
+    # be ≥ horizon_days trading days past row_date OR the history slice
+    # below won't have enough bars; this also catches the case where a
+    # synthetic / over-supplied history would otherwise let resolution
+    # leak through before the window has actually closed in wall time.
+    try:
+        from src.market_calendar import trading_days_after
+        td_elapsed = trading_days_after(row_date, today)
+    except Exception:
+        # Defensive fallback: calendar / 7 × 5 approximation if calendar
+        # module unavailable. Coarse but never silently wrong.
+        td_elapsed = (today - row_date).days * 5 // 7
+    if td_elapsed < horizon_days:
         return _open_outcome()
 
     # Window has closed. Slice history to the post-prediction window.
@@ -120,15 +130,16 @@ def resolve_one_row(row: dict, history_df, today=None) -> ResolvedOutcome:
     mask = history_df["Date"] > cutoff
     window = history_df.loc[mask].copy().reset_index(drop=True)
 
-    # We need ≥horizon_days × (5/7) trading bars to resolve (calendar→
-    # trading-day conversion). Below this threshold the post-prediction
-    # window is too sparse to lock the outcome.
-    min_bars_needed = max(1, int(horizon_days * 5 / 7) - 2)
-    if len(window) < min_bars_needed:
+    # PR #76: horizon_days is TRADING days. The previous code triggered
+    # resolution after `horizon_days` CALENDAR days had elapsed (~43 of
+    # 60 trading bars), locking outcomes ~28% early and biasing realized
+    # dip/rally rates pessimistically. Now: only resolve when we actually
+    # have `horizon_days` trading bars of post-prediction price history.
+    if len(window) < horizon_days:
         return _open_outcome()
 
-    # Trim to the first `horizon_days` trading bars + small buffer.
-    window = window.head(horizon_days + 5)
+    # Use exactly horizon_days bars (consistent with MC's simulated window).
+    window = window.head(horizon_days)
 
     closes = window["Close"].values
     n = len(closes)
