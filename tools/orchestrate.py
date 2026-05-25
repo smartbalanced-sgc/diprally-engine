@@ -11,11 +11,12 @@ Per-ticker logs land in output/orchestrator_<timestamp>/<TICKER>.log.
 The summary is printed to stdout AND saved to SUMMARY.txt.
 
 Usage:
-    python tools/orchestrate.py                          # full universe
+    python tools/orchestrate.py                          # full universe (parallel=2 default)
     python tools/orchestrate.py --tickers LWLG INTC MU   # subset
     python tools/orchestrate.py --budget 1.00            # tighter cap
     python tools/orchestrate.py --dry-run                # Phase 1+broker only
-    python tools/orchestrate.py --max-parallel 4         # subprocess fan-out
+    python tools/orchestrate.py --max-parallel 4         # more parallelism (faster)
+    python tools/orchestrate.py --max-parallel 1         # sequential (slowest, safest)
 """
 from __future__ import annotations
 
@@ -50,8 +51,11 @@ def main():
                    help="Override the $2/day cap (USD). Broker enforces strict ≤.")
     p.add_argument("--dry-run", action="store_true",
                    help="Run Phase 1 + broker allocation, skip Phase 2 (AI dispatch).")
-    p.add_argument("--max-parallel", type=int, default=1,
-                   help="Concurrent subprocesses per phase (default 1 — sequential).")
+    p.add_argument("--max-parallel", type=int, default=2,
+                   help="Concurrent subprocesses per phase (default 2 — modest "
+                        "parallelism that halves wall-clock time on a typical "
+                        "consumer Mac without overloading FMP or the operator's "
+                        "RAM. Bump to 4-8 if your machine and network can handle it.")
     p.add_argument("--run-id", default=None,
                    help="Override the output/<run_id>/ directory name.")
     args = p.parse_args()
