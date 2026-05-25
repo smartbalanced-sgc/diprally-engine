@@ -425,6 +425,7 @@ def analyze_joint_conditional(
     vol_schedule: Optional[np.ndarray] = None,
     dip_first_days: Optional[np.ndarray] = None,
     rally_first_days: Optional[np.ndarray] = None,
+    seed: int = 42,
 ) -> dict:
     """For each MC path, track whether dip and rally touched in correct order.
     Returns four-scenario breakdown summing to 1.0.
@@ -441,11 +442,18 @@ def analyze_joint_conditional(
         dip_first_day = dip_first_days
         rally_first_day = rally_first_days
     elif sigma is not None:
+        # PR #78 (audit #10): use the caller-supplied `seed` so
+        # sensitivity-table scenarios get independent bridge randomness
+        # instead of sharing seeds 42/43. Pair the dip/rally seeds via
+        # (seed, seed+1) so the same scheme as the recommendation path
+        # is preserved.
         dip_arr = precompute_first_touch_days(
-            paths, S0, np.array([dip_price]), sigma, vol_schedule, "down"
+            paths, S0, np.array([dip_price]), sigma, vol_schedule, "down",
+            seed=seed,
         )
         rally_arr = precompute_first_touch_days(
-            paths, S0, np.array([rally_price]), sigma, vol_schedule, "up", seed=43
+            paths, S0, np.array([rally_price]), sigma, vol_schedule, "up",
+            seed=seed + 1,
         )
         dip_first_day = dip_arr[:, 0]
         rally_first_day = rally_arr[:, 0]
