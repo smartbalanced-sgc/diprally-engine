@@ -387,9 +387,19 @@ def _history_as_price_df(ticker: str):
         return _history_from_csv_fallback(ticker)
     try:
         from src.data_fetch import fetch_history
-        # 90 bars > 60d window + buffer; fetch_history returns the
-        # provider's full daily-bar set within lookback.
-        df = fetch_history(ticker, api_key, lookback_days=90)
+        # 2026-05-25 bug fix: fetch_history's lookback_days param is
+        # CALENDAR days, but the portfolio gate's correlation_window_days
+        # is TRADING days. 90 calendar days ≈ 63 trading days, which is
+        # below the gate's minimum-bars requirement, causing the gate to
+        # defensively accept every BUY and miss real correlations.
+        #
+        # Diagnostic that surfaced the bug: AMAT/LRCX have empirical
+        # ρ=0.911 over 90 trading days but the gate said "0 correlation
+        # pairs noted" because fetch_history(90) returned only 63 bars.
+        #
+        # Fix: request ~140 calendar days to ensure ≥90 trading days
+        # are available (90 × 7/5 = 126, +14 buffer for holidays).
+        df = fetch_history(ticker, api_key, lookback_days=140)
         if df is None or len(df) < 30:
             return None
         return df

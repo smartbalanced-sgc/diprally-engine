@@ -175,7 +175,10 @@ def test_history_as_price_df_calls_fetch_history_when_key_present(monkeypatch, t
     with patch("src.data_fetch.fetch_history", side_effect=fake_fetch):
         result = orch._history_as_price_df("AMAT")
 
-    assert calls == [("AMAT", "test-key-123", 90)]
+    # PR #75 fix: lookback_days request raised 90 → 140 calendar days
+    # so the gate's 90-trading-day window has enough bars to compute
+    # correlation. Was returning only 63 trading days from 90 calendar.
+    assert calls == [("AMAT", "test-key-123", 140)]
     assert result is not None
     assert len(result) == 90
 
