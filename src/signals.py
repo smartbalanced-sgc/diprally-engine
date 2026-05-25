@@ -493,23 +493,62 @@ def signal_from_peer_rs(price_df, peer_dfs, lookback_days=60, ticker="ticker"):
 
 
 def signal_from_sector_decoupling(price_df, sector_perf, lookback_days=30, ticker="ticker"):
-    """Decoupling: is ticker moving WITH or AGAINST its sector recently?"""
-    if price_df is None or len(price_df) < lookback_days + 1:
-        return _none_signal("insufficient price history for decoupling")
+    """Decoupling: is ticker moving WITH or AGAINST its sector recently?
+
+    PR #79 (audit #5): the two returns must be measured over the SAME
+    window. Pre-fix:
+      - own_ret = 30-trading-bar return (`iloc[-31]`).
+      - sector_ret = cumulative return over `len(rows)` trading bars
+        returned by `fetch_sector_perf` (could be 28-30 depending on
+        FMP coverage gaps + holiday density in the calendar window
+        the fetcher requested).
+      - decoup = own_ret - sector_ret subtracted mismatched-period
+        returns; annualisation `decoup * 252 / lookback_days` used
+        the SIGNAL's nominal `lookback_days` (30), not the SECTOR's
+        actual period (`sector_perf['n_days']`).
+    Fix: use `sector_perf['n_days']` as the comparison window. Slice
+    own_ret over those same N bars; annualise with `252 / n_days`. If
+    the sector returned far fewer bars than requested, mark LOW conf
+    rather than carry a stealthily-broken comparison forward.
+    """
     if not sector_perf or sector_perf.get("cum_return_pct") is None:
         return _none_signal("no sector data for decoupling")
 
+    # Use the SECTOR's actual period for both legs. Fall back to the
+    # signal's nominal lookback if `n_days` is missing (legacy fetcher
+    # without that field).
+    n_days = int(sector_perf.get("n_days") or lookback_days)
+    if n_days < 5:
+        return _none_signal(
+            f"sector window too short ({n_days} bars) — signal not reliable"
+        )
+
+    if price_df is None or len(price_df) < n_days + 1:
+        return _none_signal(
+            f"insufficient price history for {n_days}-bar decoupling"
+        )
+
     try:
         own_ret = float(price_df["Close"].iloc[-1] /
-                         price_df["Close"].iloc[-lookback_days - 1] - 1.0)
+                         price_df["Close"].iloc[-n_days - 1] - 1.0)
     except (IndexError, ValueError):
         return _none_signal(f"{ticker} return calc failed")
 
     sector_ret = sector_perf["cum_return_pct"] / 100.0
     decoup = own_ret - sector_ret
-    drift = decoup * 252 / lookback_days
+    drift = decoup * 252 / n_days
     cap = SIGNAL_SECTOR_DECOUPLING.drift_cap_abs
     drift = max(-cap, min(cap, drift))
+
+    # Period-mismatch downgrade: if the SECTOR window we ended up using
+    # differs materially from the signal's nominal lookback, the signal
+    # still works (both legs measure the same period) but the operator
+    # should know the comparison is shorter/longer than expected.
+    period_drift_pp = abs(n_days - lookback_days)
+    period_note = (
+        f" [window {n_days}d, nominal {lookback_days}d]"
+        if period_drift_pp >= 5 else ""
+    )
 
     if abs(decoup) < SIGNAL_SECTOR_DECOUPLING.magnitude_low_conf:
         conf = "LOW"
@@ -524,8 +563,9 @@ def signal_from_sector_decoupling(price_df, sector_perf, lookback_days=30, ticke
     return {
         "drift": float(drift), "confidence": conf,
         "source_quality": "PRIMARY", "sources_count": 1,
-        "notes": (f"{ticker} {own_ret*100:+.0f}% vs sector {sector_ret*100:+.0f}% "
-                  f"over {lookback_days}d -> decouple {decoup*100:+.0f}% {note_extra}"),
+        "notes": (f"{ticker} {own_ret*100:+.0f}% vs sector "
+                  f"{sector_ret*100:+.0f}% over {n_days}d -> decouple "
+                  f"{decoup*100:+.0f}% {note_extra}{period_note}"),
     }
 
 
