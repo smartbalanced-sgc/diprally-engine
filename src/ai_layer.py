@@ -689,7 +689,17 @@ def parse_ai_pass2(raw, pass1, cost):
         catalysts=revised_catalysts,
         bull_factors=[],
         bear_factors=[],
-        key_risks=[raw.get("primary_critique", "")] + (raw.get("missing_catalysts_added", []) or []),
+        # PR #78 (audit #7): key_risks holds ONLY the primary_critique
+        # string. Previously this list mixed the critique string with
+        # the `missing_catalysts_added` dicts (already merged into
+        # `revised_catalysts` above, lines 663-667), so downstream
+        # consumers (`validate_pass2_critique`, reporter loop printing
+        # `risk` as text) either silently misinterpreted catalyst dicts
+        # as critique text or rendered them as `{...}` debug literals.
+        key_risks=([raw.get("primary_critique", "").strip()]
+                    if isinstance(raw.get("primary_critique"), str)
+                       and raw.get("primary_critique").strip()
+                    else []),
         revision_from_prior_pass=revised - pass1_drift,
         cost_usd=cost,
         raw_sources_cited=0,

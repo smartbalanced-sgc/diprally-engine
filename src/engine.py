@@ -597,9 +597,16 @@ def compute_sensitivity_table(
                 sigma_class, MC_DISTRIBUTION.default_df,
             ),
         )
+        # PR #78 (audit #10): pass the same per-scenario seed offset
+        # used for run_mc_joint_conditional above so the bridge-touch
+        # randomness inside analyze_joint_conditional varies across
+        # scenarios. Previously all scenarios shared seeds (42, 43) →
+        # bridge correction was identical across stress points,
+        # defeating scenario independence.
         result = analyze_joint_conditional(
             paths_s, S0, dip_price, rally_price, horizon_days,
             sigma=sigma_s, vol_schedule=vs,
+            seed=42 + len(rows),
         )
         gain_per_share = rally_price - dip_price - friction_per_share
         bag_hold_loss = dip_price - result["bag_hold_terminal_median"]
@@ -868,7 +875,12 @@ def run_backtest_layer(history_path, current_price):
         # PR #76: horizon is TRADING days (MC dt=1/252). Was using
         # calendar elapsed → over-resolved by ~28%.
         td_elapsed = _tda(row_date, today)
-        horizon = int(row.get("horizon_days", DEFAULT_HORIZON_DAYS))
+        # PR #78 (audit #9): coerce empty-string and None safely.
+        # `int(row.get(k, default))` returns the default only when the
+        # key is MISSING; empty-string cells pass through and raise
+        # ValueError, swallowed by the surrounding except and silently
+        # dropping the row from backtest aggregation.
+        horizon = int(row.get("horizon_days") or DEFAULT_HORIZON_DAYS)
         if td_elapsed < horizon:
             continue
         try:
@@ -901,7 +913,12 @@ def _build_per_day_status(rows, current_price):
         # PR #76: count trading days, not calendar days, for the
         # 'remaining' bar in the per-day status display.
         td_elapsed = _tda(row_date, today)
-        horizon = int(row.get("horizon_days", DEFAULT_HORIZON_DAYS))
+        # PR #78 (audit #9): coerce empty-string and None safely.
+        # `int(row.get(k, default))` returns the default only when the
+        # key is MISSING; empty-string cells pass through and raise
+        # ValueError, swallowed by the surrounding except and silently
+        # dropping the row from backtest aggregation.
+        horizon = int(row.get("horizon_days") or DEFAULT_HORIZON_DAYS)
         remaining = max(0, horizon - td_elapsed)
         try:
             dip_pred = float(row.get("recommended_dip", 0))
@@ -915,7 +932,7 @@ def _build_per_day_status(rows, current_price):
             "dip_target": dip_pred,
             "rally_target": rally_pred,
             "p_round_trip": p_round_trip,
-            "days_elapsed": days_elapsed,
+            "days_elapsed": td_elapsed,
             "remaining": remaining,
             "status": status,
         })
