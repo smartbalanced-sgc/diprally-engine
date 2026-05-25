@@ -555,140 +555,647 @@ _VERDICT_COLORS = {
 }
 
 
-def _render_dashboard_html(decisions: list[TickerDecision], allocation,
+_TRADING212_URL_BASE = "https://www.trading212.com/trading-instruments/invest/"
+
+
+def _trading212_url(ticker: str) -> str:
+    """Trading212 instrument URL for a US ticker. Most US tickers work
+    as <TICKER>.US. Class-share tickers with dashes (MOG-A) are used
+    as-is — Trading212's URL routing accepts both dash and underscore
+    forms on these names."""
+    return f"{_TRADING212_URL_BASE}{ticker.upper()}.US"
+
+
+def _spot_source_line() -> str:
+    """Plain-English line indicating whether spot prices are live
+    intraday quotes or carried-forward closes. Determined from day-of-week
+    + local-time heuristic; conservative — when uncertain says 'live
+    quote at run time'."""
+    now = datetime.now()
+    weekday = now.weekday()  # Mon=0 ... Sun=6
+    if weekday >= 5:  # Saturday / Sunday
+        return (
+            "Spot prices: Prior close (markets closed weekend). Weekend "
+            "quotes carry forward Friday's last regular-session close."
+        )
+    # Weekday — we don't have ET timezone info reliably; just label
+    # honestly as "live FMP quote queried at run time."
+    return (
+        "Spot prices: Live FMP quote queried at run time "
+        "(intraday may be delayed up to 15 min; after-hours = today's close)."
+    )
+
+
+def _ambiguity_tooltip_text(amb: float, tier: str) -> str:
+    """Plain-English tooltip text for an ambiguity value based on its
+    range + the AI tier the broker assigned."""
+    if amb is None:
+        return "Ambiguity unavailable for this ticker."
+    if amb <= 0.10:
+        bucket = "VERY LOW"
+        narrative = "Math is extremely confident. AI critique has minimal leverage."
+    elif amb <= 0.20:
+        bucket = "LOW"
+        narrative = "Math is highly confident. AI critique has limited leverage."
+    elif amb <= 0.40:
+        bucket = "LOW-MEDIUM"
+        narrative = "Moderate confidence."
+    elif amb <= 0.50:
+        bucket = "MEDIUM"
+        narrative = "Moderate uncertainty. AI critique adds value."
+    elif amb <= 0.65:
+        bucket = "MEDIUM-HIGH"
+        narrative = "High uncertainty. AI critique has strong leverage."
+    else:
+        bucket = "HIGH"
+        narrative = "Very high uncertainty. AI critique has maximum leverage."
+    return (
+        f"<strong>{amb:.2f} Ambiguity ({bucket}):</strong> {narrative} "
+        f"Broker assigned {tier}."
+    )
+
+
+def _prt_tooltip_text(prt: float | None) -> str:
+    """Tooltip for P(round-trip) value."""
+    if prt is None:
+        return "P(round-trip) unavailable for this ticker."
+    pct = prt * 100
+    if pct >= 60:
+        nuance = "Strong joint probability of both legs filling."
+    elif pct >= 55:
+        nuance = "Solid joint probability."
+    elif pct >= 50:
+        nuance = "Just above coin-flip."
+    else:
+        nuance = "Below coin-flip — weaker setup."
+    return (
+        f"<strong>{pct:.0f}% P(round-trip):</strong> {pct:.0f}% of 100,000 "
+        f"simulated 60-day paths hit both dip AND rally. {nuance}"
+    )
+
+
+def _ev_tooltip_text(ev_bps: float | None) -> str:
+    """Tooltip for EV bps value, expressed in both bps and %."""
+    if ev_bps is None:
+        return "EV unavailable for this ticker."
+    pct = ev_bps / 100.0
+    if ev_bps >= 50:
+        nuance = "Profitable on average — clears the trade-quality hurdle."
+    elif ev_bps >= 0:
+        nuance = "Marginally positive; thin margin above zero."
+    elif ev_bps >= -50:
+        nuance = "Slightly negative — loses small amount on average."
+    else:
+        nuance = "Significantly negative — loses money on average after friction."
+    return (
+        f"<strong>{ev_bps:+.0f} bps EV ({pct:+.2f}%):</strong> Expected "
+        f"return per share after friction, weighted across all simulated "
+        f"outcomes. {nuance}"
+    )
+
+
+# Verdict sort priority — BUYs first (by EV desc), then REFUSED-CORRELATED
+# (substitute idea, was a BUY), then refusals by EV desc, then WAIT,
+# then operator-action verdicts (FAIL/DELISTED) at the bottom.
+_VERDICT_SORT_PRIORITY = {
+    "BUY":                100,
+    "REFUSED-CORRELATED": 90,
+    "BELOW-THRESHOLD":    80,
+    "NEGATIVE-EV":        70,
+    "REFUSED-EV":         60,
+    "REFUSED-PARABOLA":   50,
+    "REFUSED-TREND":      40,
+    "REFUSED-METHOD":     30,
+    "WAIT":               20,
+    "FAIL":               10,
+    "DELISTED":           0,
+}
+
+
+def _sort_decisions_for_dashboard(decisions: list) -> list:
+    """Sort: verdict priority desc, then EV bps desc. BUYs at top
+    (highest gain first), substitutes next, then refusals by EV magnitude,
+    operator-action verdicts at the bottom."""
+    def sort_key(d):
+        priority = _VERDICT_SORT_PRIORITY.get(d.verdict, 0)
+        # Higher EV = sorts first within a priority group
+        ev = d.ev_bps_of_dip if d.ev_bps_of_dip is not None else -1e9
+        # Sort: priority DESC, ev DESC. Use negation since Python sort ascends.
+        return (-priority, -ev, d.ticker)
+    return sorted(decisions, key=sort_key)
+
+
+def _render_dashboard_html(decisions: list, allocation,
                             href_prefix: str = "") -> str:
-    """Render the aggregate-dashboard HTML. href_prefix is prepended
-    to each ticker's dashboard link — empty when writing to output/
-    (siblings); "../" when writing inside a run_dir (one level deeper)."""
+    """Render the aggregate-dashboard HTML.
+
+    2026-05-24 refresh: dark theme + subtle pattern, collapsible legend
+    that overlays content (doesn't push), Trading212 ticker links,
+    per-ticker engine dashboard linked via the Dip cell, edge-aware
+    tooltips on Ambiguity/P(RT)/EV cells, scroll-to-top button, mobile-
+    responsive card layout under 768px. Default sort surfaces BUYs first
+    by highest EV.
+    """
     spent = allocation.spent_usd if allocation else 0.0
-    cap = allocation.cap_usd if allocation else 0.0
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
+    # Annual projection at 252 trading days
+    annual_estimate = spent * 252
+
+    # Sort decisions: BUYs first (highest EV desc), then refusals, then
+    # WAIT / FAIL / DELISTED at the bottom.
+    sorted_decisions = _sort_decisions_for_dashboard(decisions)
+
     rows_html = []
-    for d in decisions:
-        color = _VERDICT_COLORS.get(d.verdict, "#6e7781")
+    for d in sorted_decisions:
+        color = _VERDICT_COLORS.get(d.verdict, "#6e7681")
         ambig_str = f"{d.ambiguity:.2f}" if d.ambiguity is not None else "—"
-        ev_str = f"{d.ev_bps_of_dip:+.1f}" if d.ev_bps_of_dip is not None else "—"
         spot_str = f"${d.spot:,.2f}" if d.spot is not None else "—"
-        dip_str = f"${d.dip_target:,.2f}" if d.dip_target else "—"
         rally_str = f"${d.rally_target:,.2f}" if d.rally_target else "—"
-        prt_str = f"{d.p_round_trip*100:.0f}%" if d.p_round_trip is not None else "—"
-        href = f"{href_prefix}{d.ticker.lower()}_dipnrally_dashboard.html"
+        prt_str = (f"{d.p_round_trip*100:.0f}%"
+                   if d.p_round_trip is not None else "—")
+        if d.ev_bps_of_dip is not None:
+            ev_str = f"{d.ev_bps_of_dip:+.1f} ({d.ev_bps_of_dip/100:+.2f}%)"
+        else:
+            ev_str = "—"
+
+        # Dip cell links to the per-ticker engine dashboard
+        dashboard_href = f"{href_prefix}{d.ticker.lower()}_dipnrally_dashboard.html"
+        if d.dip_target:
+            dip_cell = (
+                f'<a href="{html.escape(dashboard_href)}">'
+                f'${d.dip_target:,.2f}</a>'
+            )
+        else:
+            dip_cell = "—"
+
+        # Ticker cell → Trading212 instrument page (new tab)
+        t212 = _trading212_url(d.ticker)
         ticker_cell = (
-            f'<a href="{html.escape(href)}">{html.escape(d.ticker)}</a>'
+            f'<a href="{html.escape(t212)}" target="_blank" rel="noopener">'
+            f'{html.escape(d.ticker)}</a>'
         )
-        rows_html.append(f"""      <tr data-verdict="{d.verdict}">
-        <td>{ticker_cell}</td>
-        <td>{html.escape(d.sigma_class)}</td>
-        <td>{html.escape(d.tier)}</td>
-        <td class="num">{ambig_str}</td>
-        <td><span class="verdict" style="background:{color}">{d.verdict}</span></td>
-        <td class="num">{spot_str}</td>
-        <td class="num">{dip_str}</td>
-        <td class="num">{rally_str}</td>
-        <td class="num">{prt_str}</td>
-        <td class="num">{ev_str}</td>
-        <td class="note">{html.escape(d.status_note)}</td>
+
+        # Tooltips
+        if d.ambiguity is not None:
+            amb_tip = html.escape(
+                _ambiguity_tooltip_text(d.ambiguity, d.tier), quote=False
+            ).replace("&lt;strong&gt;", "<strong>").replace("&lt;/strong&gt;", "</strong>")
+            ambig_cell = (
+                f'<span class="tt">{ambig_str}'
+                f'<span class="tt-content">{amb_tip}</span></span>'
+            )
+        else:
+            ambig_cell = ambig_str
+
+        if d.p_round_trip is not None:
+            prt_tip = html.escape(
+                _prt_tooltip_text(d.p_round_trip), quote=False
+            ).replace("&lt;strong&gt;", "<strong>").replace("&lt;/strong&gt;", "</strong>")
+            prt_cell = (
+                f'<span class="tt">{prt_str}'
+                f'<span class="tt-content">{prt_tip}</span></span>'
+            )
+        else:
+            prt_cell = prt_str
+
+        if d.ev_bps_of_dip is not None:
+            ev_tip = html.escape(
+                _ev_tooltip_text(d.ev_bps_of_dip), quote=False
+            ).replace("&lt;strong&gt;", "<strong>").replace("&lt;/strong&gt;", "</strong>")
+            ev_cell = (
+                f'<span class="tt">{ev_str}'
+                f'<span class="tt-content">{ev_tip}</span></span>'
+            )
+        else:
+            ev_cell = ev_str
+
+        rows_html.append(f"""      <tr data-verdict="{html.escape(d.verdict)}">
+        <td class="mobile-ticker">{ticker_cell}</td>
+        <td data-label="σ-class">{html.escape(d.sigma_class)}</td>
+        <td data-label="Tier">{html.escape(d.tier)}</td>
+        <td class="num" data-label="Ambiguity">{ambig_cell}</td>
+        <td class="mobile-verdict" data-label="Verdict"><span class="verdict" style="background:{color}">{html.escape(d.verdict)}</span></td>
+        <td class="num" data-label="Spot">{spot_str}</td>
+        <td class="num" data-label="Dip">{dip_cell}</td>
+        <td class="num" data-label="Rally">{rally_str}</td>
+        <td class="num" data-label="P(RT)">{prt_cell}</td>
+        <td class="num" data-label="EV bps">{ev_cell}</td>
+        <td class="note mobile-note">{html.escape(d.status_note)}</td>
       </tr>""")
 
     n_buy = sum(1 for d in decisions if d.verdict == "BUY")
     n_wait = sum(1 for d in decisions if d.verdict == "WAIT")
     n_refused = sum(1 for d in decisions if d.verdict.startswith("REFUSED"))
     n_fail = sum(1 for d in decisions if d.verdict == "FAIL")
-    n_delisted = sum(1 for d in decisions if d.verdict == "DELISTED")
+
+    spot_source = _spot_source_line()
 
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<title>diprally-engine — universe ranking ({now})</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dip and Rally Engine — universe ranking ({now})</title>
 <style>
-  body {{ font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
-          margin: 24px; color: #1f2328; }}
-  h1 {{ font-size: 22px; margin: 0 0 4px; }}
-  .meta {{ color: #6e7781; font-size: 13px; margin-bottom: 16px; }}
-  .summary {{ display: flex; gap: 24px; margin: 12px 0 20px; flex-wrap: wrap; }}
-  .summary div {{ background: #f6f8fa; padding: 8px 14px; border-radius: 6px;
-                  font-size: 13px; }}
-  .summary strong {{ font-size: 18px; display: block; }}
-  table {{ border-collapse: collapse; width: 100%; font-size: 13px; }}
-  thead th {{ text-align: left; background: #f6f8fa; padding: 8px 10px;
-              border-bottom: 1px solid #d0d7de; cursor: pointer;
-              user-select: none; }}
-  thead th:hover {{ background: #eaeef2; }}
-  tbody td {{ padding: 6px 10px; border-bottom: 1px solid #eaeef2;
-              vertical-align: middle; }}
-  tbody tr:hover {{ background: #f6f8fa; }}
-  td.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
-  td.note {{ color: #6e7781; font-size: 12px; max-width: 350px; }}
-  .verdict {{ display: inline-block; color: #fff; padding: 2px 8px;
-              border-radius: 10px; font-size: 11px; font-weight: 600; }}
-  a {{ color: #0969da; text-decoration: none; font-weight: 600; }}
-  a:hover {{ text-decoration: underline; }}
-  footer {{ margin-top: 24px; color: #6e7781; font-size: 12px; }}
+:root {{
+    --bg-dark: #0d1117;
+    --bg-card: #161b22;
+    --bg-card-elevated: #1c2128;
+    --border: #30363d;
+    --border-subtle: #21262d;
+    --text-primary: #f0f6fc;
+    --text-secondary: #c9d1d9;
+    --text-tertiary: #adb6c0;
+    --text-muted: #909dab;
+    --link: #58a6ff;
+    --link-hover: #79b8ff;
+    --accent: #388bfd;
+}}
+* {{ box-sizing: border-box; }}
+html {{ scroll-behavior: smooth; }}
+body {{
+    font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+    margin: 0; padding: 32px 24px;
+    color: var(--text-primary);
+    background: var(--bg-dark);
+    background-image:
+        radial-gradient(circle at 1px 1px, rgba(255,255,255,0.04) 1px, transparent 0),
+        radial-gradient(ellipse at 50% 0%, rgba(56,139,253,0.08) 0%, transparent 60%);
+    background-size: 24px 24px, 100% 800px;
+    background-attachment: fixed;
+    min-height: 100vh; line-height: 1.5;
+}}
+.container {{ max-width: 1400px; margin: 0 auto; }}
+h1 {{ font-size: 26px; font-weight: 600; margin: 0 0 6px;
+      color: var(--text-primary); letter-spacing: -0.4px; }}
+.meta {{ color: var(--text-secondary); font-size: 13px; margin-bottom: 4px; }}
+.meta .meta-sep {{ color: var(--text-muted); margin: 0 6px; }}
+.meta-strong {{ color: var(--text-primary); font-weight: 500; }}
+.spot-source {{ color: var(--text-tertiary); font-size: 12px;
+                 margin-bottom: 20px; font-style: italic; }}
+.summary-row {{ display: flex; gap: 12px; margin: 20px 0;
+                 flex-wrap: wrap; align-items: flex-start; position: relative; }}
+.summary-tile {{ background: var(--bg-card); border: 1px solid var(--border-subtle);
+                  padding: 12px 18px; border-radius: 8px; font-size: 12px;
+                  flex: 0 0 auto; color: var(--text-tertiary);
+                  text-transform: uppercase; letter-spacing: 0.4px;
+                  box-shadow: 0 1px 0 rgba(255,255,255,0.03) inset; }}
+.summary-tile strong {{ display: block; font-size: 22px; font-weight: 600;
+                         color: var(--text-primary); text-transform: none;
+                         letter-spacing: -0.2px; }}
+.legend-wrapper {{ flex: 1 1 280px; min-width: 240px; position: relative;
+                    background: var(--bg-card);
+                    border: 1px solid var(--border-subtle);
+                    border-radius: 8px; }}
+.legend-toggle {{ width: 100%; background: none; border: none; cursor: pointer;
+                   padding: 14px 18px; text-align: left; color: var(--text-primary);
+                   font-size: 13px; font-weight: 500; font-family: inherit;
+                   display: flex; align-items: center; gap: 10px; user-select: none; }}
+.legend-toggle:hover {{ background: rgba(255,255,255,0.02); }}
+.legend-toggle-arrow {{ font-size: 10px; color: var(--text-muted);
+                         transition: transform 0.3s cubic-bezier(0.4,0,0.2,1);
+                         display: inline-block; }}
+.legend-wrapper.open .legend-toggle-arrow {{ transform: rotate(90deg); }}
+.legend-body {{ position: absolute; top: 100%; left: 0; right: 0;
+                 background: var(--bg-card-elevated); border: 1px solid var(--border);
+                 border-radius: 8px; margin-top: 4px; z-index: 50;
+                 box-shadow: 0 12px 28px rgba(0,0,0,0.55); overflow: hidden;
+                 max-height: 0; opacity: 0; transform: translateY(-4px);
+                 transition: max-height 0.4s cubic-bezier(0.4,0,0.2,1),
+                             opacity 0.25s ease-out,
+                             transform 0.3s cubic-bezier(0.4,0,0.2,1),
+                             padding 0.3s ease;
+                 padding: 0 20px; pointer-events: none; }}
+.legend-wrapper.open .legend-body {{ max-height: 80vh; opacity: 1;
+                                      transform: translateY(0);
+                                      padding: 18px 20px; pointer-events: auto;
+                                      overflow-y: auto; }}
+.legend-section {{ padding: 10px 0; }}
+.legend-section + .legend-section {{ border-top: 1px solid var(--border-subtle);
+                                      margin-top: 8px; }}
+.legend-section-title {{ display: block; font-weight: 600;
+                          color: var(--text-primary); font-size: 11px;
+                          text-transform: uppercase; letter-spacing: 0.8px;
+                          margin-bottom: 14px; }}
+.legend-verdict-row {{ display: flex; gap: 14px; margin-bottom: 14px;
+                        align-items: flex-start; }}
+.legend-verdict-row:last-child {{ margin-bottom: 0; }}
+.legend-verdict-row .vchip {{ flex: 0 0 auto; display: inline-block;
+                               padding: 3px 9px; border-radius: 4px;
+                               color: #fff; font-size: 10px; font-weight: 600;
+                               white-space: nowrap; margin-top: 2px;
+                               min-width: 110px; text-align: center;
+                               letter-spacing: 0.3px; }}
+.legend-verdict-row .vdef {{ flex: 1; color: var(--text-secondary);
+                              line-height: 1.6; font-size: 12.5px; }}
+.legend-col-row {{ margin-bottom: 10px; line-height: 1.6;
+                    color: var(--text-secondary); font-size: 12.5px; }}
+.legend-col-row:last-child {{ margin-bottom: 0; }}
+.legend-col-row strong {{ font-weight: 600; color: var(--text-primary); }}
+.table-container {{ background: var(--bg-card); border: 1px solid var(--border-subtle);
+                     border-radius: 8px; overflow: hidden;
+                     box-shadow: 0 2px 6px rgba(0,0,0,0.2); }}
+table {{ border-collapse: collapse; width: 100%; font-size: 13px; }}
+thead th {{ text-align: left; background: var(--bg-card-elevated);
+             padding: 12px 14px; border-bottom: 1px solid var(--border);
+             cursor: pointer; user-select: none; font-weight: 600;
+             color: var(--text-primary); font-size: 11px;
+             text-transform: uppercase; letter-spacing: 0.6px; }}
+thead th:hover {{ background: rgb(40, 47, 58); }}
+tbody td {{ padding: 11px 14px; border-bottom: 1px solid var(--border-subtle);
+             vertical-align: middle; color: var(--text-secondary); }}
+tbody tr:last-child td {{ border-bottom: none; }}
+tbody tr:hover {{ background: rgba(56,139,253,0.04); }}
+td.num {{ text-align: right; font-variant-numeric: tabular-nums;
+          color: var(--text-primary); }}
+td.note {{ color: var(--text-tertiary); font-size: 11.5px;
+           max-width: 280px; line-height: 1.4; }}
+.verdict {{ display: inline-block; color: rgb(255,255,255);
+             padding: 3px 9px; border-radius: 12px; font-size: 11px;
+             font-weight: 600; letter-spacing: 0.3px; white-space: nowrap; }}
+a {{ color: var(--link); text-decoration: none; font-weight: 600; }}
+a:hover {{ color: var(--link-hover); text-decoration: underline; }}
+.tt {{ position: relative; cursor: help;
+       text-decoration: underline dotted; text-underline-offset: 3px;
+       text-decoration-color: var(--text-muted); }}
+.tt .tt-content {{ visibility: hidden; opacity: 0;
+                    background: rgb(20,22,27); color: var(--text-primary);
+                    text-align: left; border: 1px solid var(--border);
+                    border-radius: 6px; padding: 11px 13px;
+                    position: fixed; z-index: 1000; max-width: 280px;
+                    width: max-content; font-size: 11.5px; line-height: 1.55;
+                    font-weight: 400; transition: opacity 0.15s;
+                    pointer-events: none;
+                    box-shadow: 0 6px 20px rgba(0,0,0,0.6); }}
+.tt:hover .tt-content {{ visibility: visible; opacity: 1; }}
+.tt strong {{ color: var(--text-primary); }}
+.scroll-top {{ position: fixed; bottom: 24px; right: 24px;
+                width: 46px; height: 46px; border-radius: 50%;
+                background: rgba(56,139,253,0.92); color: #fff;
+                border: 1px solid rgba(255,255,255,0.12); cursor: pointer;
+                font-size: 20px; line-height: 1; opacity: 0;
+                transform: translateY(12px);
+                transition: opacity 0.3s ease,
+                            transform 0.3s cubic-bezier(0.4,0,0.2,1),
+                            background 0.2s ease;
+                pointer-events: none;
+                box-shadow: 0 6px 16px rgba(0,0,0,0.5);
+                z-index: 200; display: flex; align-items: center;
+                justify-content: center; padding-bottom: 2px;
+                font-family: inherit; }}
+.scroll-top.visible {{ opacity: 1; transform: translateY(0); pointer-events: auto; }}
+.scroll-top:hover {{ background: var(--accent); }}
+.scroll-top:active {{ transform: translateY(0) scale(0.95); }}
+footer {{ margin-top: 32px; color: var(--text-tertiary); font-size: 11.5px;
+           text-align: center; padding: 16px;
+           border-top: 1px solid var(--border-subtle); }}
+@media (max-width: 768px) {{
+    body {{ padding: 16px 12px; }}
+    h1 {{ font-size: 20px; }}
+    .summary-row {{ gap: 8px; }}
+    .summary-tile {{ padding: 8px 12px; font-size: 11px; }}
+    .summary-tile strong {{ font-size: 18px; }}
+    .legend-wrapper {{ flex-basis: 100%; }}
+    .legend-verdict-row {{ display: block; margin-bottom: 14px;
+                            overflow: hidden; }}
+    .legend-verdict-row .vchip {{ float: left; margin: 0 10px 4px 0;
+                                   min-width: 0; padding: 3px 8px; }}
+    .legend-verdict-row .vdef {{ display: block; font-size: 12px;
+                                  line-height: 1.55; }}
+    .legend-section-title {{ margin-bottom: 12px; }}
+    .legend-col-row {{ font-size: 12px; line-height: 1.55; }}
+    table, thead, tbody, tr, td {{ display: block; }}
+    thead {{ display: none; }}
+    .table-container {{ background: transparent; border: none; box-shadow: none; }}
+    tbody tr {{ background: var(--bg-card);
+                 border: 1px solid var(--border-subtle);
+                 border-radius: 10px; margin-bottom: 14px; padding: 16px;
+                 box-shadow: 0 2px 6px rgba(0,0,0,0.25); }}
+    tbody tr:hover {{ background: var(--bg-card); }}
+    tbody td {{ padding: 6px 0; border-bottom: none;
+                 text-align: left !important; font-size: 13px;
+                 display: flex; justify-content: space-between;
+                 gap: 12px; align-items: center;
+                 color: var(--text-secondary); }}
+    tbody td.num {{ color: var(--text-primary); }}
+    tbody td:before {{ content: attr(data-label); font-weight: 600;
+                        color: var(--text-tertiary); flex: 0 0 auto;
+                        font-size: 10px; text-transform: uppercase;
+                        letter-spacing: 0.5px; }}
+    tbody td.mobile-ticker, tbody td.mobile-verdict {{ display: block;
+                                                         padding: 0;
+                                                         margin-bottom: 8px; }}
+    tbody td.mobile-ticker:before, tbody td.mobile-verdict:before {{ content: none; }}
+    tbody td.mobile-ticker {{ font-size: 20px; font-weight: 600; }}
+    tbody td.mobile-ticker a {{ font-size: 20px; color: var(--link); }}
+    tbody td.mobile-verdict {{ margin-bottom: 12px; padding-bottom: 12px;
+                                border-bottom: 1px solid var(--border-subtle); }}
+    tbody td.mobile-note {{ margin-top: 12px; padding-top: 12px;
+                             border-top: 1px solid var(--border-subtle);
+                             color: var(--text-tertiary); font-size: 11.5px;
+                             display: block; max-width: none; }}
+    tbody td.mobile-note:before {{ content: none; }}
+    .scroll-top {{ bottom: 16px; right: 16px; width: 42px; height: 42px; }}
+}}
 </style>
 </head>
 <body>
-  <h1>diprally-engine — universe ranking</h1>
-  <div class="meta">
-    Generated {now} ·
-    {len(decisions)} tickers ·
-    broker spend ${spent:.2f} of ${cap:.2f} cap ({(spent/cap*100) if cap else 0:.0f}%)
-  </div>
-  <div class="summary">
-    <div><strong>{n_buy}</strong>BUY</div>
-    <div><strong>{n_wait}</strong>WAIT</div>
-    <div><strong>{n_refused}</strong>REFUSED</div>
-    <div><strong>{n_fail}</strong>FAIL</div>
-    <div><strong>{n_delisted}</strong>DELISTED</div>
-  </div>
-  <table id="universe">
+<div class="container">
+<h1>Dip and Rally Engine</h1>
+<div class="meta">
+    Generated <span class="meta-strong">{now}</span>
+    <span class="meta-sep">·</span>
+    <span class="meta-strong">{len(decisions)} tickers</span>
+    <span class="meta-sep">·</span>
+    Run cost <span class="meta-strong">${spent:.2f}</span> ·
+    ~<span class="meta-strong">${annual_estimate:.0f}</span> p.a. if run every trading day
+</div>
+<div class="spot-source">{html.escape(spot_source)}</div>
+<div class="summary-row">
+    <div class="summary-tile"><strong>{n_buy}</strong>BUY</div>
+    <div class="summary-tile"><strong>{n_wait}</strong>WAIT</div>
+    <div class="summary-tile"><strong>{n_refused}</strong>REFUSED</div>
+    <div class="summary-tile"><strong>{n_fail}</strong>FAIL</div>
+    <div class="legend-wrapper" id="legendWrapper">
+        <button class="legend-toggle" id="legendToggle" aria-expanded="false">
+            <span class="legend-toggle-arrow">▶</span>
+            Legend — verdicts &amp; column meanings
+        </button>
+        <div class="legend-body" id="legendBody">
+            <div class="legend-section">
+                <span class="legend-section-title">Verdicts</span>
+                <div class="legend-verdict-row">
+                    <span class="vchip" style="background:#2ea043">BUY</span>
+                    <span class="vdef">The math and AI agree on a positive-expected-return swing setup. Place a limit-buy at the Dip price; the system projects the Rally price will be touched within 60 trading days for a profit. Size externally per your own risk tolerance.</span>
+                </div>
+                <div class="legend-verdict-row">
+                    <span class="vchip" style="background:#c2580a">REFUSED-EV</span>
+                    <span class="vdef">Even if both dip and rally fill, the expected return after commissions and slippage is too low (or negative). Don't trade — the math says you lose money on average. Wait for a better setup.</span>
+                </div>
+                <div class="legend-verdict-row">
+                    <span class="vchip" style="background:#c2580a">REFUSED-PARABOLA</span>
+                    <span class="vdef">The stock is up too much in the last 30 days with no concrete bearish reason to expect mean-reversion. Buying a blow-off move without a thesis is statistically loss-making. Wait for cool-down or for a bearish catalyst (earnings reset, regulatory action, secondary offering).</span>
+                </div>
+                <div class="legend-verdict-row">
+                    <span class="vchip" style="background:#da3633">REFUSED-METHOD</span>
+                    <span class="vdef">The three independent math models (Monte Carlo, PDE, closed-form) disagree on this trade. Publishing a recommendation when the engine can't agree with itself would mean publishing a number it can't verify. Wait for inputs to stabilize.</span>
+                </div>
+                <div class="legend-verdict-row">
+                    <span class="vchip" style="background:#8957e5">REFUSED-CORRELATED</span>
+                    <span class="vdef">This stock would have been a BUY on its own, but it tracks another already-accepted BUY too closely (correlation ≥ 0.85). Trading both is one bet expressed twice — not diversification. The engine keeps the higher-EV representative of the cluster.</span>
+                </div>
+                <div class="legend-verdict-row">
+                    <span class="vchip" style="background:#6e7681">WAIT</span>
+                    <span class="vdef">At the current spot, no defensible dip-and-rally pair could be found that meets the conviction thresholds. The math couldn't surface a tradeable setup today. Re-check after the next market close.</span>
+                </div>
+                <div class="legend-verdict-row">
+                    <span class="vchip" style="background:#da3633">FAIL</span>
+                    <span class="vdef">Data fetch failed for this ticker — probably a temporary provider issue. Investigate the per-ticker log; usually resolved on the next cycle.</span>
+                </div>
+            </div>
+            <div class="legend-section">
+                <span class="legend-section-title">Columns</span>
+                <div class="legend-col-row"><strong>σ-class</strong> — volatility bucket (MID under 60%, HIGH 60-100%, EXTREME above 100% annualized std dev of returns).</div>
+                <div class="legend-col-row"><strong>Tier</strong> — AI compute level: T0 = math-only, T1 = + Pass 1 (Haiku quick scan), T2 = + Pass 2 (Sonnet adversarial critique), T3 = + stress test.</div>
+                <div class="legend-col-row"><strong>Ambiguity</strong> — math layer uncertainty score (0-1). Lower = engine is confident. Higher = AI critique has more leverage.</div>
+                <div class="legend-col-row"><strong>P(RT)</strong> — joint probability of round-trip success: both Dip AND Rally prices hit within 60 trading days. Computed from 100,000 Monte Carlo simulations.</div>
+                <div class="legend-col-row"><strong>EV bps (%)</strong> — expected return per share after friction, in basis points of dip price. 1 bp = 0.01%; +50 bps = +0.50%. Positive = profitable on average; negative = loses money on average.</div>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="table-container">
+<table id="universe">
     <thead>
-      <tr>
-        <th>Ticker</th>
-        <th>σ-class</th>
-        <th>Tier</th>
-        <th>Ambiguity</th>
-        <th>Verdict</th>
-        <th>Spot</th>
-        <th>Dip</th>
-        <th>Rally</th>
-        <th>P(RT)</th>
-        <th>EV bps</th>
-        <th>Status</th>
-      </tr>
+        <tr>
+            <th>Ticker</th>
+            <th>σ-class</th>
+            <th>Tier</th>
+            <th>Ambiguity</th>
+            <th>Verdict</th>
+            <th>Spot</th>
+            <th>Dip</th>
+            <th>Rally</th>
+            <th>P(RT)</th>
+            <th>EV bps (%)</th>
+            <th>Status</th>
+        </tr>
     </thead>
     <tbody>
 {chr(10).join(rows_html)}
     </tbody>
-  </table>
-  <footer>
-    Click column headers to sort. Tickers link to per-ticker dashboards.
-    Subprocess logs per ticker in this run's directory.
-  </footer>
+</table>
+</div>
+<footer>
+    Click ticker → opens Trading212 instrument page in new tab ·
+    Click Dip price → opens per-ticker engine dashboard ·
+    Hover dotted-underlined values for explanations ·
+    Click column headers to sort
+</footer>
+</div>
+<button class="scroll-top" id="scrollTopBtn" aria-label="Scroll to top">↑</button>
 <script>
-  // Click-to-sort header behavior. Numeric vs. text inferred from
-  // first non-empty cell in the column.
-  document.querySelectorAll('#universe thead th').forEach((th, idx) => {{
+// Legend smooth toggle
+(function() {{
+    const wrapper = document.getElementById('legendWrapper');
+    const toggle = document.getElementById('legendToggle');
+    if (!wrapper || !toggle) return;
+    toggle.addEventListener('click', function() {{
+        const isOpen = wrapper.classList.toggle('open');
+        toggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+    }});
+    document.addEventListener('click', function(e) {{
+        if (!wrapper.contains(e.target) && wrapper.classList.contains('open')) {{
+            wrapper.classList.remove('open');
+            toggle.setAttribute('aria-expanded', 'false');
+        }}
+    }});
+}})();
+// Edge-aware tooltip positioning
+(function() {{
+    document.querySelectorAll('.tt').forEach(function(tt) {{
+        const tip = tt.querySelector('.tt-content');
+        if (!tip) return;
+        function position() {{
+            const anchorRect = tt.getBoundingClientRect();
+            tip.style.visibility = 'hidden';
+            tip.style.opacity = '1';
+            tip.style.left = '0';
+            tip.style.top = '0';
+            const tipRect = tip.getBoundingClientRect();
+            const vw = window.innerWidth;
+            const margin = 8;
+            let top = anchorRect.top - tipRect.height - 8;
+            if (top < margin) top = anchorRect.bottom + 8;
+            let left = anchorRect.left + (anchorRect.width / 2) - (tipRect.width / 2);
+            if (left + tipRect.width > vw - margin) left = vw - tipRect.width - margin;
+            if (left < margin) left = margin;
+            tip.style.left = left + 'px';
+            tip.style.top = top + 'px';
+            tip.style.visibility = '';
+        }}
+        tt.addEventListener('mouseenter', position);
+        tt.addEventListener('focus', position);
+        window.addEventListener('scroll', function() {{
+            if (tt.matches(':hover')) position();
+        }}, {{passive: true}});
+        window.addEventListener('resize', function() {{
+            if (tt.matches(':hover')) position();
+        }});
+    }});
+}})();
+// Scroll-to-top button
+(function() {{
+    const btn = document.getElementById('scrollTopBtn');
+    if (!btn) return;
+    let hideTimeout;
+    function onScroll() {{
+        if (window.scrollY > 300) {{
+            btn.classList.add('visible');
+            clearTimeout(hideTimeout);
+            hideTimeout = setTimeout(function() {{
+                btn.classList.remove('visible');
+            }}, 1500);
+        }} else {{
+            btn.classList.remove('visible');
+            clearTimeout(hideTimeout);
+        }}
+    }}
+    window.addEventListener('scroll', onScroll, {{passive: true}});
+    btn.addEventListener('click', function() {{
+        window.scrollTo({{top: 0, behavior: 'smooth'}});
+    }});
+    btn.addEventListener('mouseenter', function() {{ clearTimeout(hideTimeout); }});
+    btn.addEventListener('mouseleave', function() {{
+        if (window.scrollY > 300) {{
+            hideTimeout = setTimeout(function() {{
+                btn.classList.remove('visible');
+            }}, 1500);
+        }}
+    }});
+}})();
+// Click-to-sort headers (preserve existing behavior)
+document.querySelectorAll('#universe thead th').forEach((th, idx) => {{
     let asc = true;
     th.addEventListener('click', () => {{
-      const tbody = th.closest('table').querySelector('tbody');
-      const rows = Array.from(tbody.querySelectorAll('tr'));
-      const num_re = /^[+-]?\\$?[\\d,.]+%?$/;
-      rows.sort((a, b) => {{
-        const av = a.children[idx].textContent.trim();
-        const bv = b.children[idx].textContent.trim();
-        const a_num = num_re.test(av) ? parseFloat(av.replace(/[$,%]/g,'')) : NaN;
-        const b_num = num_re.test(bv) ? parseFloat(bv.replace(/[$,%]/g,'')) : NaN;
-        let cmp;
-        if (!isNaN(a_num) && !isNaN(b_num)) cmp = a_num - b_num;
-        else cmp = av.localeCompare(bv);
-        return asc ? cmp : -cmp;
-      }});
-      asc = !asc;
-      rows.forEach(r => tbody.appendChild(r));
+        const tbody = th.closest('table').querySelector('tbody');
+        const rows = Array.from(tbody.querySelectorAll('tr'));
+        const num_re = /^[+-]?\\$?[\\d,.]+%?$/;
+        rows.sort((a, b) => {{
+            const av = a.children[idx].textContent.trim();
+            const bv = b.children[idx].textContent.trim();
+            const a_num = num_re.test(av) ? parseFloat(av.replace(/[$,%]/g,'')) : NaN;
+            const b_num = num_re.test(bv) ? parseFloat(bv.replace(/[$,%]/g,'')) : NaN;
+            let cmp;
+            if (!isNaN(a_num) && !isNaN(b_num)) cmp = a_num - b_num;
+            else cmp = av.localeCompare(bv);
+            return asc ? cmp : -cmp;
+        }});
+        asc = !asc;
+        rows.forEach(r => tbody.appendChild(r));
     }});
-  }});
+}});
 </script>
 </body>
 </html>

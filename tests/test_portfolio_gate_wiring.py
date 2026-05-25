@@ -166,7 +166,9 @@ def test_gate_skipped_when_only_one_buy(tmp_path, monkeypatch):
     run_dir.mkdir()
     path = orch.generate_aggregate_dashboard(runs, allocation, run_dir)
     html = path.read_text()
-    assert "REFUSED-CORRELATED" not in html
+    # 2026-05-25 dashboard refresh: "REFUSED-CORRELATED" appears in the
+    # always-present legend text. Check for the verdict pill in a row instead.
+    assert 'class="verdict" style="background:#8957e5">REFUSED-CORRELATED' not in html
 
 
 def test_gate_skipped_when_no_buys(tmp_path, monkeypatch):
@@ -179,7 +181,9 @@ def test_gate_skipped_when_no_buys(tmp_path, monkeypatch):
     run_dir.mkdir()
     path = orch.generate_aggregate_dashboard(runs, allocation, run_dir)
     html = path.read_text()
-    assert "REFUSED-CORRELATED" not in html
+    # 2026-05-25 dashboard refresh: "REFUSED-CORRELATED" appears in the
+    # always-present legend text. Check for the verdict pill in a row instead.
+    assert 'class="verdict" style="background:#8957e5">REFUSED-CORRELATED' not in html
 
 
 def test_verdict_color_includes_correlated():

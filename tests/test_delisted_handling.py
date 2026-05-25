@@ -131,15 +131,18 @@ def test_summary_includes_delisted_status(tmp_path, monkeypatch):
 
 
 def test_delisted_does_not_count_as_p1_fail_in_dashboard(tmp_path, monkeypatch):
-    """The dashboard tile row should split DELISTED from FAIL so
-    a universe with 1 delisted ticker doesn't show 1 FAIL."""
+    """The dashboard should split DELISTED from FAIL so a universe with
+    1 delisted ticker doesn't show 1 FAIL. Post-2026-05-25 dashboard
+    refresh: DELISTED no longer has its own summary tile (operator said
+    VELO3D was a one-off), but the table row still gets the DELISTED
+    verdict label and color, distinct from FAIL."""
     monkeypatch.setattr(orch, "_OUTPUT_ROOT", tmp_path)
     runs = [_delisted_run("VELO3D")]
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     path = orch.generate_aggregate_dashboard(runs, None, run_dir)
     html = path.read_text()
-    # DELISTED tile is present, distinct count from FAIL.
-    assert ">DELISTED" in html
-    assert "<strong>1</strong>DELISTED" in html
+    # DELISTED still has its own row verdict (separate from FAIL)
+    assert ">DELISTED<" in html
+    # FAIL counter shows 0 — delisted ticker isn't counted as a FAIL
     assert "<strong>0</strong>FAIL" in html

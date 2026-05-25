@@ -145,13 +145,24 @@ def test_render_dashboard_html_contains_all_tickers(tmp_path):
 
 
 def test_render_dashboard_links_use_href_prefix(tmp_path):
-    """run_dir copy uses ../; stable copy uses bare name. Verify both."""
-    runs = [_make_run("INTC", 0.3, True, "MID")]
-    decisions = [orch._decision_from_run(r) for r in runs]
+    """run_dir copy uses ../; stable copy uses bare name. Verify both.
+    Post-2026-05-25 dashboard refresh: the per-ticker engine dashboard
+    link is on the Dip cell (Trading212 URL is on the Ticker cell).
+    Dip cell only renders the link when dip_target is set, so this
+    test stubs a TickerDecision directly with a populated dip."""
+    decisions = [orch.TickerDecision(
+        ticker="INTC", sigma_class="MID", tier="T0",
+        ambiguity=0.3, qualifies_for_t2_plus=True,
+        spot=100.0, dip_target=98.0, rally_target=110.0,
+        p_round_trip=0.62, ev_bps_of_dip=120.0,
+        verdict="BUY", status_note="test",
+    )]
     inside = orch._render_dashboard_html(decisions, None, href_prefix="../")
     stable = orch._render_dashboard_html(decisions, None, href_prefix="")
     assert '"../intc_dipnrally_dashboard.html"' in inside
     assert '"intc_dipnrally_dashboard.html"' in stable
+    # Ticker cell links to Trading212 (separate from dashboard link)
+    assert "trading212.com/trading-instruments/invest/INTC.US" in inside
 
 
 def test_generate_dashboard_writes_both_copies(tmp_path, monkeypatch):
