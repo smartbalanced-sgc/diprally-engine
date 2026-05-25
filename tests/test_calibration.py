@@ -76,7 +76,7 @@ def test_round_trip_completed_dip_then_rally():
     """Path: spot $100 → dip to $82 (touched dip $85) day 10 → rally to
     $125 (touched rally $120) day 40. Round-trip completes."""
     closes = [100] * 5 + [95, 90, 87, 84, 82, 86, 92, 100, 108, 115, 122, 125]
-    closes += [125] * (45 - len(closes) + 5)  # pad to ~50 bars
+    closes += [125] * (65 - len(closes))  # pad to 65 bars (PR #76: ≥60 needed)
     row = _row()
     outcome = resolve_one_row(row, _hist(closes), today=TODAY_AFTER_HORIZON)
     assert outcome.status == STATUS_RESOLVED
@@ -96,7 +96,7 @@ def test_rally_then_dip_is_NOT_round_trip():
     first) → dip to $80 day 30. Even though both targets are touched,
     round_trip_completed is False because dip wasn't first."""
     closes = [100] * 2 + [110, 118, 125] + [120, 110, 100, 92, 85, 78, 80]
-    closes += [80] * (50 - len(closes))
+    closes += [80] * (65 - len(closes))
     row = _row()
     outcome = resolve_one_row(row, _hist(closes), today=TODAY_AFTER_HORIZON)
     assert outcome.status == STATUS_RESOLVED
@@ -112,7 +112,7 @@ def test_bag_hold_realized():
     # Dip target $85, rally target $120. Path: drops to $78, recovers
     # to $90 but never touches rally, ends at $82 (below dip).
     closes = [100, 95, 88, 82, 78, 80, 85, 90, 88, 85, 82, 80, 82]
-    closes += [82] * (50 - len(closes))
+    closes += [82] * (65 - len(closes))
     row = _row()
     outcome = resolve_one_row(row, _hist(closes), today=TODAY_AFTER_HORIZON)
     assert outcome.status == STATUS_RESOLVED
@@ -125,7 +125,7 @@ def test_bag_hold_realized():
 
 def test_neither_touched():
     """Path stays in [86, 119] — neither dip nor rally touched."""
-    closes = [100] * 50
+    closes = [100] * 65
     row = _row()
     outcome = resolve_one_row(row, _hist(closes), today=TODAY_AFTER_HORIZON)
     assert outcome.status == STATUS_RESOLVED
@@ -139,7 +139,7 @@ def test_no_prediction_returns_open():
     """Row with empty dip/rally targets (no qualifying pair) → OPEN
     (nothing to resolve, math layer didn't produce a prediction)."""
     row = _row(dip=0.0, rally=0.0)
-    outcome = resolve_one_row(row, _hist([100] * 50), today=TODAY_AFTER_HORIZON)
+    outcome = resolve_one_row(row, _hist([100] * 65), today=TODAY_AFTER_HORIZON)
     assert outcome.status == STATUS_OPEN
 
 
@@ -153,7 +153,7 @@ def test_missing_history_returns_open():
 def test_realized_max_drawdown_computed():
     """Drawdown from spot $100 to lowest close (say $72) → 28%."""
     closes = [100, 95, 88, 80, 72, 78, 85, 92, 95, 90, 85, 80, 75, 72]
-    closes += [72] * (50 - len(closes))
+    closes += [72] * (65 - len(closes))
     row = _row()
     outcome = resolve_one_row(row, _hist(closes), today=TODAY_AFTER_HORIZON)
     assert outcome.realized_max_drawdown == pytest.approx(0.28, abs=0.01)
@@ -162,7 +162,7 @@ def test_realized_max_drawdown_computed():
 def test_apply_outcome_round_trip_through_csv_strings():
     """apply_outcome_to_row serializes booleans to '1'/'0' so the row
     round-trips cleanly through csv.DictWriter."""
-    closes = [100] * 5 + [90, 84, 80, 86, 100, 115, 122] + [122] * 45
+    closes = [100] * 5 + [90, 84, 80, 86, 100, 115, 122] + [122] * 60
     row = _row()
     outcome = resolve_one_row(row, _hist(closes), today=TODAY_AFTER_HORIZON)
     merged = apply_outcome_to_row(row, outcome)
@@ -178,7 +178,7 @@ def test_apply_outcome_round_trip_through_csv_strings():
 def test_apply_does_not_mutate_input():
     row = _row()
     before = dict(row)
-    outcome = resolve_one_row(row, _hist([100] * 50), today=TODAY_AFTER_HORIZON)
+    outcome = resolve_one_row(row, _hist([100] * 65), today=TODAY_AFTER_HORIZON)
     apply_outcome_to_row(row, outcome)
     assert row == before
 
@@ -186,7 +186,7 @@ def test_apply_does_not_mutate_input():
 def test_idempotent_resolution():
     """resolve_history called twice on the same rows shouldn't change
     already-RESOLVED rows or double-count newly-resolved ones."""
-    closes = [100] * 50
+    closes = [100] * 65
     row = _row()
     rows = [row]
     df = _hist(closes)

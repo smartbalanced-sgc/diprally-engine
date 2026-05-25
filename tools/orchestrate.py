@@ -75,6 +75,38 @@ def main():
         print("ERROR: FMP_API_KEY not set", file=sys.stderr)
         return 1
 
+    # PR #76: market-state pre-flight. Banner if today is closed; loud
+    # failure if NYSE library and FMP runtime status DISAGREE (one of
+    # them is stale → operator decides whether to proceed).
+    from src.market_calendar import (
+        is_trading_day, last_trading_day, holiday_name,
+        verify_market_state_via_fmp,
+    )
+    _today = datetime.now().date()
+    if not is_trading_day(_today):
+        last_open = last_trading_day(_today)
+        h = holiday_name(_today) or "non-trading day"
+        print()
+        print("=" * 72)
+        print(f"  ⚠  NYSE CLOSED TODAY  ({h})")
+        print(f"  Last trading day: {last_open:%a %Y-%m-%d}")
+        print("  Quotes will be that session's last trade. Engine analysis")
+        print("  is correct for THAT data, not 'as of now'. Operator decides")
+        print("  whether to act before next open. AI cache keys on the")
+        print("  last trading day to avoid stale-data pollution.")
+        print("=" * 72)
+        print()
+    fmp_check = verify_market_state_via_fmp(os.getenv("FMP_API_KEY"))
+    if fmp_check is not None and not fmp_check["agree"]:
+        print()
+        print("=" * 72)
+        print("  ⚠  MARKET-STATE DISAGREEMENT (NYSE library vs FMP)")
+        print(f"  library says trading day = {fmp_check['library_open']}")
+        print(f"  FMP runtime says open NOW = {fmp_check['fmp_open_now']}")
+        print("  One source is stale. Investigate before trusting verdicts.")
+        print("=" * 72)
+        print()
+
     # Phase 1.
     results = run_phase1(tickers, run_dir, max_parallel=args.max_parallel)
 

@@ -874,7 +874,11 @@ def signal_from_catalyst_proximity(catalysts, horizon_days):
     # Thresholds in config signals.catalyst_proximity (D-W2-6).
     cp = SIGNAL_CATALYST_PROXIMITY
     today = datetime.now().date()
-    horizon_end = today + timedelta(days=horizon_days)
+    # PR #76: horizon_days is TRADING days; convert via market calendar
+    # (was `today + timedelta(days=horizon_days)`, which under-counted
+    # the actual horizon by ~28%).
+    from src.market_calendar import add_trading_days
+    horizon_end = add_trading_days(today, horizon_days)
     mag_map = cp.magnitude_drift_map
     mag_default = mag_map.get("med", 0.05)
     dir_sign = {"bullish": 1.0, "bearish": -1.0, "two-sided": 0.0}

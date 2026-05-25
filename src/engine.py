@@ -248,10 +248,14 @@ def _has_bearish_derating_catalyst(effective_ai, horizon_days: int) -> bool:
     refuses parabolic dip-buys without a thesis)."""
     if not effective_ai or not effective_ai.catalysts:
         return False
-    from datetime import datetime as _dt, timedelta as _td
+    from datetime import datetime as _dt
     from src.signals import parse_catalyst_date
+    from src.market_calendar import add_trading_days
     today = _dt.now().date()
-    horizon_end = today + _td(days=horizon_days)
+    # PR #76: horizon_days is TRADING days (MC dt=1/252). Calendar-day
+    # math was creating a ~24-day dead zone at the tail (28% of the
+    # actual horizon).
+    horizon_end = add_trading_days(today, horizon_days)
     for c in effective_ai.catalysts:
         if not isinstance(c, dict):
             continue
@@ -286,10 +290,13 @@ def _has_supporting_catalyst(effective_ai, horizon_days: int) -> bool:
     """
     if not effective_ai or not effective_ai.catalysts:
         return False
-    from datetime import datetime as _dt, timedelta as _td
+    from datetime import datetime as _dt
     from src.signals import parse_catalyst_date
+    from src.market_calendar import add_trading_days
     today = _dt.now().date()
-    horizon_end = today + _td(days=horizon_days)
+    # PR #76: horizon_days is TRADING days — see note on
+    # _has_bearish_derating_catalyst above.
+    horizon_end = add_trading_days(today, horizon_days)
     for c in effective_ai.catalysts:
         if not isinstance(c, dict):
             continue
@@ -852,14 +859,17 @@ def run_backtest_layer(history_path, current_price):
     rally_hits = 0
 
     today = datetime.now().date()
+    from src.market_calendar import trading_days_after as _tda
     for row in rows:
         try:
             row_date = datetime.strptime(row["date"][:10], "%Y-%m-%d").date()
         except Exception:
             continue
-        days_elapsed = (today - row_date).days
+        # PR #76: horizon is TRADING days (MC dt=1/252). Was using
+        # calendar elapsed → over-resolved by ~28%.
+        td_elapsed = _tda(row_date, today)
         horizon = int(row.get("horizon_days", DEFAULT_HORIZON_DAYS))
-        if days_elapsed < horizon:
+        if td_elapsed < horizon:
             continue
         try:
             dip_pred = float(row.get("recommended_dip", 0))
@@ -881,15 +891,18 @@ def run_backtest_layer(history_path, current_price):
 def _build_per_day_status(rows, current_price):
     """For each prior prediction, classify status."""
     today = datetime.now().date()
+    from src.market_calendar import trading_days_after as _tda
     out = []
     for row in rows:
         try:
             row_date = datetime.strptime(row["date"][:10], "%Y-%m-%d").date()
         except Exception:
             continue
-        days_elapsed = (today - row_date).days
+        # PR #76: count trading days, not calendar days, for the
+        # 'remaining' bar in the per-day status display.
+        td_elapsed = _tda(row_date, today)
         horizon = int(row.get("horizon_days", DEFAULT_HORIZON_DAYS))
-        remaining = max(0, horizon - days_elapsed)
+        remaining = max(0, horizon - td_elapsed)
         try:
             dip_pred = float(row.get("recommended_dip", 0))
             rally_pred = float(row.get("recommended_rally", 0))
@@ -1129,16 +1142,20 @@ def run_pipeline(args) -> int:
     # depends on vol_schedule being accurate; passing [] was degrading bridge
     # fidelity on every full-AI run with peer earnings in window.
     peer_earnings_dts = []
+    from src.market_calendar import trading_days_after as _tda
+    today_d = datetime.now().date()
     for p in peer_tickers:
         try:
             pe = fetch_next_earnings(p, api_key)
             if pe and pe.get("date"):
                 dt = datetime.strptime(pe["date"][:10], "%Y-%m-%d")
-                # Only include if within horizon window
-                days_away = (dt.date() - datetime.now().date()).days
-                if 0 <= days_away <= horizon_days:
+                # PR #76: horizon_days is TRADING days. Calendar-day
+                # filter was dropping peer events 60-84 cal days out
+                # that fall inside the 60-trading-day horizon.
+                td_away = _tda(today_d, dt.date())
+                if 0 <= td_away < horizon_days:
                     peer_earnings_dts.append(dt)
-                    print(f"   Peer earnings in horizon: {p} on {pe['date']} ({days_away}d)")
+                    print(f"   Peer earnings in horizon: {p} on {pe['date']} ({td_away} trading d)")
         except Exception as e:
             print(f"   WARNING: peer earnings fetch failed for {p}: {e}")
 

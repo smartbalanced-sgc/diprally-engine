@@ -580,18 +580,55 @@ def _trading212_url(ticker: str) -> str:
 
 def _spot_source_line() -> str:
     """Plain-English line indicating whether spot prices are live
-    intraday quotes or carried-forward closes. Determined from day-of-week
-    + local-time heuristic; conservative — when uncertain says 'live
-    quote at run time'."""
+    intraday quotes or carried-forward closes. PR #76: holiday-aware —
+    distinguishes weekend, NYSE holiday (Memorial Day, Good Friday, etc.),
+    half-day session, and regular session."""
     now = datetime.now()
-    weekday = now.weekday()  # Mon=0 ... Sun=6
-    if weekday >= 5:  # Saturday / Sunday
-        return (
-            "Spot prices: Prior close (markets closed weekend). Weekend "
-            "quotes carry forward Friday's last regular-session close."
+    today = now.date()
+    try:
+        from src.market_calendar import (
+            is_trading_day, last_trading_day, holiday_name, early_close_time,
         )
-    # Weekday — we don't have ET timezone info reliably; just label
-    # honestly as "live FMP quote queried at run time."
+    except Exception:
+        # Defensive: fall back to weekday-only logic if the calendar
+        # module is unavailable (shouldn't happen post-PR #76).
+        weekday = now.weekday()
+        if weekday >= 5:
+            return (
+                "Spot prices: Prior close (markets closed weekend). Weekend "
+                "quotes carry forward Friday's last regular-session close."
+            )
+        return (
+            "Spot prices: Live FMP quote queried at run time "
+            "(intraday may be delayed up to 15 min; after-hours = today's close)."
+        )
+
+    if not is_trading_day(today):
+        last_open = last_trading_day(today)
+        h = holiday_name(today)
+        if today.weekday() >= 5:
+            return (
+                f"⚠ Spot prices: Markets closed (weekend). Quotes shown are "
+                f"the last regular-session close from {last_open:%a %Y-%m-%d}. "
+                f"Engine analysis is correct for that data; act on next "
+                f"trading day's open with awareness of any overnight gap."
+            )
+        return (
+            f"⚠ Spot prices: NYSE CLOSED today ({h or 'holiday'}). Quotes "
+            f"shown are the last regular-session close from "
+            f"{last_open:%a %Y-%m-%d}. Engine analysis is correct for that "
+            f"data; act on next trading day's open with awareness of any "
+            f"overnight gap."
+        )
+
+    # Today IS a trading day. Half-day vs full session.
+    ec = early_close_time(today)
+    if ec is not None:
+        return (
+            f"Spot prices: Live FMP quote — NYSE half-day session "
+            f"(early close {ec.strftime('%H:%M')} ET). After early close "
+            f"quotes are static."
+        )
     return (
         "Spot prices: Live FMP quote queried at run time "
         "(intraday may be delayed up to 15 min; after-hours = today's close)."

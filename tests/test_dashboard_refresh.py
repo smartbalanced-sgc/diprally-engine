@@ -180,33 +180,43 @@ def test_edge_aware_tooltip_script_present():
 def test_spot_source_line_present():
     html = orch._render_dashboard_html([_make_buy("X")], None)
     assert "Spot prices:" in html
-    # One of the two states (weekend close OR live quote) must be present
+    # PR #76: banner now distinguishes weekend / NYSE holiday / half-day /
+    # regular trading day. Any of these is acceptable on a given run.
     assert (
-        "markets closed" in html
+        "Markets closed (weekend)" in html
+        or "NYSE CLOSED today" in html
+        or "half-day session" in html
         or "Live FMP quote" in html
     )
 
 
 def test_spot_source_weekend_logic():
-    """On weekends, indicate prior close. _spot_source_line() reads
-    datetime.now() at module evaluation, so this test verifies the
-    function returns the right string for both states."""
+    """On weekends, indicate prior close. PR #76 also distinguishes NYSE
+    holidays explicitly."""
     from datetime import datetime
     from unittest.mock import patch
 
-    # Mock a Saturday
-    with patch("src.orchestrator.datetime") as mock_dt:
-        mock_dt.now.return_value = datetime(2026, 5, 23, 12, 0)  # Saturday
-        mock_dt.side_effect = lambda *args, **kw: datetime(*args, **kw)
+    # Mock a Saturday — pass-through patcher that overrides only .now()
+    class _DT(datetime):
+        @classmethod
+        def now(cls, tz=None): return cls._fixed
+    _DT._fixed = datetime(2026, 5, 23, 12, 0)
+    with patch("src.orchestrator.datetime", _DT):
         line = orch._spot_source_line()
-        assert "markets closed weekend" in line
+        assert "Markets closed (weekend)" in line
 
-    # Mock a Tuesday
-    with patch("src.orchestrator.datetime") as mock_dt:
-        mock_dt.now.return_value = datetime(2026, 5, 26, 14, 0)  # Tuesday
-        mock_dt.side_effect = lambda *args, **kw: datetime(*args, **kw)
+    # Mock a regular Tuesday
+    _DT._fixed = datetime(2026, 5, 26, 14, 0)
+    with patch("src.orchestrator.datetime", _DT):
         line = orch._spot_source_line()
         assert "Live FMP quote" in line
+
+    # Mock Memorial Day Monday (NYSE holiday) — new banner.
+    _DT._fixed = datetime(2026, 5, 25, 14, 0)
+    with patch("src.orchestrator.datetime", _DT):
+        line = orch._spot_source_line()
+        assert "NYSE CLOSED today" in line
+        assert "Memorial Day" in line
 
 
 # =============================================================================

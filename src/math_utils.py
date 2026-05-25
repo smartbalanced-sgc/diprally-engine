@@ -618,12 +618,31 @@ def build_catalyst_vol_schedule(
     today = datetime.now().date()
     schedule = np.ones(horizon_days)
 
+    # PR #76: index into `schedule` is a TRADING-day offset (MC dt=1/252).
+    # Was using calendar-day delta — earnings 21 trading days out (~30
+    # calendar) was written to schedule[30] (= 9 trading days late),
+    # corrupting Brownian-bridge fidelity (sacred #9).
+    from src.market_calendar import trading_days_after as _tda
+
+    def _trading_offset(event_date):
+        """Trading-day offset from today to event_date for the MC grid.
+        schedule[0] = today's vol; schedule[k] = vol on the k-th trading
+        day after today. Returns None if event is before today or beyond
+        horizon."""
+        try:
+            n = _tda(today, event_date)
+        except Exception:
+            return None
+        if n < 0 or n >= horizon_days:
+            return None
+        return n
+
     if self_earnings_date:
         try:
             ed = self_earnings_date.date() if hasattr(self_earnings_date, "date") else self_earnings_date
-            d_idx = (ed - today).days
+            d_idx = _trading_offset(ed)
             window = VOL_SCHEDULE_MULTIPLIERS["self_earnings_window_days"]
-            if 0 <= d_idx < horizon_days:
+            if d_idx is not None:
                 schedule[d_idx] = max(schedule[d_idx], VOL_SCHEDULE_MULTIPLIERS["self_earnings_day"])
                 for off in range(1, window + 1):
                     if d_idx - off >= 0:
@@ -642,9 +661,9 @@ def build_catalyst_vol_schedule(
     for ped in peer_earnings_dates:
         try:
             d = ped.date() if hasattr(ped, "date") else ped
-            d_idx = (d - today).days
+            d_idx = _trading_offset(d)
             window = VOL_SCHEDULE_MULTIPLIERS["peer_earnings_window_days"]
-            if 0 <= d_idx < horizon_days:
+            if d_idx is not None:
                 schedule[d_idx] = max(schedule[d_idx], VOL_SCHEDULE_MULTIPLIERS["peer_earnings_day"])
                 for off in range(1, window + 1):
                     if d_idx - off >= 0:
@@ -663,8 +682,8 @@ def build_catalyst_vol_schedule(
     for mev in macro_event_dates:
         try:
             d = mev.date() if hasattr(mev, "date") else mev
-            d_idx = (d - today).days
-            if 0 <= d_idx < horizon_days:
+            d_idx = _trading_offset(d)
+            if d_idx is not None:
                 schedule[d_idx] = max(schedule[d_idx], VOL_SCHEDULE_MULTIPLIERS["macro_event_day"])
         except Exception:
             pass
