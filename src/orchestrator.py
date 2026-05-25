@@ -1309,6 +1309,19 @@ def generate_aggregate_dashboard(results: list[TickerRun],
                     ev_bps=d.ev_bps_of_dip if d.ev_bps_of_dip is not None else 0.0,
                     history_df=hist_df,
                 ))
+            # PR #77: surface the gate-excluded tickers on the dashboard
+            # too. These BUYs were dropped at `_history_as_price_df`
+            # (no FMP data / <30 bars / fetch failure) — gate never saw
+            # them. Previously the skip was only printed; the trader saw
+            # a BUY with no LIMITED-HISTORY hint.
+            for d in decisions:
+                if d.ticker in skipped_for_history:
+                    existing = d.status_note or ""
+                    sep = " · " if existing else ""
+                    d.status_note = (
+                        f"{existing}{sep}⚠ LIMITED-HISTORY: bypassed "
+                        f"correlation gate (no usable price history)"
+                    )
             if len(recs) < 2:
                 print(f"   Portfolio gate: skipped — only {len(recs)} "
                       f"BUY(s) have usable price history "
@@ -1331,13 +1344,28 @@ def generate_aggregate_dashboard(results: list[TickerRun],
                         existing = d.status_note or ""
                         sep = " · " if existing else ""
                         d.status_note = f"{existing}{sep}⚠ CORRELATED: {reason}"
+                # PR #77: also surface gate.bypassed — tickers passed to
+                # the gate but with insufficient history to actually
+                # evaluate correlation (passed _history_as_price_df's
+                # 30-bar floor but < window_days+1).
+                for d in decisions:
+                    if d.ticker in gate.bypassed:
+                        reason = gate.bypassed[d.ticker]
+                        existing = d.status_note or ""
+                        sep = " · " if existing else ""
+                        d.status_note = (
+                            f"{existing}{sep}⚠ LIMITED-HISTORY: {reason}"
+                        )
                 noted = len(gate.dropped)
                 print(f"   Portfolio gate (INFORMATIONAL): evaluated {len(recs)} "
-                      f"BUY(s), noted {noted} correlation pair(s) "
+                      f"BUY(s), noted {noted} correlation pair(s), "
+                      f"{len(gate.bypassed)} bypassed for limited history "
                       f"(threshold ρ ≥ {_gate_threshold_for_log():.2f}). "
                       f"All BUYs remain visible — operator decides.")
                 for t, reason in gate.dropped.items():
                     print(f"     • {t}: {reason}")
+                for t, reason in gate.bypassed.items():
+                    print(f"     ⚠ bypassed {t}: {reason}")
     except Exception as _e:
         # Gate failure must NOT block dashboard generation. Log + skip.
         print(f"   WARNING: portfolio gate skipped: {_e}")

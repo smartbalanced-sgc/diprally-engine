@@ -1196,8 +1196,13 @@ def run_pipeline(args) -> int:
     # exists. Used to re-validate newly-deployed AI steps (e.g. PR #33
     # catalyst verification) on tickers whose cache predates the new step.
     bust_cache = getattr(args, "bust_cache", False)
+    # PR #77: pass the current tier so ai_cache can refuse a lower-tier
+    # replay. A T1 cache (Pass 1 only) cannot serve a T3 request, which
+    # requires Pass 2 + verification + stress. Previously the engine
+    # claimed tier=T3 at $0.00 cost while serving T1 data.
     cache_payload = (None if (not tier.runs_ai or bust_cache)
-                     else ai_cache.get_cached(ticker, spot))
+                     else ai_cache.get_cached(ticker, spot,
+                                              current_tier=tier.name))
     if bust_cache:
         print("AI cache bypass (--bust-cache): forcing fresh Pass 1/2/verify/stress")
     if cache_payload:
@@ -1596,6 +1601,11 @@ def run_pipeline(args) -> int:
     if not cache_hit and not args.no_ai and pass1_raw_for_cache:
         try:
             ai_cache.save(ticker, spot, {
+                # PR #77: persist the tier so a later same-day rerun at
+                # a higher tier can correctly invalidate (vs blindly
+                # replaying a Pass-1-only cache as if it were a Pass-2+
+                # T3 result).
+                "tier_name": tier.name,
                 "pass1_raw": pass1_raw_for_cache,
                 "pass1_cost": pass1_cost_charged,
                 "pass1_sources": pass1_sources_for_cache,
@@ -1606,9 +1616,10 @@ def run_pipeline(args) -> int:
                 "stress_results": catalyst_stress_results,
                 "stress_cost": catalyst_stress_cost,
                 "models_used": {
-                    "pass1": MODEL_OPUS,
-                    "pass2": MODEL_SONNET,
-                    "stress": "claude-haiku-4-5-20251001",  # MODEL_HAIKU
+                    "pass1": tier.pass1_model,
+                    "pass2": tier.pass2_model,
+                    "stress": tier.stress_model,
+                    "catalyst_verification": tier.catalyst_verification_model,
                 },
             })
         except Exception as e:
