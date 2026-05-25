@@ -114,13 +114,21 @@ class SigmaClassThresholdConfig(_StrictModel):
     """One row in the sigma_classes table. PR #21 added conviction;
     PR #22 added grid; PR #23 added friction_bps_round_trip;
     PR #24 added panic_floor_pct + ai_vol_regime_multipliers.
-    Class table is now feature-complete — every per-class lever lives
-    here."""
+    2026-05-24 recalibration (PR #70) added per-class ev_hurdle_bps
+    and parabola_mom_30d_threshold so each σ-class can apply
+    purpose-fit thresholds instead of one-size-fits-all global values.
+    """
     conviction: SigmaClassConvictionConfig
     grid: SigmaClassGridConfig
     friction_bps_round_trip: float = Field(ge=0.0)
     panic_floor_pct: float = Field(gt=0.0, lt=1.0)
     ai_vol_regime_multipliers: dict[str, float]
+    # PR #70 per-class trade-quality + parabola thresholds. Optional with
+    # defaults to the legacy globals when a class entry omits them, so
+    # the schema stays backward-compatible with any YAML that hasn't been
+    # updated. Always present in the shipped config.
+    ev_hurdle_bps: Optional[float] = Field(default=None, ge=0.0)
+    parabola_mom_30d_threshold: Optional[float] = Field(default=None, ge=0.0)
 
 
 class HorizonConfig(_StrictModel):

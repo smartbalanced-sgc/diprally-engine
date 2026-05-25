@@ -1,4 +1,40 @@
-# Operator runbook (PR #60)
+# Operator runbook (PR #60, updated PR #70)
+
+## PR #70 recalibration (2026-05-24): per-σ-class thresholds
+
+The engine's refusal gates are now σ-class-aware. Previously a single global
+threshold applied to MID, HIGH, and EXTREME alike — which was too strict for
+HIGH/EXTREME names where σ regularly exceeds 60-100%.
+
+| Threshold | MID | HIGH | EXTREME |
+|---|---|---|---|
+| Dip conviction P(touch) | 65% | 60% | 55% |
+| Rally conviction P(rally\|dip) | 70% | 65% | 55% |
+| EV hurdle | 50 bps (0.50%) | 25 bps (0.25%) | 25 bps (0.25%) |
+| Parabola filter mom_30d | +50% | +80% | +100% |
+
+The lower EV hurdle on HIGH/EXTREME (25 bps / 0.25% vs 50 bps / 0.50%)
+acknowledges that the engine's "blind execution" point-estimate
+understates the EV available to an active swing trader who times entry/
+exit discretionarily. Realized EV from active management typically adds
++50-100 bps (+0.50-1.00%) above the engine's point estimate.
+
+The looser rally conviction on HIGH/EXTREME (65% and 55%) reflects that
+with σ > 60-100% over 60 days, the post-dip price distribution is so
+wide that the original 75% conditional rally requirement was
+mathematically unachievable — the engine literally couldn't surface
+HIGH/EXTREME setups regardless of underlying quality.
+
+The higher parabola threshold on HIGH/EXTREME (+80% and +100%)
+recognizes that for the target universe (volatile AI/semi/momentum
+names), mom_30d in the 30-80% range is typical regime behavior, not a
+tail event. Only +80%+ for HIGH and +100%+ for EXTREME indicate genuine
+exhaustion.
+
+**Trade-off**: more BUY candidates per cycle (expect 5-10 instead of
+2-3), with marginally lower per-trade quality. The trader's active
+management (manual stops, discretionary exit timing) supplies the edge
+the engine's "blind execution" math discounts.
 
 Use this when reading the daily report and the engine has REFUSED
 recommendations across the universe — current frothy-market state.

@@ -1476,16 +1476,27 @@ def run_pipeline(args) -> int:
     # KEEP best (so sensitivity + path metrics still render — trader needs the
     # context to understand WHY refusal fired). The refusal flag overrides the
     # headline section in reporter.format_report.
+    # PR #70 (2026-05-24): per-σ-class EV-hurdle. Engine now reads the
+    # class-specific threshold from sigma_classes[<CLASS>].ev_hurdle_bps
+    # instead of the legacy global. MID stays at 50 bps (0.50%);
+    # HIGH/EXTREME drop to 25 bps (0.25%) to acknowledge active-trader
+    # execution alpha (manual stop / exit timing). Falls back to global
+    # when class entry omits the field (backward compatibility).
     ev_hurdle_refused = False
     ev_pct_of_dip = None
+    class_ev_hurdle_bps = getattr(
+        SIGMA_CLASSES[sigma_class], "ev_hurdle_bps", None
+    ) or EV_HURDLE_BPS_OF_DIP
     if best is not None:
         ev_pct_of_dip = best.ev_pct_of_dip
-        ev_hurdle_threshold = EV_HURDLE_BPS_OF_DIP / 10000.0
+        ev_hurdle_threshold = class_ev_hurdle_bps / 10000.0
         if ev_pct_of_dip < ev_hurdle_threshold:
             ev_hurdle_refused = True
             ev_bps = ev_pct_of_dip * 10000.0
-            print(f"⛔ Sacred #13 EV-hurdle refusal: EV/dip = {ev_bps:.1f}bps "
-                  f"< required {EV_HURDLE_BPS_OF_DIP}bps")
+            print(f"⛔ Sacred #13 EV-hurdle refusal: EV/dip = "
+                  f"{ev_bps:+.1f} bps ({ev_pct_of_dip*100:+.2f}%) "
+                  f"< required {class_ev_hurdle_bps} bps "
+                  f"({class_ev_hurdle_bps/100:.2f}%) for σ-class {sigma_class}")
             met_threshold_strict = False  # cascade — no clean-recommendation headline
 
     # --- 11c. Sacred decision #14 — trend filter (D-W2-15).
@@ -1515,14 +1526,23 @@ def run_pipeline(args) -> int:
     # PR #44 redesigned away from RSI+YTD: the INTC smoke (RSI=66.2,
     # YTD=+204%, mom_30d=+92%) bypassed the original gate because RSI
     # lags the explosive-move phase by ~10 days.
+    # PR #70 (2026-05-24): per-σ-class parabola threshold. MID stays at
+    # +50% (large-cap momentum at +50%/30d IS exceptional); HIGH lifted
+    # to +80% (AI/semi names routinely 50-80%/30d in trending regimes);
+    # EXTREME lifted to +100% (only true doubling-in-month is exhaustion).
+    # Falls back to global when class entry omits the field.
+    class_parabola_threshold = getattr(
+        SIGMA_CLASSES[sigma_class], "parabola_mom_30d_threshold", None
+    ) or PARABOLA_FILTER_MOM_30D_THRESHOLD
     parabola_filter_refused = False
     if (best is not None
-            and snapshot.mom_30d >= PARABOLA_FILTER_MOM_30D_THRESHOLD):
+            and snapshot.mom_30d >= class_parabola_threshold):
         if not _has_bearish_derating_catalyst(effective_ai, horizon_days):
             parabola_filter_refused = True
-            print(f"⛔ Parabola-filter refusal (PR #41/#44): mom_30d = "
-                  f"{snapshot.mom_30d*100:+.1f}% ≥ {PARABOLA_FILTER_MOM_30D_THRESHOLD*100:+.0f}%, "
-                  f"no in-horizon bearish/two-sided de-rating catalyst")
+            print(f"⛔ Parabola-filter refusal (PR #41/#44, σ-class-aware PR #70): "
+                  f"mom_30d = {snapshot.mom_30d*100:+.1f}% ≥ "
+                  f"{class_parabola_threshold*100:+.0f}% threshold for "
+                  f"σ-class {sigma_class}, no in-horizon bearish de-rating catalyst")
             met_threshold_strict = False
 
     # --- 13. AI catalyst stress test — uses Pass 2's revised catalyst list
