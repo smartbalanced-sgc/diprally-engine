@@ -52,9 +52,22 @@ class PortfolioRecommendation:
 
 @dataclass
 class GateResult:
-    """Output of gate_by_correlation."""
+    """Output of gate_by_correlation.
+
+    `accepted`   — tickers that cleared the gate (or were defensively
+                   accepted for not having enough history to evaluate).
+    `dropped`    — tickers that were correlated to an already-accepted
+                   higher-EV peer. Value = human reason.
+    `bypassed`   — PR #77: subset of `accepted` that the gate could NOT
+                   actually evaluate (insufficient price history for the
+                   correlation window). They appear in `accepted` because
+                   we still let the math-layer recommendation stand, but
+                   the operator must know the gate did not verify them.
+                   Surfaced as "⚠ LIMITED-HISTORY" on the dashboard.
+    """
     accepted: list[str] = field(default_factory=list)
     dropped: dict[str, str] = field(default_factory=dict)  # ticker → reason
+    bypassed: dict[str, str] = field(default_factory=dict)  # ticker → reason
 
 
 def _daily_returns_last_n(history_df, n: int) -> Optional[np.ndarray]:
@@ -134,6 +147,20 @@ def gate_by_correlation(
             # Insufficient history → accept defensively (can't prove
             # correlation, give benefit of the doubt to the math layer
             # that already produced the recommendation).
+            # PR #77: but RECORD the bypass so the operator sees it —
+            # this is the PR #75-class silent-failure pattern. A newly-
+            # listed name (SNDK, CRWV, NBIS, ARM, VELO) hitting the gate
+            # before its history catches up would otherwise pass through
+            # invisibly, the trader believing the correlation check ran.
+            n_bars = 0
+            if r.history_df is not None and "Close" in getattr(
+                r.history_df, "columns", []
+            ):
+                n_bars = len(r.history_df["Close"])
+            result.bypassed[r.ticker] = (
+                f"insufficient history ({n_bars} bars, "
+                f"need {window_days + 1}) — correlation NOT evaluated"
+            )
             result.accepted.append(r.ticker)
             continue
 
@@ -180,5 +207,10 @@ def format_gate_result(gate: GateResult,
         lines.append("")
         lines.append("Dropped (substitute ideas):")
         for t, reason in gate.dropped.items():
+            lines.append(f"  {t:<8}  {reason}")
+    if gate.bypassed:
+        lines.append("")
+        lines.append("Bypassed (gate could not evaluate — accepted defensively):")
+        for t, reason in gate.bypassed.items():
             lines.append(f"  {t:<8}  {reason}")
     return "\n".join(lines)

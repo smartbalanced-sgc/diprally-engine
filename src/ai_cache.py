@@ -58,15 +58,36 @@ def today_str() -> str:
         return datetime.now().strftime("%Y-%m-%d")
 
 
-def get_cached(ticker: str, spot: float, date_str: Optional[str] = None) -> Optional[dict]:
+# PR #77: tier ranking — higher tier = stricter AI coverage. A T1 cache
+# (Pass 1 only) cannot replay a T3 run (which requires Pass 2 + verification
+# + stress). Previously the engine would happily replay any cache regardless
+# of tier and report "tier=T3 at $0.00 cost" while actually serving T1 data.
+_TIER_RANK = {"T0": 0, "T1": 1, "T2": 2, "T3": 3}
+
+
+def _tier_satisfies(cached_tier: Optional[str], current_tier: Optional[str]) -> bool:
+    """True iff the cached tier provides at least what the current tier
+    requires. Unknown/legacy cache (no tier_name field) is treated as
+    insufficient — be safe, invalidate."""
+    if current_tier is None:
+        return True  # caller opted out of the check
+    if cached_tier is None:
+        return False
+    return _TIER_RANK.get(cached_tier, -1) >= _TIER_RANK.get(current_tier, 999)
+
+
+def get_cached(ticker: str, spot: float, date_str: Optional[str] = None,
+               *, current_tier: Optional[str] = None) -> Optional[dict]:
     """Return the cached AI payload if it exists AND spot has moved < 1%
-    since cache. Otherwise return None.
+    since cache AND (PR #77) the cached tier is ≥ current_tier.
+    Otherwise return None.
 
     Payload schema (when present):
       {
         "spot": float,
         "ticker": str,
         "date": str,
+        "tier_name": str | None,        # PR #77 (legacy caches lack this)
         "pass1_raw": dict | None,
         "pass1_cost": float,
         "pass1_sources": int,
@@ -94,6 +115,14 @@ def get_cached(ticker: str, spot: float, date_str: Optional[str] = None) -> Opti
     if spot_move >= SPOT_MOVE_INVALIDATION_PCT:
         print(f"   AI cache invalidated: spot moved {spot_move*100:.2f}% "
               f"(cached ${cached_spot:.2f}, now ${spot:.2f})")
+        return None
+    # PR #77: tier sufficiency check.
+    cached_tier = payload.get("tier_name")
+    if not _tier_satisfies(cached_tier, current_tier):
+        print(f"   AI cache invalidated: cached tier {cached_tier!r} "
+              f"insufficient for current tier {current_tier!r} — "
+              f"a lower-tier cache cannot replay a higher-tier run "
+              f"(missing Pass 2 / verification / stress).")
         return None
     return payload
 
