@@ -11,6 +11,10 @@ days. Refuses negative-EV setups.
 - One change at a time
 - No "yes-man" — push back honestly
 - End every response with `#End`
+- **Basis-point clarity**: whenever you state a value in bps (basis points) — in
+  chat or in engine output / reports — ALSO express it as a percentage in
+  parentheses. Examples: "EV hurdle +25 bps (0.25%)", "friction 35 bps (0.35%)",
+  "+182 bps EV (1.82%)". 1 bp = 0.01% always. Never drop the percentage gloss.
 
 ## Asking questions
 - ALWAYS explain each question in plain English first (what the question is
