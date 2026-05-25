@@ -116,16 +116,27 @@ def _reliability_warnings_line(*, vol_profile, base_signals,
     return f"  ⚠ RELIABILITY: {' · '.join(label for label, _ in chips)}"
 
 
-def _reliability_chips(*, vol_profile, base_signals, sigma_class_mismatch):
+def _reliability_chips(*, vol_profile, base_signals, sigma_class_mismatch,
+                         history_bars=None):
     """Compute the list of reliability-flag chips as (label, severity)
     tuples. Severity: 'red' (math instability), 'orange' (regime stress),
     'yellow' (informational). Pure function — shared by the text-report
-    and HTML-dashboard renderers so both surfaces stay in sync."""
+    and HTML-dashboard renderers so both surfaces stay in sync.
+
+    PR #73 adds the LIMITED-HISTORY chip when fewer than 250 trading
+    days of price data are available — GARCH and σ-anchor agreement
+    are structurally unreliable below that threshold."""
     chips: list[tuple[str, str]] = []
 
     ab = getattr(vol_profile, "garch_alpha_plus_beta", 0.0) or 0.0
     if ab > 0.98:
         chips.append((f"near-IGARCH (α+β={ab:.4f})", "red"))
+
+    # PR #73 — limited-history flag. Surfaced prominently in red because
+    # the math layer cannot self-correct for it; the only mitigation is
+    # AI critique (broker forces T2 minimum) + operator awareness.
+    if history_bars is not None and history_bars > 0 and history_bars < 250:
+        chips.append((f"limited history ({history_bars} bars, <250)", "red"))
 
     triangulation = getattr(vol_profile, "triangulation", None) or {}
     # 2026-05-24 audit round 4 hotfix: the real VolProfile dataclass

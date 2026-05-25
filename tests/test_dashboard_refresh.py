@@ -74,7 +74,9 @@ def test_legend_explains_verdicts_in_plain_english():
     assert "Don't trade — the math says you lose money" in html
     assert "Buying a blow-off move without a thesis" in html
     assert "three independent math models" in html
-    assert "one bet expressed twice" in html
+    # PR #74: correlation gate is now informational. Legend updated to say
+    # "engine surfaces the correlation as a flag" (was "one bet expressed twice").
+    assert "engine surfaces the correlation as a flag" in html
 
 
 def test_legend_explains_column_headers():

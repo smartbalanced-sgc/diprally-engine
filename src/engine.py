@@ -949,6 +949,18 @@ def run_pipeline(args) -> int:
         # will catch the same FetchError to skip the ticker and continue.
         print(f"ERROR: {e}")
         return 1
+    # PR #73 — limited-history detection. GARCH + σ-triangulation are
+    # unreliable when the available price series is shorter than the
+    # institutional standard (250 trading days ≈ 12 months). Broker
+    # forces T2 critique for these to compensate. Flag also surfaces
+    # as a reliability chip on the per-ticker dashboard.
+    from src.broker import LIMITED_HISTORY_THRESHOLD
+    history_bars = len(history_df) if history_df is not None else 0
+    limited_history = history_bars > 0 and history_bars < LIMITED_HISTORY_THRESHOLD
+    if limited_history:
+        print(f"   ⚠ Limited history: only {history_bars} bars available "
+              f"(< {LIMITED_HISTORY_THRESHOLD} threshold). Math layer "
+              f"uncertainty higher than the σ-class baseline.")
     data_source = history_df.attrs.get("data_source", "unknown") if history_df is not None else "unknown"
     if data_source == "yfinance":
         print(f"   ℹ data source: yfinance (FMP fell back — see warning above)")
@@ -1815,6 +1827,7 @@ def run_pipeline(args) -> int:
             "ambiguity": ambiguity.overall,
             "qualifies_for_t2_plus": qualifies_for_t2_plus,
             "sigma_class": sigma_class,
+            "limited_history": limited_history,    # PR #73
         }
         print("BROKER_SNAPSHOT_JSON=" + json.dumps(snap_payload))
 
