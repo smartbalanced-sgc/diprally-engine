@@ -98,6 +98,8 @@ def parse_snapshot(stdout: str) -> Optional[BrokerSnapshot]:
             ambiguity=float(data["ambiguity"]),
             qualifies_for_t2_plus=bool(data["qualifies_for_t2_plus"]),
             sigma_class=str(data["sigma_class"]),
+            # PR #73: optional, defaults to False on older snapshot JSON
+            limited_history=bool(data.get("limited_history", False)),
         )
     except (KeyError, ValueError, json.JSONDecodeError):
         return None

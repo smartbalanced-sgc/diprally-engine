@@ -80,7 +80,7 @@ def test_perfectly_correlated_pair_drops_lower_ev():
         _rec("HI_EV", 100.0, rets),
         _rec("LO_EV", 50.0, rets),  # IDENTICAL returns
     ]
-    result = gate_by_correlation(recs, threshold=0.85)
+    result = gate_by_correlation(recs, threshold=0.85, window_days=60)
     assert "HI_EV" in result.accepted
     assert "LO_EV" in result.dropped
     assert "HI_EV" in result.dropped["LO_EV"]
@@ -100,7 +100,7 @@ def test_strongly_correlated_dropped():
         _rec("A", 100.0, a_rets),
         _rec("B",  50.0, b_rets),
     ]
-    result = gate_by_correlation(recs, threshold=0.85)
+    result = gate_by_correlation(recs, threshold=0.85, window_days=60)
     assert "A" in result.accepted
     assert "B" in result.dropped
 
@@ -115,7 +115,7 @@ def test_weakly_correlated_accepted():
         _rec("A", 100.0, common.tolist()),
         _rec("B",  50.0, b_rets),
     ]
-    result = gate_by_correlation(recs, threshold=0.85)
+    result = gate_by_correlation(recs, threshold=0.85, window_days=60)
     assert set(result.accepted) == {"A", "B"}
     assert result.dropped == {}
 
@@ -129,7 +129,7 @@ def test_threshold_boundary_inclusive():
         _rec("B",  50.0, common),  # ρ = 1.0
     ]
     # Set threshold = 1.0 exactly.
-    result = gate_by_correlation(recs, threshold=1.0)
+    result = gate_by_correlation(recs, threshold=1.0, window_days=60)
     assert "A" in result.accepted
     assert "B" in result.dropped
 
@@ -143,7 +143,7 @@ def test_ev_ordering_determines_priority():
         _rec("HI",  90.0, common),
         _rec("LO",  20.0, common),
     ]
-    result = gate_by_correlation(recs, threshold=0.85)
+    result = gate_by_correlation(recs, threshold=0.85, window_days=60)
     assert result.accepted == ["HI"]  # only the top-EV one
     assert "MID" in result.dropped
     assert "LO" in result.dropped
@@ -157,7 +157,7 @@ def test_alphabetical_tiebreak_at_equal_ev():
         _rec("ZEBRA",  75.0, common),
         _rec("ALPHA",  75.0, common),  # ALPHA first alphabetically
     ]
-    result = gate_by_correlation(recs, threshold=0.85)
+    result = gate_by_correlation(recs, threshold=0.85, window_days=60)
     assert result.accepted == ["ALPHA"]
     assert "ZEBRA" in result.dropped
 
@@ -209,7 +209,7 @@ def test_three_independent_clusters():
         _rec("STX",  65.0, storage_common.tolist()),
         _rec("WDC",  40.0, (storage_common + rng.normal(0, 0.005, 80)).tolist()),
     ]
-    result = gate_by_correlation(recs, threshold=0.85)
+    result = gate_by_correlation(recs, threshold=0.85, window_days=60)
     # Higher-EV in each cluster should survive.
     assert "INTC" in result.accepted
     assert "RKLB" in result.accepted
@@ -234,7 +234,7 @@ def test_format_gate_result_contains_all_tickers():
         _rec("HI", 100.0, common),
         _rec("LO",  50.0, common),
     ]
-    gate = gate_by_correlation(recs, threshold=0.85)
+    gate = gate_by_correlation(recs, threshold=0.85, window_days=60)
     out = format_gate_result(gate, recs)
     assert "HI" in out
     assert "LO" in out

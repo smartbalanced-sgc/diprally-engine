@@ -55,14 +55,19 @@ def test_all_t0_when_no_qualifying_tickers():
 
 def test_t3_goes_to_highest_ambiguity_qualified_ticker():
     """Two tickers, one high-ambiguity + qualified, one with ambiguity
-    below ai_min — high gets T3, low stays T0 (math decisive)."""
+    below ai_min — high gets T3, low gets T2 under PR #73 (was T0).
+
+    PR #73 (BUY-quality safeguard): ANY T2+ qualified ticker gets at
+    least T2 critique even when ambiguity is low, so every published
+    BUY recommendation has Pass 2 adversarial review. Math-confident
+    refusal still gets T0 (only qualified — i.e. likely-BUY — names
+    are force-promoted)."""
     snaps = [_snap("HIGH_A", 0.90, qualifies=True),
              _snap("LOW_A",  0.10, qualifies=True)]
     alloc = allocate(snaps)
     assert alloc.assignments["HIGH_A"] == "T3"
-    # LOW_A: ambiguity 0.10 is below ai_min_ambiguity (0.20) → stays T0
-    # even though qualified, because math is decisive.
-    assert alloc.assignments["LOW_A"] == "T0"
+    # PR #73: qualified BUY candidate gets forced T2 (was T0 pre-PR-#73).
+    assert alloc.assignments["LOW_A"] == "T2"
 
 
 def test_unqualified_ticker_capped_at_t1():
@@ -115,28 +120,41 @@ def test_ties_broken_alphabetically():
     assert alloc.assignments["ZEBRA"] in {"T0", "T2"}
 
 
-def test_below_t1_threshold_stays_t0_even_with_budget():
-    """Even if budget is plentiful, low-ambiguity tickers don't get
-    AI tokens — math is decisive, AI input would be wasted."""
+def test_below_t1_threshold_qualified_gets_forced_t2():
+    """PR #73 — BUY-quality safeguard. Low ambiguity but T2+ qualified
+    (math says positive-EV BUY) → forced T2 minimum so Pass 2 critique
+    reviews the BUY before publication. Was T0 pre-PR-#73."""
     snaps = [_snap("CLEAR", 0.05, qualifies=True)]
     alloc = allocate(snaps, budget_usd=10.0)
-    assert alloc.assignments["CLEAR"] == "T0"
+    assert alloc.assignments["CLEAR"] == "T2"
+    # Verify cost was actually spent (T2 = $0.08)
+    assert alloc.spent_usd > 0
+
+
+def test_below_t1_threshold_unqualified_stays_t0():
+    """Math-confident refusal (low ambiguity AND not qualified for T2+)
+    still gets T0. We only force-promote BUY candidates, not refusals
+    where math is already saying don't trade."""
+    snaps = [_snap("REFUSE", 0.05, qualifies=False)]
+    alloc = allocate(snaps, budget_usd=10.0)
+    assert alloc.assignments["REFUSE"] == "T0"
     assert alloc.spent_usd == 0.0
 
 
 def test_three_tier_cascade():
     """Mix of high / medium / low ambiguity, all qualified, modest
-    budget — should land T3 / T2 / T0 across them. PR #52: T3
-    threshold raised to 0.75, so values just above (HI=0.90) clear
-    T3 while mid-range values (MID1=0.55, MID2=0.51) now drop to T2."""
+    budget — under PR #73 BUY-quality safeguard, low-ambiguity-but-
+    qualified tickers now get T2 instead of T0. Test asserts the new
+    behavior across the tier ladder."""
     snaps = [_snap("HI",    0.90, True),  # T3 candidate (≥ 0.75)
              _snap("MID1",  0.55, True),  # below T3 threshold → T2 if budget
              _snap("MID2",  0.51, True),  # below T3 threshold → T2 if budget
              _snap("MILD",  0.25, True),  # above ai_min, qualified → T2
-             _snap("CLEAR", 0.05, True)]  # below ai_min → T0 (math decisive)
+             _snap("CLEAR", 0.05, True)]  # PR #73: qualified → T2 (was T0)
     alloc = allocate(snaps, budget_usd=2.00)
     assert alloc.assignments["HI"] == "T3"
-    assert alloc.assignments["CLEAR"] == "T0"
+    # PR #73: low-ambiguity + qualified = forced T2 (was T0)
+    assert alloc.assignments["CLEAR"] == "T2"
     # Spend bounded
     assert alloc.spent_usd <= 2.00
 
@@ -191,6 +209,8 @@ def test_realistic_17_ticker_universe_under_budget():
     for t in alloc.assignments.values():
         tier_counts[t] += 1
     assert tier_counts["T3"] >= 1
-    # Low-ambiguity tickers (below ai_min) must stay T0.
-    assert alloc.assignments["GLW"] == "T0"
-    assert alloc.assignments["MOG-A"] == "T0"
+    # PR #73 BUY-quality safeguard: low-ambiguity tickers that ARE
+    # qualified now get T2 (was T0). GLW (qualifies=True) → T2.
+    # MOG-A (qualifies=True) → T2.
+    assert alloc.assignments["GLW"] == "T2"
+    assert alloc.assignments["MOG-A"] == "T2"

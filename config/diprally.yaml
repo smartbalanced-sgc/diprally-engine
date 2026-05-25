@@ -351,8 +351,17 @@ mc_distribution:
 # -----------------------------------------------------------
 portfolio_gate:
   enabled: true
-  correlation_threshold: 0.85
-  correlation_window_days: 60
+  # PR #73 — tightened from 0.85 → 0.75 (Pearson correlation). At 0.85
+  # the gate caught only obvious clusters (AMAT/LRCX = ρ 0.91). At 0.75
+  # it captures broader factor exposures (AI cloud, NAND storage, semi
+  # capex, optical) so the operator gets one representative per cluster
+  # instead of multiple substitute ideas.
+  correlation_threshold: 0.75
+  # PR #73 — extended from 60 → 90 days. 60d returns are noisy on
+  # volatile names (an isolated catalyst day can spike a single name's
+  # 60d return and drop pairwise correlation). 90d smooths through
+  # single-event noise → more reliable cluster detection.
+  correlation_window_days: 90
 
 # -----------------------------------------------------------
 # Legacy global blocks RETIRED in W3:

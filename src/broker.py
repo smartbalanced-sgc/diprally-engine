@@ -51,11 +51,24 @@ class BrokerSnapshot:
         pre-AI net EV positive AND conviction met.
     The engine computes this once during the T0 math layer (cheap)
     and hands it to the broker.
+
+    limited_history (PR #73): set when fetch_history returns fewer than
+    LIMITED_HISTORY_THRESHOLD bars (default 250 trading days ≈ 12 months).
+    GARCH and σ-triangulation are structurally unreliable on shorter
+    histories. Broker forces T2 minimum for these so Pass 2 critique
+    is always applied — institutional safeguard, not a refusal.
     """
     ticker: str
     ambiguity: float                       # ∈ [0, 1] from compute_ambiguity()
     qualifies_for_t2_plus: bool
     sigma_class: str                       # for logging / future per-class biasing
+    limited_history: bool = False          # PR #73 — < 250 trading days available
+
+
+# PR #73: number of bars required for stable GARCH fit + σ-anchor agreement.
+# Below this, broker forces T2 critique to compensate for math-layer
+# structural uncertainty on newly-public / recently-restructured tickers.
+LIMITED_HISTORY_THRESHOLD = 250
 
 
 @dataclass(frozen=True)
@@ -126,6 +139,46 @@ def allocate(
             notes.append(
                 f"{s.ticker}: T2 candidate but budget exhausted"
             )
+            continue
+        assignments[s.ticker] = "T2"
+        spent += t2_cost
+
+    # PR #73 — Forced T2 promotion for institutional rigor:
+    # Any T2+ qualified ticker AND any limited-history ticker gets
+    # at least T2 Pass-2 adversarial critique, even if ambiguity is low.
+    #
+    # Rationale: prior to this rule, broker assigned T0 to confident-math
+    # qualifying tickers — meaning likely BUYs got NO AI critique.
+    # Operator was acting on math-only recommendations on names like
+    # MRVL, NBIS, CRWV, ANAB with zero adversarial second opinion.
+    # Sacred decision #7 says Pass 2 wins — but Pass 2 must run to
+    # win. This pass guarantees Pass 2 reviews every potential BUY.
+    #
+    # Limited-history names (< 250 trading days) ALSO get forced T2
+    # because GARCH and σ-triangulation are structurally unreliable
+    # at short histories — AI critique adds the second opinion the
+    # math layer can't trust itself for.
+    for s in ranked:
+        if assignments[s.ticker] != "T0":
+            continue
+        needs_review = s.qualifies_for_t2_plus or s.limited_history
+        if not needs_review:
+            continue
+        if spent + t2_cost > cap:
+            # Fall back to T1 (cheaper but still gives Pass 1 critique)
+            # rather than dropping to T0. Better some review than none.
+            if spent + t1_cost <= cap:
+                assignments[s.ticker] = "T1"
+                spent += t1_cost
+                notes.append(
+                    f"{s.ticker}: forced T2 (BUY-quality safeguard) → "
+                    f"T1 fallback due to cap"
+                )
+            else:
+                notes.append(
+                    f"{s.ticker}: needs review (qualifies={s.qualifies_for_t2_plus}, "
+                    f"limited_history={s.limited_history}) but budget exhausted"
+                )
             continue
         assignments[s.ticker] = "T2"
         spent += t2_cost
