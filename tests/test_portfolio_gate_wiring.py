@@ -122,21 +122,20 @@ def _build_correlated_history(tmp_path, ticker_a, ticker_b, n=70):
     _write_history_csv(tmp_path, ticker_b, rows, dip=95.0, rally=110.0)
 
 
-def test_gate_drops_correlated_lower_ev_ticker(tmp_path, monkeypatch):
-    """Two highly-correlated BUY tickers → lower EV gets dropped."""
+def test_gate_annotates_correlated_lower_ev_ticker(tmp_path, monkeypatch):
+    """PR #74 — gate is now INFORMATIONAL. Two highly-correlated BUYs
+    both stay as BUY; the lower-EV one gets a CORRELATED annotation
+    in its status note. Sacred #6: operator decides whether to take
+    both, one, or scale. Engine doesn't silence the signal."""
     monkeypatch.setattr(orch, "_OUTPUT_ROOT", tmp_path)
     _build_correlated_history(tmp_path, "HIGH_EV", "LOW_EV")
     runs = [
         _make_run("HIGH_EV", ambiguity=0.40),
         _make_run("LOW_EV", ambiguity=0.30),
     ]
-    allocation = None  # not needed for dashboard render
+    allocation = None
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    # Manually set ev_bps_of_dip so HIGH_EV wins the gate's priority
-    # ordering. _decision_from_run reads ev_pct_of_dip from CSV — both
-    # were written with the same 60bps; need to differentiate.
-    # Patch _decision_from_run to inject distinct EVs.
     orig_decision = orch._decision_from_run
     def _patched(run):
         d = orig_decision(run)
@@ -144,17 +143,23 @@ def test_gate_drops_correlated_lower_ev_ticker(tmp_path, monkeypatch):
             d.ev_bps_of_dip = 100.0
         elif d.ticker == "LOW_EV":
             d.ev_bps_of_dip = 80.0
-        # Force both to BUY (no calibration data → would default WAIT).
         d.verdict = "BUY"
         return d
     monkeypatch.setattr(orch, "_decision_from_run", _patched)
 
     path = orch.generate_aggregate_dashboard(runs, allocation, run_dir)
     html = path.read_text()
-    # Lower-EV ticker should be REFUSED-CORRELATED in the rendered HTML.
-    assert "REFUSED-CORRELATED" in html
+    # PR #74: Both tickers remain visible as BUYs (no row gets the
+    # REFUSED-CORRELATED verdict pill).
     assert "LOW_EV" in html
     assert "HIGH_EV" in html
+    # Verdict pill for the LOW_EV row should still be BUY (green), not
+    # REFUSED-CORRELATED (purple). Check the verdict-pill rendering.
+    assert ('class="verdict" style="background:#8957e5">'
+            'REFUSED-CORRELATED') not in html
+    # Correlation annotation present in the LOW_EV row's status note
+    assert "CORRELATED" in html
+    assert "HIGH_EV" in html  # named as the partner in the annotation
 
 
 def test_gate_skipped_when_only_one_buy(tmp_path, monkeypatch):

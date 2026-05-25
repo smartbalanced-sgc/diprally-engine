@@ -1044,8 +1044,8 @@ footer {{ margin-top: 32px; color: var(--text-tertiary); font-size: 11.5px;
                     <span class="vdef">The three independent math models (Monte Carlo, PDE, closed-form) disagree on this trade. Publishing a recommendation when the engine can't agree with itself would mean publishing a number it can't verify. Wait for inputs to stabilize.</span>
                 </div>
                 <div class="legend-verdict-row">
-                    <span class="vchip" style="background:#8957e5">REFUSED-CORRELATED</span>
-                    <span class="vdef">This stock would have been a BUY on its own, but it tracks another already-accepted BUY too closely (correlation ≥ 0.85). Trading both is one bet expressed twice — not diversification. The engine keeps the higher-EV representative of the cluster.</span>
+                    <span class="vchip" style="background:#8957e5">⚠ CORRELATED note</span>
+                    <span class="vdef">A BUY that tracks another already-accepted BUY closely (correlation ≥ 0.75 over last 90 days). The engine surfaces the correlation as a flag in the status note but does NOT silence the signal — for swing trading, correlated dip-and-rally events are independent opportunities, not "one bet doubled." Operator decides whether to take both, one, or scale.</span>
                 </div>
                 <div class="legend-verdict-row">
                     <span class="vchip" style="background:#6e7681">WAIT</span>
@@ -1268,13 +1268,27 @@ def generate_aggregate_dashboard(results: list[TickerRun],
                       f"(skipped: {', '.join(skipped_for_history) or 'none'})")
             else:
                 gate = gate_by_correlation(recs)
+                # PR #74: gate is now INFORMATIONAL, not exclusionary.
+                # Sacred #6 (operator sizes externally) — engine surfaces
+                # signals, operator decides whether to take correlated
+                # bets or pick one. For a swing trader catching independent
+                # dip-and-rally EVENTS (not building a long-term portfolio),
+                # correlated BUYs are not "one bet doubled" — they're
+                # multiple independent timing opportunities. Annotate the
+                # correlation as a flag on the BUY; don't silence it.
                 for d in decisions:
                     if d.ticker in gate.dropped:
-                        d.verdict = "REFUSED-CORRELATED"
-                        d.status_note = gate.dropped[d.ticker]
-                print(f"   Portfolio gate: evaluated {len(recs)} BUY(s), "
-                      f"dropped {len(gate.dropped)} as substitute ideas "
-                      f"(threshold ρ ≥ {_gate_threshold_for_log():.2f})")
+                        reason = gate.dropped[d.ticker]
+                        # Append to existing BUY status_note instead of
+                        # overwriting (preserves the Dip → Rally summary)
+                        existing = d.status_note or ""
+                        sep = " · " if existing else ""
+                        d.status_note = f"{existing}{sep}⚠ CORRELATED: {reason}"
+                noted = len(gate.dropped)
+                print(f"   Portfolio gate (INFORMATIONAL): evaluated {len(recs)} "
+                      f"BUY(s), noted {noted} correlation pair(s) "
+                      f"(threshold ρ ≥ {_gate_threshold_for_log():.2f}). "
+                      f"All BUYs remain visible — operator decides.")
                 for t, reason in gate.dropped.items():
                     print(f"     • {t}: {reason}")
     except Exception as _e:
