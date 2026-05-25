@@ -243,34 +243,31 @@ sigma_class_boundaries:
 sigma_classes:
   EXTREME:
     conviction:
-      dip: 0.60
-      rally_conditional: 0.75
+      dip: 0.55                            # was 0.60 — purposeful-swing recalibration 2026-05-24
+      rally_conditional: 0.55              # was 0.75 — strict 75% mathematically unachievable at σ>100%
+    # 2026-05-24 recalibration: per-class EV-hurdle + parabola threshold.
+    # Active swing trader's execution alpha (manual stop / move-rally / discretionary
+    # exit) adds ~50-100 bps (0.50-1.00%) above engine point-estimate EV.
+    # Lower hurdle for HIGH/EXTREME reflects this. MID stays at original 50 bps.
+    ev_hurdle_bps: 25                      # was global 50 — adjusted for high-σ regime
+    parabola_mom_30d_threshold: 1.00       # was global 0.50 — +100% is true blow-off for EXTREME
     grid:
       dip_step_pct: 0.010
       rally_step_pct: 0.010
       dip_max_depth_pct: 0.50
       rally_max_reach_pct: 0.60
-    # Round-trip friction in bps of average traded notional (PR #23).
-    # Institutional convention: total RT cost = (dip+rally)/2 × bps/10000
-    # — proportional to the average price across both legs. EXTREME
-    # ticks wider, has higher impact, lower liquidity → 70 bps RT.
     friction_bps_round_trip: 70.0
-    # Panic-floor depth (PR #24) — flagged as "below this, the trader
-    # needs a structural thesis, not a swing setup." Deeper for higher-
-    # vol classes because the natural distribution extends further left.
     panic_floor_pct: 0.35
-    # AI vol_regime → effective_sigma multiplier (PR #24). Class-tuned
-    # because the same "HIGH vol_regime" call from AI means something
-    # different on a MID name (already high σ to begin with) vs EXTREME
-    # (already extreme; less room to amplify). Sacred CLAUDE.md numbers.
     ai_vol_regime_multipliers:
       HIGH: 1.10
       MEDIUM: 1.00
       LOW: 0.90
   HIGH:
     conviction:
-      dip: 0.65
-      rally_conditional: 0.75
+      dip: 0.60                            # was 0.65 — purposeful-swing recalibration
+      rally_conditional: 0.65              # was 0.75 — strict 75% unachievable at σ 60-100%
+    ev_hurdle_bps: 25                      # was global 50 — active-management alpha
+    parabola_mom_30d_threshold: 0.80       # was global 0.50 — momentum names regularly hit 50-80%
     grid:
       dip_step_pct: 0.0075
       rally_step_pct: 0.0075
@@ -284,8 +281,10 @@ sigma_classes:
       LOW: 0.90
   MID:
     conviction:
-      dip: 0.65
-      rally_conditional: 0.70
+      dip: 0.65                            # unchanged — appropriate for low-σ regime
+      rally_conditional: 0.70              # unchanged
+    ev_hurdle_bps: 50                      # unchanged — low-σ names have tight EV distributions
+    parabola_mom_30d_threshold: 0.50       # unchanged — +50%/30d on large-cap IS exceptional
     grid:
       dip_step_pct: 0.005
       rally_step_pct: 0.005

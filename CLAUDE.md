@@ -11,6 +11,10 @@ days. Refuses negative-EV setups.
 - One change at a time
 - No "yes-man" — push back honestly
 - End every response with `#End`
+- **Basis-point clarity**: whenever you state a value in bps (basis points) — in
+  chat or in engine output / reports — ALSO express it as a percentage in
+  parentheses. Examples: "EV hurdle +25 bps (0.25%)", "friction 35 bps (0.35%)",
+  "+182 bps EV (1.82%)". 1 bp = 0.01% always. Never drop the percentage gloss.
 
 ## Asking questions
 - ALWAYS explain each question in plain English first (what the question is
@@ -51,7 +55,12 @@ days. Refuses negative-EV setups.
 10. AI outputs are arithmetic inputs, not display prose
 11. Same-day CSV dedup — one canonical row per (ticker, date)
 12. Bayesian prior across days with same-day artifact guard
-13. EV-hurdle gate — refuse to recommend if EV < +50 bps of dip after friction
+13. EV-hurdle gate — refuse to recommend if EV < σ-class threshold of dip
+    after friction. σ-class thresholds (PR #70): MID 50 bps (0.50%);
+    HIGH and EXTREME 25 bps (0.25%) — the lower hurdle on HIGH/EXTREME
+    acknowledges that the engine's "blind execution" EV estimate
+    understates realized EV for active swing traders who time entry/exit
+    discretionarily (sacred #6 — trader sizes / manages externally)
 14. Trend filter — refuse dip if 30d momentum < -25% AND no fundamental catalyst
 15. Insider signal dropped (Form 4 lag + noise)
 16. Method-disagreement refusal — MC vs PDE diverge >5pp on marginal = no recommendation
@@ -67,12 +76,16 @@ days. Refuses negative-EV setups.
     Python constants. `src/config.py` is a YAML loader with schema validation
     that exposes typed constants for import convenience. Changing a threshold
     must NEVER require a code edit, a PR, or a deploy.
-18. **Parabola filter** — refuse dip-buy when `mom_30d ≥ +50%` AND no
-    in-horizon bearish-direction catalyst surfaced by AI Pass 1/Pass 2.
-    Mirror of sacred #14 (falling-knife trend filter) for blow-off tops.
-    Asymmetric exception: requires SPECIFICALLY bearish catalyst — generic
-    "two-sided earnings" is the math layer's default, not a de-rating
-    thesis. Codified by PRs #41 / #44 / #45 / #46 / #51 (this PR formalizes).
+18. **Parabola filter** — refuse dip-buy when `mom_30d ≥` σ-class threshold
+    AND no in-horizon bearish-direction catalyst surfaced by AI Pass 1/Pass 2.
+    σ-class thresholds (PR #70): MID +50%, HIGH +80%, EXTREME +100% —
+    calibrated to the actual vol regime of each class (a +50% monthly
+    move is exceptional for AMAT-class names but baseline for the AI/
+    semi/momentum names this engine targets). Mirror of sacred #14
+    (falling-knife trend filter) for blow-off tops. Asymmetric exception:
+    requires SPECIFICALLY bearish catalyst — generic "two-sided earnings"
+    is the math layer's default, not a de-rating thesis. Codified by
+    PRs #41 / #44 / #45 / #46 / #51 / #70.
 
 ## Ticker universe (current roster — adjust via YAML)
 - **EXTREME (11)**: LWLG, MRAM, ENGN, VELO, SNDK, ARM, CRWV, NBIS, INOD, CRDO, ANAB
