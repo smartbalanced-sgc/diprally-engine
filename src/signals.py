@@ -364,6 +364,14 @@ def signal_from_revision_momentum(grades, today=None):
 
     Algorithm: each grade-change action contributes +1 / -1 / 0 weighted
     by time-decay bucket. Recent actions (last 30d) get full weight;
+
+    PR #81 (audit #12): time-decay buckets here are CALENDAR days
+    (`(today - gdate).days`), NOT trading days. This is intentional —
+    analyst events are calendar-time-natural (a Tuesday upgrade and a
+    Saturday upgrade are equally fresh to a Monday-morning reader; the
+    NYSE schedule doesn't determine when sell-side desks publish).
+    Do not "fix" this to trading days via `market_calendar` helpers;
+    the audit explicitly evaluated this site and graded it informational.
     older actions decay. Sum is multiplied by drift_per_unit_pp and
     capped at drift_cap_abs.
 
