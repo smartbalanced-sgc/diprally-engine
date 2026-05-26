@@ -132,6 +132,26 @@ def enrichment_drift(rsi, mom_5d):
     return max(-0.10, min(0.10, rsi_drift + mom_drift))
 
 
+def apply_enrichment_to_drift(mu_capped: float, rsi: float, mom_5d: float) -> float:
+    """Combine the historical (GARCH-anchored) drift with the short-term
+    mean-reversion bias from `enrichment_drift`.
+
+    PR #80 (audit #11): treats `enrichment_drift`'s output as a directly-
+    additive annualised drift adjustment (max ±0.10 annual). Pre-fix the
+    engine multiplied by `252 / horizon_days`, which made shorter
+    horizons produce LARGER annualised adjustments — opposite of the
+    intuitive mean-reversion-decay scaling, and at horizon=10 turned a
+    clamped ±0.10 signal into ±2.5 annualised drift, dominating mu_hist
+    entirely.
+
+    The corrected interpretation: the RSI+5d-mom bias represents a
+    persistent annualised tilt (e.g. "this thing is overbought; expect
+    a 6%/yr drag until it normalises"). Magnitudes sensible across all
+    horizons; the cap remains the function's ±0.10 clamp on `enr`.
+    """
+    return mu_capped + enrichment_drift(rsi, mom_5d)
+
+
 def compute_realized_vol(returns, windows=None):
     """Realized vol over multiple rolling windows. Returns {window: annualised sigma}.
 

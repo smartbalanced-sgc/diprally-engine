@@ -83,6 +83,7 @@ from src.math_utils import (
     compute_path_metrics,
     compute_realized_vol,
     compute_rsi_14,
+    apply_enrichment_to_drift,
     enrichment_drift,
     fit_garch_11_full,
     precompute_first_touch_days,
@@ -1109,7 +1110,11 @@ def run_pipeline(args) -> int:
     mu_hist = float(returns.mean() * 252)
     mu_capped = max(-DRIFT_CAP, min(DRIFT_CAP, mu_hist))
     enr = enrichment_drift(rsi, mom_5d)
-    mu_effective_historical = mu_capped + enr * 252 / horizon_days
+    # PR #80 (audit #11): see math_utils.apply_enrichment_to_drift for
+    # the full reasoning. Pre-fix this line was
+    #   mu_effective_historical = mu_capped + enr * 252 / horizon_days
+    # which made shorter horizons produce LARGER drift adjustments.
+    mu_effective_historical = apply_enrichment_to_drift(mu_capped, rsi, mom_5d)
 
     targets = fetch_analyst_targets(ticker, api_key)
     summary = fetch_analyst_summary(ticker, api_key)
