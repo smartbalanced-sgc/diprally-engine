@@ -1709,6 +1709,13 @@ def run_pipeline(args) -> int:
     method_check = three_method_cross_check(
         spot, effective_sigma, post_mu, horizon_days,
         check_dip, check_rally, bridge_check_result,
+        # PR #82: pass the vol_schedule so PDE/closed-form use the
+        # RMS-equivalent constant sigma matching the MC. Without this,
+        # any in-horizon earnings/macro spike causes structural MC vs
+        # PDE divergence (unmasked by PR #76's correct schedule
+        # indexing), tripping sacred #16 on stable MID/HIGH names that
+        # the math layer is otherwise confident about.
+        vol_schedule=vol_schedule,
     )
     method_check["is_anchor"] = method_check_is_anchor
     method_check["anchor_dip"] = check_dip if method_check_is_anchor else None
