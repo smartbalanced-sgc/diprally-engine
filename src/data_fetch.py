@@ -185,6 +185,68 @@ def _fmp_get(endpoint, api_key, params=None):
         return None
 
 
+def fetch_live_quote(ticker, api_key):
+    """Real-time quote from FMP /stable/quote.
+
+    PR #85 — fixes the data-layer rot exposed on 2026-05-26: the engine
+    had been setting `spot = history_df["Close"].iloc[-1]`, i.e. the
+    last completed daily bar. FMP's daily-bar endpoint lags 1-2 hours
+    after market close, so a Tue 16:50 ET cycle saw Friday's close for
+    SNDK / MU / AMAT — missing the +7.5% / +19.3% / +5.3% Tue rallies
+    entirely. Every BUY recommendation that cycle was computed against
+    stale spots.
+
+    `/stable/quote` returns CURRENT intraday price during market hours,
+    or the most recent session's close after-hours. Plan-tier-confirmed
+    (Starter) endpoint per FMP support 2026-05-27.
+
+    Returns dict with keys:
+        price            — current intraday or last session's close
+        previous_close   — prior session's close
+        day_low, day_high
+        open
+        volume
+        change_pct       — percent change vs previous close
+        timestamp        — Unix epoch (recent if quote is live)
+        symbol, exchange
+    or None on HTTP error, empty response, or unparseable payload.
+    Callers MUST fall back gracefully (e.g. to daily-bar last close)
+    rather than abort, since live quotes can be flaky for newly-listed
+    tickers or during exchange data outages.
+    """
+    data = _fmp_get("quote", api_key, {"symbol": ticker})
+    if not data or not isinstance(data, list) or not data:
+        return None
+    d = data[0]
+    try:
+        price = float(d.get("price"))
+    except (TypeError, ValueError):
+        return None
+    if price <= 0:
+        return None
+    return {
+        "symbol": d.get("symbol", ticker),
+        "exchange": d.get("exchange"),
+        "price": price,
+        "previous_close": (
+            float(d["previousClose"])
+            if d.get("previousClose") is not None else None
+        ),
+        "day_low": (
+            float(d["dayLow"]) if d.get("dayLow") is not None else None
+        ),
+        "day_high": (
+            float(d["dayHigh"]) if d.get("dayHigh") is not None else None
+        ),
+        "open": (
+            float(d["open"]) if d.get("open") is not None else None
+        ),
+        "volume": d.get("volume"),
+        "change_pct": d.get("changePercentage"),
+        "timestamp": d.get("timestamp"),
+    }
+
+
 def fetch_analyst_targets(ticker, api_key):
     """FMP price-target-consensus."""
     data = _fmp_get("price-target-consensus", api_key, {"symbol": ticker})

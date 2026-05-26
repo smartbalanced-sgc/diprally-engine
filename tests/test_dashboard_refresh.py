@@ -186,7 +186,8 @@ def test_spot_source_line_present():
         "Markets closed (weekend)" in html
         or "NYSE CLOSED today" in html
         or "half-day session" in html
-        or "Live FMP quote" in html
+        or "live FMP /stable/quote" in html
+        or "fall back to last daily-bar close" in html
     )
 
 
@@ -209,7 +210,7 @@ def test_spot_source_weekend_logic():
     _DT._fixed = datetime(2026, 5, 26, 14, 0)
     with patch("src.orchestrator.datetime", _DT):
         line = orch._spot_source_line()
-        assert "Live FMP quote" in line
+        assert "live FMP /stable/quote" in line
 
     # Mock Memorial Day Monday (NYSE holiday) — new banner.
     _DT._fixed = datetime(2026, 5, 25, 14, 0)

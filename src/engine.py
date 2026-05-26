@@ -673,7 +673,7 @@ def compute_sensitivity_table(
 # with the new schema. N=1 day at this point (no calibration accumulated)
 # so the clean break is acceptable.
 CSV_COLUMNS = [
-    "date", "spot", "sigma_blended", "sigma_class",
+    "date", "spot", "spot_source", "sigma_blended", "sigma_class",
     "drift_posterior", "drift_posterior_std",
     "recommended_dip", "p_dip", "expected_days_to_dip",
     "recommended_rally", "p_rally_cond",
@@ -1036,7 +1036,54 @@ def run_pipeline(args) -> int:
     if history_df is None or history_df.empty:
         print(f"ERROR: empty history returned for {ticker}")
         return 1
-    spot = float(history_df["Close"].iloc[-1])
+
+    # PR #85 — live quote for spot, fall back to last daily bar.
+    # Pre-PR-#85 the engine set spot = history_df["Close"].iloc[-1]
+    # (= last completed daily bar from FMP /historical-price-eod).
+    # FMP's daily-bar endpoint lags 1-2h after market close, so a Tue
+    # 16:50 ET cycle saw Friday's close for SNDK / MU / AMAT — missing
+    # the +7.5% / +19.3% / +5.3% Tue rallies entirely. Every BUY in
+    # that cycle was computed against stale spots.
+    # The /stable/quote endpoint returns CURRENT intraday price (or
+    # most recent session's close after-hours), confirmed on Starter
+    # plan tier 2026-05-27.
+    daily_bar_close = float(history_df["Close"].iloc[-1])
+    daily_bar_date = (
+        str(history_df["Date"].iloc[-1])
+        if "Date" in history_df.columns else "?"
+    )
+    spot_source = "daily_bar_fallback"
+    spot = daily_bar_close
+    live_quote = None
+    try:
+        from src.data_fetch import fetch_live_quote
+        live_quote = fetch_live_quote(ticker, api_key)
+    except Exception as _e:
+        # Graceful — quote-fetcher must never abort the pipeline; fall
+        # back to daily-bar close just like the historical behavior.
+        print(f"   ⚠ live-quote fetch raised: {_e!r} — using daily-bar close")
+        live_quote = None
+    if live_quote and live_quote.get("price"):
+        spot = float(live_quote["price"])
+        spot_source = "live_quote"
+        # Surface the gap vs daily-bar so the operator can SEE when the
+        # historical endpoint was lagging. >2% gap is suspicious and
+        # worth a quick sanity check (corp action / split / data error).
+        if daily_bar_close > 0:
+            gap_pct = (spot - daily_bar_close) / daily_bar_close * 100
+            if abs(gap_pct) >= 2.0:
+                print(
+                    f"   ℹ live-quote spot ${spot:.2f} differs from last "
+                    f"daily-bar close ${daily_bar_close:.2f} ({daily_bar_date}) "
+                    f"by {gap_pct:+.2f}% — using live (engine pre-#85 would "
+                    f"have silently used the daily bar)"
+                )
+    else:
+        print(
+            f"   ⚠ live quote unavailable for {ticker}; spot = last "
+            f"daily-bar close ${daily_bar_close:.2f} ({daily_bar_date}). "
+            f"May be stale by up to ~2h post-market-close."
+        )
     closes_series = history_df["Close"]
     closes = closes_series.values
     returns = np.log(closes_series / closes_series.shift(1)).dropna()
@@ -1820,6 +1867,11 @@ def run_pipeline(args) -> int:
     csv_row = {
         "date": datetime.now().strftime("%Y-%m-%d"),
         "spot": f"{spot:.2f}",
+        # PR #85: track which spot source this row used so backtest
+        # analysis can distinguish live-quote rows from daily-bar-
+        # fallback rows. Pre-PR-#85 every row was implicitly
+        # daily_bar_fallback (stale by up to ~2h post-close).
+        "spot_source": spot_source,
         "sigma_blended": f"{blended_sigma:.4f}",
         "sigma_class": sigma_class,
         "drift_posterior": f"{post_mu:.4f}",

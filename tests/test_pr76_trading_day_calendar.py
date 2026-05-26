@@ -423,5 +423,6 @@ def test_spot_source_line_on_regular_trading_day(monkeypatch):
         def now(cls, tz=None): return fixed_now
     monkeypatch.setattr(orchestrator, "datetime", _DT)
     line = orchestrator._spot_source_line()
-    assert "Live FMP quote" in line
+    # PR #85: wording now reflects /stable/quote endpoint + fallback policy.
+    assert "live FMP /stable/quote" in line
     assert "NYSE CLOSED" not in line
