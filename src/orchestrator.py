@@ -578,11 +578,43 @@ def _trading212_url(ticker: str) -> str:
     return f"{_TRADING212_URL_BASE}{ticker.upper()}.US"
 
 
+def _spot_source_counts() -> dict:
+    """PR #85: scan today's CSV rows across all tickers and tally how
+    many used live_quote vs daily_bar_fallback. Returns
+    {'live_quote': N, 'daily_bar_fallback': M, 'unknown': K}. Empty
+    dict on read failure."""
+    today_iso = datetime.now().strftime("%Y-%m-%d")
+    counts = {"live_quote": 0, "daily_bar_fallback": 0, "unknown": 0}
+    try:
+        for path in _OUTPUT_ROOT.glob("round_trip_history_*.csv"):
+            try:
+                with open(path) as f:
+                    rows = list(csv.DictReader(f))
+                if not rows:
+                    continue
+                last = rows[-1]
+                # Only count rows from TODAY (sacred #11 dedup means at
+                # most one row per ticker per day).
+                if str(last.get("date", ""))[:10] != today_iso:
+                    continue
+                src = (last.get("spot_source") or "").strip()
+                if src in counts:
+                    counts[src] += 1
+                else:
+                    counts["unknown"] += 1
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return counts
+
+
 def _spot_source_line() -> str:
     """Plain-English line indicating whether spot prices are live
     intraday quotes or carried-forward closes. PR #76: holiday-aware —
     distinguishes weekend, NYSE holiday (Memorial Day, Good Friday, etc.),
-    half-day session, and regular session."""
+    half-day session, and regular session. PR #85: data-driven — reports
+    the ACTUAL spot source for today's run, not a heuristic."""
     now = datetime.now()
     today = now.date()
     try:
@@ -621,17 +653,33 @@ def _spot_source_line() -> str:
             f"overnight gap."
         )
 
-    # Today IS a trading day. Half-day vs full session.
+    # Today IS a trading day. Report what the engine actually fetched.
+    counts = _spot_source_counts()
+    live = counts.get("live_quote", 0)
+    fallback = counts.get("daily_bar_fallback", 0)
+    total_today = live + fallback + counts.get("unknown", 0)
     ec = early_close_time(today)
-    if ec is not None:
+    session_note = (
+        f" — NYSE half-day session (early close {ec.strftime('%H:%M')} ET)"
+        if ec is not None else ""
+    )
+    if total_today == 0:
+        # No CSV rows from today yet (orchestrator is rendering before
+        # the per-ticker pipelines have written) — report the policy.
         return (
-            f"Spot prices: Live FMP quote — NYSE half-day session "
-            f"(early close {ec.strftime('%H:%M')} ET). After early close "
-            f"quotes are static."
+            f"Spot prices: live FMP /stable/quote per ticker, fall back "
+            f"to last daily-bar close on failure{session_note}."
+        )
+    if fallback == 0:
+        return (
+            f"Spot prices: live FMP /stable/quote for {live}/{total_today} "
+            f"tickers (current intraday or last session close){session_note}."
         )
     return (
-        "Spot prices: Live FMP quote queried at run time "
-        "(intraday may be delayed up to 15 min; after-hours = today's close)."
+        f"⚠ Spot prices: live FMP /stable/quote for {live}/{total_today} "
+        f"tickers; {fallback} fell back to last daily-bar close (may be "
+        f"stale by up to ~2h post-market-close — check those rows' "
+        f"spot_source column){session_note}."
     )
 
 
