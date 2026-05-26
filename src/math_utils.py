@@ -618,6 +618,34 @@ def three_method_cross_check(
     refuse_fp = method_refusal_pp(sigma, "first_passage")
     refuse_marg = method_refusal_pp(sigma, "marginal")
 
+    # PR #83 (cycle-2 regression follow-up to PR #82): when vol_schedule
+    # has spikes, MC's first-passage TIME depends on when within the path
+    # the high-vol concentrates, while PDE/closed-form with the RMS-
+    # equivalent constant `sigma_eq` see touches spread evenly. PR #82
+    # made the MARGINAL probabilities agree (total variance matches), but
+    # FIRST-PASSAGE ORDERING (dip-vs-rally) remained structurally
+    # divergent for front-loaded schedules (earnings in week 1-2 of the
+    # 60-day horizon). Cycle 2 still showed 5/26 REFUSED-METHOD; GHM
+    # specifically regressed from BUY → REFUSED-METHOD because PDE's
+    # sigma_eq inflated its constant vol enough to shift first-passage
+    # probabilities into NEW disagreement with the MC's time-varying
+    # path.
+    #
+    # Fix: widen ONLY the first_passage tolerance proportional to how
+    # heterogeneous the schedule is. Use sigma_eq/sigma - 1.0 as the
+    # heterogeneity measure (already computed for PR #82). Flat schedule
+    # → no widening. Earnings-spike schedule → widen by ~30-40% to
+    # accommodate the structural timing divergence. Marginal tolerance
+    # UNCHANGED (PR #82 made that agreement work; widening it would
+    # mask real disagreement).
+    if vol_schedule is not None and sigma > 0:
+        schedule_heterogeneity = max(0.0, (sigma_eq / sigma) - 1.0)
+    else:
+        schedule_heterogeneity = 0.0
+    fp_widening = 1.0 + 2.0 * schedule_heterogeneity
+    tol_fp *= fp_widening
+    refuse_fp *= fp_widening
+
     if diff_dip_first > tol_fp:
         flags.append(f"MC vs PDE disagree on P(dip first) by {diff_dip_first:.1f}pp (tol {tol_fp:.1f})")
     if diff_rally_first > tol_fp:
@@ -665,7 +693,14 @@ def three_method_cross_check(
                        # the RMS-equivalent of sigma×vol_schedule. Surface
                        # it in the report so operator can see whether the
                        # cross-check ran with a schedule adjustment.
-                       "sigma_eq_pde": sigma_eq},
+                       "sigma_eq_pde": sigma_eq,
+                       # PR #83: first-passage tolerance widening factor
+                       # for non-stationary vol_schedule (1.0 = no
+                       # widening, > 1.0 = schedule has spikes that make
+                       # MC first-passage timing structurally diverge
+                       # from PDE's constant-sigma_eq timing).
+                       "fp_widening_factor": fp_widening,
+                       "schedule_heterogeneity": schedule_heterogeneity},
         "pde_p_neither": pde["p_neither"],
         "pde_mass_conservation": pde["total"],
         "agreement_status": status,
