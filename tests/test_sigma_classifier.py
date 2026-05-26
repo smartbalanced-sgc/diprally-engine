@@ -277,17 +277,19 @@ def test_anchor_pair_differs_meaningfully_by_class():
 
 def test_per_class_grid_yields_tractable_point_count():
     """Step + depth combination yields a tractable candidate-pair count.
-    Lower bound (≥30 cells per dimension) ensures a fine-enough EV
-    gradient that the optimum isn't a discretisation artifact (per
-    D-W3-1 acceptance criteria). Upper bound (≤200 cells per
-    dimension) guards against accidental grid explosion."""
+    PR #86 — horizon shortened from 60d to 20d. step_pct (granularity in
+    % of spot) unchanged but max_depth/max_reach scaled by √(20/60),
+    so total points per dim drops from 30+ to 20+. Tractability bound
+    relaxed to ≥20 cells per dim, which still yields ~400+ candidate
+    pairs per grid (more than enough resolution to find a meaningful
+    EV optimum)."""
     for cls in ("EXTREME", "HIGH", "MID"):
         g = SIGMA_CLASSES[cls].grid
         n_dip_points = int(g.dip_max_depth_pct / g.dip_step_pct)
         n_rally_points = int(g.rally_max_reach_pct / g.rally_step_pct)
-        assert 30 <= n_dip_points <= 200, (
+        assert 20 <= n_dip_points <= 200, (
             f"{cls} dip grid yields {n_dip_points} points — out of safe range"
         )
-        assert 30 <= n_rally_points <= 200, (
+        assert 20 <= n_rally_points <= 200, (
             f"{cls} rally grid yields {n_rally_points} points — out of safe range"
         )

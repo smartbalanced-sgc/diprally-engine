@@ -541,6 +541,115 @@ def analyze_joint_conditional(
     }
 
 
+def compute_dual_ev(
+    paths: np.ndarray,
+    S0: float,
+    dip_price: float,
+    rally_price: float,
+    friction_per_share: float,
+    dip_first_days: Optional[np.ndarray] = None,
+    rally_first_days: Optional[np.ndarray] = None,
+) -> dict:
+    """PR #86 — compute EV under BOTH entry strategies on the same MC paths.
+
+    Returns dict with:
+        ev_direct_per_share:  Enter at spot now. Exit at rally if touched.
+                               Else hold to T. Single-path payoff:
+                                 max(path) >= rally → rally - spot - friction
+                                 else              → terminal - spot - friction
+        ev_direct_pct_of_spot: EV expressed as % of entry (spot).
+        ev_wait_per_share:    Wait for dip. If touched, enter at dip. Exit at
+                               rally if touched AFTER dip, else hold to T. If
+                               dip never touched, no entry, payoff = 0.
+        ev_wait_pct_of_dip:   EV expressed as % of entry (dip).
+        p_dip_filled:         P(dip touched at all) — the fill probability
+                               for the wait strategy. Used to gate display
+                               via min_dip_probability.
+        p_rally_hit:          P(rally touched ever) — used for direct-entry
+                               win probability display.
+        p_bag_hold:           P(dip touched, rally NEVER) — the loss case
+                               for wait strategy.
+        bag_hold_terminal_mean / median: mean / median terminal price for
+                               bag-hold paths (informational for risk display).
+
+    Sacred decision evolution (PR #86): drops the strict round-trip
+    orthodoxy. The engine now reports BOTH entry strategies and picks the
+    higher-EV path. The trader's true objective is "capture the rally";
+    waiting for a dip is a (sometimes-better) entry optimization, not a
+    precondition for the trade to exist.
+    """
+    n_paths, n_days = paths.shape
+
+    # === DIRECT entry payoffs ===
+    # Vectorized: payoff = (rally - spot) if rally touched else (terminal - spot)
+    max_per_path = paths.max(axis=1)
+    rally_touched = max_per_path >= rally_price
+    payoff_direct_per_path = np.where(
+        rally_touched,
+        rally_price - S0 - friction_per_share,
+        paths[:, -1] - S0 - friction_per_share,
+    )
+    ev_direct_per_share = float(payoff_direct_per_path.mean())
+    ev_direct_pct_of_spot = ev_direct_per_share / S0 if S0 > 0 else 0.0
+
+    # === WAIT-FOR-DIP entry payoffs ===
+    # Find first dip touch per path. If never touched, payoff = 0 (no fill).
+    # If touched, then check rally AFTER dip:
+    #   touched after dip → payoff = rally - dip - friction
+    #   not touched after → payoff = terminal - dip - friction (bag hold)
+    if dip_first_days is None:
+        dip_touched_mask = paths <= dip_price
+        dip_any = dip_touched_mask.any(axis=1)
+        dip_first = np.where(dip_any, dip_touched_mask.argmax(axis=1), n_days)
+    else:
+        dip_first = dip_first_days
+        dip_any = dip_first < n_days
+
+    days_idx = np.arange(n_days)[None, :]
+    after_dip_mask = days_idx >= dip_first[:, None]
+    rally_after_dip = ((paths >= rally_price) & after_dip_mask).any(axis=1)
+
+    rt_payoff = rally_price - dip_price - friction_per_share
+    bag_payoff_per_path = paths[:, -1] - dip_price - friction_per_share
+
+    payoff_wait_per_path = np.where(
+        ~dip_any,
+        0.0,  # no fill → no payoff
+        np.where(
+            rally_after_dip,
+            rt_payoff,
+            bag_payoff_per_path,
+        ),
+    )
+    ev_wait_per_share = float(payoff_wait_per_path.mean())
+    ev_wait_pct_of_dip = (
+        ev_wait_per_share / dip_price if dip_price > 0 else 0.0
+    )
+
+    # Bag-hold statistics for risk display
+    bag_hold_mask = dip_any & ~rally_after_dip
+    if bag_hold_mask.any():
+        bag_terminal_prices = paths[bag_hold_mask][:, -1]
+        bag_terminal_mean = float(bag_terminal_prices.mean())
+        bag_terminal_median = float(np.median(bag_terminal_prices))
+    else:
+        bag_terminal_mean = dip_price
+        bag_terminal_median = dip_price
+
+    return {
+        "ev_direct_per_share": ev_direct_per_share,
+        "ev_direct_pct_of_spot": ev_direct_pct_of_spot,
+        "ev_wait_per_share": ev_wait_per_share,
+        "ev_wait_pct_of_dip": ev_wait_pct_of_dip,
+        "p_dip_filled": float(dip_any.mean()),
+        "p_rally_hit": float(rally_touched.mean()),
+        "p_bag_hold": float(bag_hold_mask.mean()),
+        "bag_terminal_mean": bag_terminal_mean,
+        "bag_terminal_median": bag_terminal_median,
+        "p_round_trip_strict": float((dip_any & rally_after_dip).mean()),
+    }
+
+
 def three_method_cross_check(
     S0: float,
     sigma: float,
