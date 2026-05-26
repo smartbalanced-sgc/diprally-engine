@@ -33,6 +33,25 @@ days. Refuses negative-EV setups.
 - NEVER PR/merge to main without explicit "merge to main"
 - Each meaningful step = its own commit (don't pile work into one giant commit)
 
+## Diagnostics + FMP data fetches (CANON — never violate)
+Operator's time is the bottleneck. Speculative round-trips wasting his time
+are forbidden. Whenever you need to diagnose engine output OR fetch FMP data
+to validate a hypothesis, in a SINGLE response:
+
+  1. State the decision being made.
+  2. State the data needed to make it (precise — endpoint, field, ticker, time).
+  3. Provide ONE exact bash command for the operator to copy-paste-run.
+     - Always print HTTP status + raw response body up to 1000 chars,
+       NOT a derived pretty-print that can fail on unexpected payload shape.
+  4. If the endpoint may be plan-tier restricted, also provide a verbatim
+     question for FMP support — copy-pasteable, no editing required.
+  5. NEVER use iterative "run this, then I'll figure out next step" patterns.
+
+Math-layer diagnostics follow the same rule, plus: numerical harness in the
+sandbox FIRST (synthesize realistic inputs, decompose by axis, identify root
+cause with hard numbers), THEN propose a single surgical fix with a regression
+test that fails before and passes after.
+
 ## Hard constraints
 - AI cost cap: **$2/day across all tickers** (HARD)
 - Token discipline: AI allocated by budget broker, never sprayed
