@@ -1,20 +1,17 @@
-"""Tests for PR #82 — audit finding #14 (unmasked by PR #76).
+"""Tests for PR #82 + PR #84 — RMS-equivalent sigma for cross-check.
 
-Pre-PR-#76, `vol_schedule` was indexed by calendar offset; events past
-trading-day-60 fell out of bounds and were silently dropped. The MC was
-effectively running near-constant sigma, so the cross-check vs PDE
-(constant sigma) agreed within tolerance.
+PR #82 introduced `sigma_eq` to align PDE/closed-form with the MC's
+variance over the path. PR #84 fixed the formula bug: vol_schedule
+is ABSOLUTE volatility per day (`base_sigma × multipliers`), not
+dimensionless multipliers. Original formula `sigma * sqrt(mean(vs**2))`
+double-counted sigma, putting closed-form vol an order of magnitude
+too low → 15-22pp marginal-touch divergence vs MC → false-positive
+sacred-#16 refusal on ~5/26 stable names every cycle. Fix:
 
-PR #76 correctly indexes the schedule by trading day, so every in-horizon
-earnings / macro event lands inside the simulation window and elevates
-vol. The MC's touch probabilities now diverge materially from PDE's
-constant-sigma probabilities — tripping sacred #16's refusal threshold
-on stable MID/HIGH names with quarterly earnings in horizon (6/26
-tickers REFUSED-METHOD on the first post-PR-#76 cycle).
+    sigma_eq = sqrt(mean(vol_schedule**2))
 
-Fix: pass `vol_schedule` to `three_method_cross_check`. It computes the
-RMS-equivalent constant sigma — variance-preserving — and feeds that to
-PDE / closed-form. Restores apples-to-apples comparison.
+Numerically verified: MC and closed-form now agree within ~1pp for
+both flat and earnings-spike schedules.
 """
 from __future__ import annotations
 
@@ -31,7 +28,6 @@ if str(_REPO_ROOT) not in sys.path:
 
 def _mk_mc(p_round_trip=0.30, p_bag_hold=0.10, p_no_trade_rally_first=0.20,
             p_neither=0.40):
-    """Build a fake mc_result dict matching the keys cross-check reads."""
     return {
         "p_round_trip": p_round_trip,
         "p_bag_hold": p_bag_hold,
@@ -42,11 +38,15 @@ def _mk_mc(p_round_trip=0.30, p_bag_hold=0.10, p_no_trade_rally_first=0.20,
     }
 
 
-def test_backwards_compat_no_vol_schedule_passes_through():
-    """When called without vol_schedule (legacy callers + the existing
-    test suite), `sigma_eq = sigma`. Output unchanged."""
+# =============================================================================
+# Backward-compat / no-schedule path
+# =============================================================================
+
+def test_no_vol_schedule_uses_constant_sigma():
+    """Legacy callers that don't pass vol_schedule (e.g.
+    test_refusal_gate.py) get sigma_eq = sigma. Output unchanged."""
     from src.math_utils import three_method_cross_check
-    chk_old = three_method_cross_check(
+    chk_implicit = three_method_cross_check(
         S0=100.0, sigma=0.30, mu=0.05, horizon_days=60,
         dip_price=92.0, rally_price=108.0, mc_result=_mk_mc(),
     )
@@ -55,109 +55,121 @@ def test_backwards_compat_no_vol_schedule_passes_through():
         dip_price=92.0, rally_price=108.0, mc_result=_mk_mc(),
         vol_schedule=None,
     )
-    assert chk_old["tolerances"]["sigma_eq_pde"] == 0.30
-    assert chk_old == chk_explicit_none
+    assert chk_implicit["tolerances"]["sigma_eq_pde"] == 0.30
+    assert chk_implicit == chk_explicit_none
 
 
-def test_flat_schedule_equals_constant_sigma():
-    """vol_schedule of all 1.0 → RMS = 1.0 → sigma_eq = sigma. PDE
-    output identical to constant-sigma call (modulo float)."""
+# =============================================================================
+# sigma_eq formula — uses ABSOLUTE vol_schedule, NOT multipliers
+# =============================================================================
+
+def test_flat_absolute_schedule_recovers_constant_sigma():
+    """When vol_schedule is flat at the base sigma value
+    (vol_schedule = [σ, σ, σ, ...]), sigma_eq must equal σ. Earlier
+    bug (PR #82 → PR #84): formula was `sigma * sqrt(mean(vs²))`
+    which gave σ² when vs = σ — i.e., too small by factor 1/σ."""
     from src.math_utils import three_method_cross_check
-    flat = np.ones(60)
-    chk_with = three_method_cross_check(
-        S0=100.0, sigma=0.30, mu=0.05, horizon_days=60,
+    sigma = 0.30
+    flat = np.full(60, sigma)  # absolute vol per day, flat
+    chk = three_method_cross_check(
+        S0=100.0, sigma=sigma, mu=0.05, horizon_days=60,
         dip_price=92.0, rally_price=108.0, mc_result=_mk_mc(),
         vol_schedule=flat,
     )
-    chk_without = three_method_cross_check(
-        S0=100.0, sigma=0.30, mu=0.05, horizon_days=60,
-        dip_price=92.0, rally_price=108.0, mc_result=_mk_mc(),
-    )
-    assert chk_with["tolerances"]["sigma_eq_pde"] == pytest.approx(0.30)
-    # PDE / closed-form values identical (RMS of all-1s is 1.0).
-    for row_w, row_wo in zip(chk_with["table"], chk_without["table"]):
-        assert row_w[1] == pytest.approx(row_wo[1])  # MC unchanged
-        assert row_w[2] == pytest.approx(row_wo[2])  # PDE side
+    assert chk["tolerances"]["sigma_eq_pde"] == pytest.approx(sigma)
 
 
-def test_earnings_spike_raises_sigma_eq():
-    """vol_schedule with a 3× spike around earnings → sigma_eq > sigma.
-    The cross-check now hands PDE the elevated sigma matching what the
-    MC actually saw."""
+def test_earnings_spike_schedule_inflates_sigma_eq():
+    """vol_schedule with a 1.5× earnings spike around 4 days →
+    sigma_eq slightly larger than baseline. Magnitude bounded."""
     from src.math_utils import three_method_cross_check
-    sched = np.ones(60)
-    sched[20:23] = 3.0  # 3-day earnings vol spike
+    sigma = 0.40
+    sched = np.full(60, sigma)
+    sched[20:24] *= 1.5  # 4-day earnings spike at 1.5× baseline vol
     chk = three_method_cross_check(
-        S0=100.0, sigma=0.30, mu=0.05, horizon_days=60,
-        dip_price=92.0, rally_price=108.0, mc_result=_mk_mc(),
-        vol_schedule=sched,
-    )
-    sigma_eq = chk["tolerances"]["sigma_eq_pde"]
-    assert sigma_eq > 0.30
-    # RMS check: sqrt(((57*1 + 3*9))/60) ≈ sqrt(1.4) ≈ 1.183
-    expected = 0.30 * float(np.sqrt(np.mean(sched ** 2)))
-    assert sigma_eq == pytest.approx(expected)
-
-
-def test_real_scenario_reduces_mc_pde_divergence():
-    """End-to-end: simulate a real MC vs PDE comparison. With a
-    realistic earnings spike schedule, the constant-sigma PDE under-
-    estimates touch probabilities relative to MC. Passing vol_schedule
-    to the cross-check should reduce the diff to within tolerance."""
-    from src.math_utils import (
-        analyze_joint_conditional,
-        run_mc_joint_conditional,
-        three_method_cross_check,
-    )
-    S0, sigma, mu, horizon = 100.0, 0.35, 0.10, 60
-
-    # Build a schedule with earnings at day 21 (3-day window, 1.5× spike).
-    from src.config import VOL_SCHEDULE_MULTIPLIERS  # noqa
-    sched = np.ones(horizon)
-    sched[20:24] = 1.5  # mild earnings region
-
-    paths = run_mc_joint_conditional(
-        S0=S0, sigma=sigma, mu=mu,
-        horizon_days=horizon, n_paths=20000, seed=11,
-        vol_schedule=sched,
-    )
-    mc_res = analyze_joint_conditional(
-        paths, S0, dip_price=92.0, rally_price=110.0,
-        horizon_days=horizon, sigma=sigma, vol_schedule=sched,
-    )
-
-    # Without vol_schedule → PDE on plain sigma → larger divergence.
-    chk_unaligned = three_method_cross_check(
-        S0, sigma, mu, horizon, 92.0, 110.0, mc_res,
-    )
-    # With vol_schedule → PDE on sigma_eq → tighter agreement.
-    chk_aligned = three_method_cross_check(
-        S0, sigma, mu, horizon, 92.0, 110.0, mc_res,
-        vol_schedule=sched,
-    )
-
-    # Sum of absolute pp diffs across all four cross-check rows.
-    def _total_div(chk):
-        return sum(row[3] for row in chk["table"])
-
-    assert _total_div(chk_aligned) < _total_div(chk_unaligned), (
-        f"PR #82 expected to tighten cross-check agreement. "
-        f"unaligned={_total_div(chk_unaligned):.2f}pp, "
-        f"aligned={_total_div(chk_aligned):.2f}pp"
-    )
-
-
-def test_sigma_eq_surfaced_in_report_dict():
-    """Operator needs to see in the report that sigma_eq was used —
-    otherwise the cross-check appears to be using `sigma_used` directly,
-    misleading."""
-    from src.math_utils import three_method_cross_check
-    sched = np.ones(60)
-    sched[10] = 2.0
-    chk = three_method_cross_check(
-        S0=100.0, sigma=0.40, mu=0.0, horizon_days=60,
+        S0=100.0, sigma=sigma, mu=0.0, horizon_days=60,
         dip_price=95.0, rally_price=110.0, mc_result=_mk_mc(),
         vol_schedule=sched,
     )
-    assert "sigma_eq_pde" in chk["tolerances"]
-    assert chk["tolerances"]["sigma_eq_pde"] != chk["tolerances"]["sigma_used"]
+    sigma_eq = chk["tolerances"]["sigma_eq_pde"]
+    expected = float(np.sqrt(np.mean(sched ** 2)))
+    assert sigma_eq == pytest.approx(expected)
+    assert sigma_eq > sigma                      # inflated by the spike
+    assert sigma_eq < sigma * 1.5                # but bounded
+
+
+def test_sigma_eq_surfaced_with_metadata():
+    """sigma_eq_pde, fp_widening_factor, schedule_heterogeneity all
+    surface so the operator can see what the cross-check actually used."""
+    from src.math_utils import three_method_cross_check
+    sigma = 0.40
+    sched = np.full(60, sigma)
+    sched[20] = sigma * 2.0
+    chk = three_method_cross_check(
+        S0=100.0, sigma=sigma, mu=0.0, horizon_days=60,
+        dip_price=95.0, rally_price=110.0, mc_result=_mk_mc(),
+        vol_schedule=sched,
+    )
+    tols = chk["tolerances"]
+    assert "sigma_eq_pde" in tols
+    assert "fp_widening_factor" in tols
+    assert "schedule_heterogeneity" in tols
+    # sigma_eq differs from sigma_used (the schedule has a spike).
+    assert tols["sigma_eq_pde"] != tols["sigma_used"]
+
+
+# =============================================================================
+# End-to-end MC vs closed-form convergence — the regression test that
+# would have caught PR #82's bug.
+# =============================================================================
+
+@pytest.mark.parametrize("scenario", [
+    {"name": "flat",  "build": lambda sig, h: np.full(h, sig)},
+    {"name": "spike", "build": lambda sig, h: (lambda s: (s.__setitem__(slice(20, 24), sig * 1.5), s)[1])(np.full(h, sig))},
+])
+def test_mc_marginal_matches_closed_form_within_2pp(scenario):
+    """The regression that would have prevented three speculative PRs.
+
+    Run MC with a vol_schedule (absolute vol per day, flat or spiked),
+    compute marginal touch probabilities, and verify they match the
+    closed-form with sigma_eq within 2pp.
+
+    AMAT cycle-3 evidence: pre-PR-#84, MC vs CF marginal gap was
+    15-22pp. Post-#84: < 1pp on the AMAT inputs. Threshold 2pp here
+    leaves headroom for MC sampling noise at 100k paths.
+    """
+    from src.math_utils import (
+        analyze_joint_conditional,
+        closed_touch_down,
+        closed_touch_up,
+        run_mc_joint_conditional,
+    )
+    # AMAT-like setup.
+    S0, sigma, mu = 455.81, 0.53, 0.05
+    dip, rally = 430.0, 510.0
+    horizon = 60
+    T = horizon / 252.0
+
+    sched = scenario["build"](sigma, horizon)
+
+    paths = run_mc_joint_conditional(
+        S0=S0, sigma=sigma, mu=mu, horizon_days=horizon,
+        n_paths=100_000, vol_schedule=sched, seed=42,
+    )
+    mc = analyze_joint_conditional(
+        paths, S0, dip, rally, horizon, sigma=sigma, vol_schedule=sched,
+    )
+    sigma_eq = float(np.sqrt(np.mean(sched ** 2)))
+    cf_dip = closed_touch_down(S0, dip, T, mu, sigma_eq)
+    cf_rally = closed_touch_up(S0, rally, T, mu, sigma_eq)
+
+    gap_dip = abs(mc["p_dip_touched_any"] - cf_dip) * 100
+    gap_rally = abs(mc["p_rally_touched_any"] - cf_rally) * 100
+    assert gap_dip < 2.0, (
+        f"[{scenario['name']}] dip marginal gap {gap_dip:.2f}pp > 2.0pp — "
+        f"MC={mc['p_dip_touched_any']*100:.2f}% CF={cf_dip*100:.2f}%"
+    )
+    assert gap_rally < 2.0, (
+        f"[{scenario['name']}] rally marginal gap {gap_rally:.2f}pp > 2.0pp — "
+        f"MC={mc['p_rally_touched_any']*100:.2f}% CF={cf_rally*100:.2f}%"
+    )

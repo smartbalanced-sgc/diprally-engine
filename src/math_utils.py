@@ -585,9 +585,22 @@ def three_method_cross_check(
     # RMS-equivalent constant sigma for the analytical methods. Falls
     # back to plain `sigma` when no schedule is supplied (legacy callers
     # and unit tests that drive the cross-check directly).
+    #
+    # PR #84 (root-cause fix): `vol_schedule` here is the per-day
+    # ABSOLUTE volatility (built as base_vol × multipliers in
+    # build_catalyst_vol_schedule), not dimensionless multipliers. So
+    # sqrt(mean(vol_schedule**2)) IS the variance-preserving constant
+    # sigma directly — don't multiply by sigma a second time.
+    # PR #82's `sigma * sqrt(mean(vol_schedule**2))` double-counted
+    # sigma, producing `sigma_eq = sigma² × RMS_multipliers` which is
+    # much smaller than sigma for sigma < 1 (always true). PDE then
+    # ran with vol an order of magnitude too low → under-counted touch
+    # probabilities by 15-22pp vs MC → sacred #16 false-positive
+    # REFUSED-METHOD on 5/26 stable names every cycle. PRs #82 and
+    # #83 were both compensating for this typo; only this fix actually
+    # resolves the divergence.
     if vol_schedule is not None and len(vol_schedule) > 0:
-        rms = float(np.sqrt(np.mean(np.asarray(vol_schedule, dtype=float) ** 2)))
-        sigma_eq = sigma * rms
+        sigma_eq = float(np.sqrt(np.mean(np.asarray(vol_schedule, dtype=float) ** 2)))
     else:
         sigma_eq = sigma
 
