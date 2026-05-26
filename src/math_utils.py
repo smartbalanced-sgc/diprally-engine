@@ -549,18 +549,54 @@ def three_method_cross_check(
     dip_price: float,
     rally_price: float,
     mc_result: dict,
+    vol_schedule: Optional[np.ndarray] = None,
 ) -> dict:
     """Cross-check MC first-passage against PDE + closed-form. Returns
     agreement table and disagreement flags.
+
+    PR #82 (audit #14, unmasked by PR #76): the MC uses a time-varying
+    vol_schedule (constant sigma multiplied by per-step multipliers
+    around earnings / macro events). PDE and closed-form historically
+    received the constant `sigma`. Pre-PR-#76 this discrepancy was
+    masked because the vol_schedule indexing bug silently dropped most
+    in-horizon events out of bounds, so MC was effectively running
+    near-constant vol. After PR #76 placed every event at the correct
+    trading-day index, MC's touch probabilities materially diverged
+    from PDE/closed-form on stable MID/HIGH names with quarterly
+    earnings in the simulation window — tripping sacred #16's tolerance
+    on ~23% of the universe on the first post-fix cycle.
+
+    Fix: when a `vol_schedule` is supplied, compute the RMS-equivalent
+    constant sigma — variance-preserving — and feed PDE / closed-form
+    that value. This restores apples-to-apples comparison. The
+    cross-check then catches REAL math disagreements (drift mis-
+    specification, numerical instability) rather than the structural
+    "time-varying vol vs constant vol" non-disagreement.
+
+    Math: variance of log(S_T/S_0) under sigma_t = sigma * vol_schedule[t]
+    discretized over N steps with dt = 1/N is
+        Var = sigma**2 * dt * Σ vol_schedule[t]**2
+    Matching constant sigma_eff over T = N*dt:
+        sigma_eff**2 * T = sigma**2 * (T/N) * Σ vol_schedule[t]**2
+        sigma_eff = sigma * sqrt(mean(vol_schedule**2))
     """
     T_years = horizon_days / 252.0
 
-    pde = pde_two_barrier(S0, rally_price, dip_price, T_years, mu, sigma)
+    # RMS-equivalent constant sigma for the analytical methods. Falls
+    # back to plain `sigma` when no schedule is supplied (legacy callers
+    # and unit tests that drive the cross-check directly).
+    if vol_schedule is not None and len(vol_schedule) > 0:
+        rms = float(np.sqrt(np.mean(np.asarray(vol_schedule, dtype=float) ** 2)))
+        sigma_eq = sigma * rms
+    else:
+        sigma_eq = sigma
+
+    pde = pde_two_barrier(S0, rally_price, dip_price, T_years, mu, sigma_eq)
     p_rally_first_pde = pde["p_U_first"]
     p_dip_first_pde = pde["p_L_first"]
 
-    p_touch_dip_closed = closed_touch_down(S0, dip_price, T_years, mu, sigma)
-    p_touch_rally_closed = closed_touch_up(S0, rally_price, T_years, mu, sigma)
+    p_touch_dip_closed = closed_touch_down(S0, dip_price, T_years, mu, sigma_eq)
+    p_touch_rally_closed = closed_touch_up(S0, rally_price, T_years, mu, sigma_eq)
 
     p_dip_first_mc = mc_result["p_bag_hold"] + mc_result["p_round_trip"]
     p_rally_first_mc = mc_result["p_no_trade_rally_first"]
@@ -624,7 +660,12 @@ def three_method_cross_check(
         "refused": bool(refusals),
         "tolerances": {"first_passage_pp": tol_fp, "marginal_pp": tol_marg,
                        "refuse_first_passage_pp": refuse_fp, "refuse_marginal_pp": refuse_marg,
-                       "sigma_used": sigma},
+                       "sigma_used": sigma,
+                       # PR #82: PDE/closed-form actually use sigma_eq —
+                       # the RMS-equivalent of sigma×vol_schedule. Surface
+                       # it in the report so operator can see whether the
+                       # cross-check ran with a schedule adjustment.
+                       "sigma_eq_pde": sigma_eq},
         "pde_p_neither": pde["p_neither"],
         "pde_mass_conservation": pde["total"],
         "agreement_status": status,
