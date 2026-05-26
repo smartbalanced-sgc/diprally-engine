@@ -538,6 +538,38 @@ def _compute_verdict_state(*, best, met_threshold_strict, method_check,
     return "BUY"
 
 
+def _all_refusal_reasons(*, best, method_check,
+                          trend_filter_refused: bool,
+                          parabola_filter_refused: bool,
+                          ev_hurdle_refused: bool) -> list:
+    """PR #81 (audit #13): collect ALL refusals that fired this run.
+
+    `_compute_verdict_state` returns a single label (operator-facing
+    headline). When method-disagreement nulls `best`, the EV-hurdle
+    branch can't fire, so a run where BOTH method AND EV would refuse
+    is recorded as just REFUSED-METHOD — EV refusals get under-counted
+    in W10 calibration aggregates.
+
+    This helper returns the full list in the same priority order as
+    `_compute_verdict_state`. CSV captures it in `refusal_reasons_all`
+    so analytics can see joint refusals. UI keeps showing one label.
+    """
+    reasons = []
+    if trend_filter_refused:
+        reasons.append("TREND")
+    if parabola_filter_refused:
+        reasons.append("PARABOLA")
+    if (method_check and method_check.get("refused")
+            and not method_check.get("is_anchor")):
+        reasons.append("METHOD")
+    if ev_hurdle_refused:
+        # ev_hurdle_refused is set BEFORE method-disagreement nulls
+        # best, so this captures EV-failed runs that the verdict-state
+        # tree would have hidden under REFUSED-METHOD.
+        reasons.append("EV")
+    return reasons
+
+
 def compute_sensitivity_table(
     S0, base_sigma, base_mu, horizon_days,
     dip_price, rally_price,
@@ -697,6 +729,12 @@ CSV_COLUMNS = [
     # frequency / revision rationale patterns with realized outcomes.
     "pass2_agreement",           # "" / "agree" / "partial_disagree" / "strong_disagree"
     "pass2_revision_reasoning",  # truncated text
+    # PR #81 (audit #13) — comma-separated list of ALL refusals that
+    # fired this run (TREND / PARABOLA / METHOD / EV). `verdict_state`
+    # still records a single headline label; this column lets W10
+    # calibration aggregates count joint refusals correctly (EV failures
+    # masked by METHOD failures were previously undercounted).
+    "refusal_reasons_all",
 ]
 
 
@@ -1822,6 +1860,14 @@ def run_pipeline(args) -> int:
             parabola_filter_refused=parabola_filter_refused,
             ev_hurdle_refused=ev_hurdle_refused,
         ),
+        # PR #81 (audit #13): joint-refusal record. See _all_refusal_reasons.
+        "refusal_reasons_all": ",".join(_all_refusal_reasons(
+            best=best,
+            method_check=method_check,
+            trend_filter_refused=trend_filter_refused,
+            parabola_filter_refused=parabola_filter_refused,
+            ev_hurdle_refused=ev_hurdle_refused,
+        )),
         # 2026-05-24 audit fix round 2 — persist Pass 2 reasoning + agreement.
         # Stored on the dataclass by parse_ai_pass2 (round-1 audit fix);
         # this is the CSV write so future calibration analysis (D-W10-1)
