@@ -48,6 +48,7 @@ from src.config import (
     GARCH_FALLBACK_SIGMA,
     GRID_PREFILTER_LOOSENESS,
     MEAN_REVERSION_ANCHOR_PCT_BELOW_SPOT,
+    MIN_DIP_PROBABILITY,
     PASS2_CLOSED_FORM_BRACKET_PCT,
     SENSITIVITY_SCENARIOS,
     SIGMA_CLASSES,
@@ -77,6 +78,7 @@ from src.data_fetch import (
 )
 from src.math_utils import (
     analyze_joint_conditional,
+    compute_dual_ev,
     build_catalyst_vol_schedule,
     closed_touch_down,
     closed_touch_up,
@@ -202,8 +204,18 @@ class JointConditionalResult:
     expected_days_dip_to_rally: float
     expected_gain_per_share: float
     expected_bag_hold_loss: float
-    net_ev_per_share: float       # per-share EV (replaces capital-scaled net_expected_value)
+    net_ev_per_share: float       # per-share EV — MAX of (direct, wait-for-dip) post-PR-#86
     ev_pct_of_dip: float          # net_ev_per_share / dip_price (trader-comparable across tickers)
+    # PR #86 — dual-EV fields. Engine reports the WINNER (max EV) as
+    # net_ev_per_share above, but the operator dashboard surfaces BOTH
+    # so the trader can see the alternative entry strategy.
+    ev_direct_per_share: float = 0.0     # enter at spot, exit at rally if touched
+    ev_direct_pct_of_spot: float = 0.0   # ev_direct_per_share / spot
+    ev_wait_per_share: float = 0.0       # wait for dip, then exit at rally
+    ev_wait_pct_of_dip: float = 0.0      # ev_wait_per_share / dip_price (unconditional, includes no-fill paths)
+    p_dip_filled: float = 0.0            # P(dip touched at any point) — fill probability
+    p_rally_hit: float = 0.0             # P(rally touched at any point) — direct-entry win prob
+    verdict_subtype: str = "DIRECT"      # "DIRECT" or "WAIT-FOR-DIP" — which strategy won max EV
 
 
 # =============================================================================
@@ -454,14 +466,33 @@ def scan_dip_rally_grid(
             )
             gain_per_share = float(rally) - float(dip) - friction_per_share
             bag_hold_loss_per_share = float(dip) - result["bag_hold_terminal_median"]
-            net_ev_per_share = (
-                result["p_round_trip"] * gain_per_share
-                + result["p_bag_hold"] * (-bag_hold_loss_per_share)
+
+            # PR #86 — DUAL-EV. Compute EV under BOTH entry strategies on the
+            # same MC paths. The strict-round-trip (wait-for-dip) EV is what
+            # the engine used pre-PR-#86. The direct-entry EV adds the value
+            # of entering at spot and exiting at the rally target if it gets
+            # touched (the previously-discarded "rally first" paths now
+            # contribute positively).
+            dual = compute_dual_ev(
+                paths, S0, float(dip), float(rally), friction_per_share,
+                dip_first_days=dip_first_days_all[:, i],
+                rally_first_days=rally_first_days_all[:, j],
             )
-            # EV as % of dip entry — the trader-meaningful comparable across
-            # tickers regardless of price level. SNDK $5/share on $1500 dip
-            # vs LWLG $0.50/share on $13 dip both compute to ~30bps.
-            ev_pct_of_dip = net_ev_per_share / float(dip)
+
+            # Apply min_dip_probability gate — if the wait strategy has too
+            # little chance of filling, don't even consider it.
+            wait_eligible = dual["p_dip_filled"] >= MIN_DIP_PROBABILITY
+            if wait_eligible and dual["ev_wait_per_share"] >= dual["ev_direct_per_share"]:
+                net_ev_per_share = dual["ev_wait_per_share"]
+                verdict_subtype = "WAIT-FOR-DIP"
+                ev_pct_of_dip = dual["ev_wait_pct_of_dip"]
+            else:
+                net_ev_per_share = dual["ev_direct_per_share"]
+                verdict_subtype = "DIRECT"
+                # For DIRECT trades, "ev_pct_of_dip" is now ev_pct_of_spot
+                # — keeping the field name for backward-compat with the
+                # σ-class hurdle check, but the unit is spot-relative here.
+                ev_pct_of_dip = dual["ev_direct_pct_of_spot"]
 
             jc = JointConditionalResult(
                 dip_price=float(dip),
@@ -478,6 +509,14 @@ def scan_dip_rally_grid(
                 expected_bag_hold_loss=bag_hold_loss_per_share,
                 net_ev_per_share=net_ev_per_share,
                 ev_pct_of_dip=ev_pct_of_dip,
+                # PR #86 — dual-EV fields for dashboard transparency
+                ev_direct_per_share=dual["ev_direct_per_share"],
+                ev_direct_pct_of_spot=dual["ev_direct_pct_of_spot"],
+                ev_wait_per_share=dual["ev_wait_per_share"],
+                ev_wait_pct_of_dip=dual["ev_wait_pct_of_dip"],
+                p_dip_filled=dual["p_dip_filled"],
+                p_rally_hit=dual["p_rally_hit"],
+                verdict_subtype=verdict_subtype,
             )
             candidates.append(jc)
 
@@ -679,6 +718,9 @@ CSV_COLUMNS = [
     "recommended_rally", "p_rally_cond",
     "p_round_trip", "p_bag_hold", "p_no_trade_rally_first", "p_neither",
     "expected_gain_per_share", "net_ev_per_share", "ev_pct_of_dip",
+    # PR #86 — dual-EV fields
+    "verdict_subtype", "ev_direct_bps", "ev_wait_bps",
+    "p_dip_filled", "p_rally_hit",
     "ai_drift_pass1", "ai_drift_pass2", "ai_vol_regime",
     "narrative_score", "catalyst_proximity_drift",
     "garch_alpha_plus_beta", "horizon_days",
@@ -1084,6 +1126,33 @@ def run_pipeline(args) -> int:
             f"daily-bar close ${daily_bar_close:.2f} ({daily_bar_date}). "
             f"May be stale by up to ~2h post-market-close."
         )
+
+    # PR #86 — append today's live spot as a synthetic latest bar to
+    # history_df so time-series signals (RSI, mom_5d, mom_30d, sigma
+    # estimation) reflect the LIVE price. Without this, the parabola
+    # filter (mom_30d) and trend filter would still use Friday's close
+    # on a Tue 5pm cycle, mis-classifying tickers that ran today.
+    # Only append when we have a live quote AND today is a trading day
+    # AND history_df doesn't already have today's bar.
+    if spot_source == "live_quote" and "Date" in history_df.columns:
+        try:
+            from src.market_calendar import is_trading_day
+            today_date = datetime.now().date()
+            if is_trading_day(today_date):
+                last_hist_date = pd.Timestamp(history_df["Date"].iloc[-1]).date()
+                if today_date > last_hist_date:
+                    new_row = pd.DataFrame({
+                        "Date": [pd.Timestamp(today_date)],
+                        "Close": [spot],
+                    })
+                    history_df = pd.concat(
+                        [history_df, new_row], ignore_index=True
+                    )
+                    print(f"   ℹ appended live spot bar for {today_date} "
+                          f"(${spot:.2f}) so time-series signals see today's data")
+        except Exception as _e:
+            print(f"   ⚠ live-spot append failed: {_e!r} — time-series signals stale")
+
     closes_series = history_df["Close"]
     closes = closes_series.values
     returns = np.log(closes_series / closes_series.shift(1)).dropna()
@@ -1888,6 +1957,14 @@ def run_pipeline(args) -> int:
         "expected_gain_per_share": f"{best.expected_gain_per_share:.2f}" if best else "",
         "net_ev_per_share": f"{best.net_ev_per_share:.4f}" if best else "",
         "ev_pct_of_dip": f"{best.ev_pct_of_dip:.6f}" if best else "",
+        # PR #86 — dual-EV fields. verdict_subtype indicates which
+        # strategy won (DIRECT or WAIT-FOR-DIP); ev_direct_bps and
+        # ev_wait_bps surface BOTH numbers for the dashboard + calibration.
+        "verdict_subtype": best.verdict_subtype if best else "",
+        "ev_direct_bps": f"{best.ev_direct_pct_of_spot*10000:.1f}" if best else "",
+        "ev_wait_bps": f"{best.ev_wait_pct_of_dip*10000:.1f}" if best else "",
+        "p_dip_filled": f"{best.p_dip_filled:.4f}" if best else "",
+        "p_rally_hit": f"{best.p_rally_hit:.4f}" if best else "",
         "ai_drift_pass1": f"{pass1.drift_estimate:.4f}" if pass1 else "",
         "ai_drift_pass2": f"{pass2.drift_estimate:.4f}" if pass2 else "",
         "ai_vol_regime": effective_ai.vol_regime if effective_ai else "",

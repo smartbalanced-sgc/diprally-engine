@@ -138,6 +138,13 @@ class HorizonConfig(_StrictModel):
     deep_dip_autoscale_paths: int = Field(gt=0)
 
 
+class WaitForDipConfig(_StrictModel):
+    """PR #86 — dual-EV swing strategy. min_dip_probability: floor on
+    P(dip touched within horizon) below which WAIT-FOR-DIP isn't even
+    considered (capital-deployment efficiency)."""
+    min_dip_probability: float = Field(ge=0.0, le=1.0)
+
+
 class PortfolioGateConfig(_StrictModel):
     """W8 PR #49: portfolio correlation gating. Refuses substitute
     recommendations when two would-recommend tickers have 60d return
@@ -458,6 +465,7 @@ class DiprallyConfig(_StrictModel):
     sigma_class_boundaries: SigmaClassBoundariesConfig
     sigma_classes: dict[str, SigmaClassThresholdConfig]
     horizon: HorizonConfig
+    wait_for_dip: WaitForDipConfig
     mc_distribution: MCDistributionConfig
     portfolio_gate: PortfolioGateConfig
     narrative_drift_adjustment: dict[str, float]
@@ -633,6 +641,14 @@ def _rebind_module_constants() -> None:
     g["DEFAULT_MC_PATHS"] = _CONFIG.horizon.default_mc_paths
     g["DEEP_DIP_AUTOSCALE_THRESHOLD"] = _CONFIG.horizon.deep_dip_autoscale_threshold
     g["DEEP_DIP_AUTOSCALE_PATHS"] = _CONFIG.horizon.deep_dip_autoscale_paths
+
+    # PR #86 — dual-EV wait-for-dip eligibility floor.
+    # Wait-for-dip strategy only considered for setups where the dip
+    # has at least this probability of being touched within horizon.
+    # Below this, only DIRECT entry is evaluated.
+    g["MIN_DIP_PROBABILITY"] = getattr(
+        getattr(_CONFIG, "wait_for_dip", None), "min_dip_probability", 0.30
+    )
 
     # W9 PR #48: MC distribution config (normal vs student_t per σ-class).
     g["MC_DISTRIBUTION"] = _CONFIG.mc_distribution

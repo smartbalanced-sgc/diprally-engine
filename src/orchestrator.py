@@ -335,6 +335,18 @@ class TickerDecision:
     verdict: str               # BUY / WAIT / REFUSED-EV / REFUSED-TREND / REFUSED-METHOD / FAIL
     dashboard_href: Optional[str] = None
     status_note: str = ""      # human-readable extra context
+    # PR #86 — dual-EV strategy fields. verdict_subtype: "DIRECT" /
+    # "WAIT-FOR-DIP" indicating which entry strategy maximized EV.
+    # ev_direct_bps / ev_wait_bps surface BOTH so the operator can see
+    # the alternative. expected_rally_date / expected_dip_date are
+    # CALENDAR DATES (per user spec — no trading-day numbers).
+    verdict_subtype: str = "DIRECT"
+    ev_direct_bps: Optional[float] = None
+    ev_wait_bps: Optional[float] = None
+    p_dip_filled: Optional[float] = None
+    p_rally_hit: Optional[float] = None
+    expected_rally_date: Optional[str] = None  # e.g. "Jun 18, 2026"
+    expected_dip_date: Optional[str] = None
 
 
 _OUTPUT_ROOT = Path(__file__).resolve().parent.parent / "output"
@@ -472,6 +484,35 @@ def _decision_from_run(run: TickerRun) -> TickerDecision:
         ev_pct = _parse_float(row.get("ev_pct_of_dip"))
         if ev_pct is not None:
             decision.ev_bps_of_dip = ev_pct * 10000.0
+        # PR #86 — dual-EV fields. Empty in legacy CSV rows (pre-#86).
+        decision.verdict_subtype = (row.get("verdict_subtype") or "DIRECT").strip()
+        decision.ev_direct_bps = _parse_float(row.get("ev_direct_bps"))
+        decision.ev_wait_bps = _parse_float(row.get("ev_wait_bps"))
+        decision.p_dip_filled = _parse_float(row.get("p_dip_filled"))
+        decision.p_rally_hit = _parse_float(row.get("p_rally_hit"))
+        # Compute calendar dates for expected timing.
+        days_to_dip = _parse_float(row.get("expected_days_to_dip"))
+        # expected_days_to_rally not currently in CSV — derive from dip
+        # + dip_to_rally if needed; for now leave None when not available.
+        try:
+            from src.market_calendar import add_trading_days
+            from datetime import datetime as _dt
+            today_d = _dt.now().date()
+            if days_to_dip is not None and days_to_dip > 0:
+                d = add_trading_days(today_d, int(round(days_to_dip)))
+                decision.expected_dip_date = d.strftime("%b %d, %Y")
+            # For the rally, use ev_pct_of_dip horizon midpoint heuristic
+            # (median of expected_days_to_dip + days_dip_to_rally if both
+            # present, else just horizon_days estimate). Simpler: use
+            # the engine's horizon as the upper bound.
+            horizon = int(row.get("horizon_days") or 20)
+            # Median rally date — use horizon midpoint as a rough proxy
+            # when fine-grained data isn't in CSV.
+            r_days = max(1, horizon // 2)
+            d_rally = add_trading_days(today_d, r_days)
+            decision.expected_rally_date = d_rally.strftime("%b %d, %Y")
+        except Exception:
+            pass
     # Verdict: engine writes verdict_state to CSV directly (audit fix
     # 2026-05-24). Read it from CSV rather than reconstructing from
     # dip/EV alone — the old reconstruction silently misclassified

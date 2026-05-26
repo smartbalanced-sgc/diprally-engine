@@ -252,12 +252,15 @@ sigma_classes:
     ev_hurdle_bps: 25                      # was global 50 — adjusted for high-σ regime
     parabola_mom_30d_threshold: 1.00       # was global 0.50 — +100% is true blow-off for EXTREME
     grid:
+      # PR #86 — grids retuned for 20d horizon (was 60d). Scale factor
+      # √(20/60) = 0.577. Smaller ranges keep targets within
+      # statistically-reachable regions at the shorter horizon.
       dip_step_pct: 0.010
       rally_step_pct: 0.010
-      dip_max_depth_pct: 0.50
-      rally_max_reach_pct: 0.60
+      dip_max_depth_pct: 0.29       # was 0.50 (60d) → ~0.29 at 20d
+      rally_max_reach_pct: 0.35     # was 0.60 (60d) → ~0.35 at 20d
     friction_bps_round_trip: 70.0
-    panic_floor_pct: 0.35
+    panic_floor_pct: 0.20            # was 0.35 (60d) → ~0.20 at 20d (must be < dip_max_depth_pct)
     ai_vol_regime_multipliers:
       HIGH: 1.10
       MEDIUM: 1.00
@@ -271,10 +274,10 @@ sigma_classes:
     grid:
       dip_step_pct: 0.0075
       rally_step_pct: 0.0075
-      dip_max_depth_pct: 0.35
-      rally_max_reach_pct: 0.50
+      dip_max_depth_pct: 0.20       # was 0.35 (60d) → ~0.20 at 20d
+      rally_max_reach_pct: 0.29     # was 0.50 (60d) → ~0.29 at 20d
     friction_bps_round_trip: 35.0
-    panic_floor_pct: 0.25
+    panic_floor_pct: 0.14            # was 0.25 (60d) → ~0.14 at 20d
     ai_vol_regime_multipliers:
       HIGH: 1.15
       MEDIUM: 1.00
@@ -288,10 +291,10 @@ sigma_classes:
     grid:
       dip_step_pct: 0.005
       rally_step_pct: 0.005
-      dip_max_depth_pct: 0.20
-      rally_max_reach_pct: 0.30
+      dip_max_depth_pct: 0.12       # was 0.20 (60d) → ~0.12 at 20d
+      rally_max_reach_pct: 0.18     # was 0.30 (60d) → ~0.18 at 20d
     friction_bps_round_trip: 18.0
-    panic_floor_pct: 0.18
+    panic_floor_pct: 0.10            # was 0.18 (60d) → ~0.10 at 20d
     ai_vol_regime_multipliers:
       HIGH: 1.25
       MEDIUM: 1.00
@@ -301,10 +304,26 @@ sigma_classes:
 # Horizon + MC paths
 # -----------------------------------------------------------
 horizon:
-  default_days: 60
+  # PR #86 — default shortened from 60→20 trading days. Volatile-stock
+  # swing trading sweet spot. Higher per-trade EV at this horizon (less
+  # friction drag); calibration validates 3× faster than 60d. σ-class
+  # grids below were retuned by √(20/60) = 0.577 scaling so dip/rally
+  # ranges remain math-reachable.
+  default_days: 20
   default_mc_paths: 100000
-  deep_dip_autoscale_threshold: 0.40
+  deep_dip_autoscale_threshold: 0.25      # was 0.40 — scaled for 20d
   deep_dip_autoscale_paths: 200000
+
+# -----------------------------------------------------------
+# Dual-EV swing strategy (PR #86)
+# -----------------------------------------------------------
+# Engine reports both DIRECT (enter at spot) and WAIT-FOR-DIP entry
+# EVs per ticker, picks whichever has the higher unconditional EV.
+# min_dip_probability gates WAIT eligibility — below this fill
+# probability, the wait strategy isn't even considered because too
+# few paths would actually enter.
+wait_for_dip:
+  min_dip_probability: 0.30
 
 # -----------------------------------------------------------
 # W9 PR #48 — fat-tail Monte Carlo.
