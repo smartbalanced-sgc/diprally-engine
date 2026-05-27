@@ -51,11 +51,12 @@ def main():
                    help="Override the $2/day cap (USD). Broker enforces strict ≤.")
     p.add_argument("--dry-run", action="store_true",
                    help="Run Phase 1 + broker allocation, skip Phase 2 (AI dispatch).")
-    p.add_argument("--max-parallel", type=int, default=2,
-                   help="Concurrent subprocesses per phase (default 2 — modest "
-                        "parallelism that halves wall-clock time on a typical "
-                        "consumer Mac without overloading FMP or the operator's "
-                        "RAM. Bump to 4-8 if your machine and network can handle it.")
+    p.add_argument("--max-parallel", type=int, default=4,
+                   help="Concurrent subprocesses per phase (PR #89: default "
+                        "4 — empirically safe on FMP Starter plan per the "
+                        "diagnostic burst test 2026-05-27, 3 req/sec sustained "
+                        "with no 429s. Bump to 6-8 if you upgrade FMP tier. "
+                        "Drop to 2 for slower machines.")
     p.add_argument("--run-id", default=None,
                    help="Override the output/<run_id>/ directory name.")
     args = p.parse_args()

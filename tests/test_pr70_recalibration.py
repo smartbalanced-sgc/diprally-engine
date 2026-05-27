@@ -43,30 +43,37 @@ from src.config import SIGMA_CLASSES
 # =============================================================================
 
 def test_extreme_class_has_recalibrated_thresholds():
+    """PR #89: parabola threshold raised 1.00 → 2.00 — AI-cycle EXTREME
+    names routinely hit 100-180% mom_30d without parabolic-reversal
+    (MRAM, LWLG, VELO observed +150-180% during the bull cycle)."""
     extreme = SIGMA_CLASSES["EXTREME"]
     assert extreme.conviction.dip == pytest.approx(0.55)
     assert extreme.conviction.rally_conditional == pytest.approx(0.55)
     assert extreme.ev_hurdle_bps == pytest.approx(25.0)
-    assert extreme.parabola_mom_30d_threshold == pytest.approx(1.00)
+    assert extreme.parabola_mom_30d_threshold == pytest.approx(2.00)
 
 
 def test_high_class_has_recalibrated_thresholds():
+    """PR #89: parabola threshold raised 0.80 → 1.50 — AI-cycle HIGH
+    names (MU, ARM, NBIS, INTC) routinely hit 80-100% mom_30d without
+    mean-reverting during the secular bull cycle."""
     high = SIGMA_CLASSES["HIGH"]
     assert high.conviction.dip == pytest.approx(0.60)
     assert high.conviction.rally_conditional == pytest.approx(0.65)
     assert high.ev_hurdle_bps == pytest.approx(25.0)
-    assert high.parabola_mom_30d_threshold == pytest.approx(0.80)
+    assert high.parabola_mom_30d_threshold == pytest.approx(1.50)
 
 
-def test_mid_class_unchanged():
-    """MID class should retain its original conservative thresholds —
-    the recalibration only loosens HIGH/EXTREME where the σ regime
-    demands it. Established large-caps at +50%/30d IS exceptional."""
+def test_mid_class_recalibrated_for_ai_cycle():
+    """PR #89: MID parabola threshold raised 0.50 → 0.80. Established
+    large-caps RARELY rally >50% in 30 days in normal markets, but AI-
+    cycle MID names (LRCX, AMAT) have done so. Threshold now flags
+    only true exceptional moves."""
     mid = SIGMA_CLASSES["MID"]
     assert mid.conviction.dip == pytest.approx(0.65)
     assert mid.conviction.rally_conditional == pytest.approx(0.70)
     assert mid.ev_hurdle_bps == pytest.approx(50.0)
-    assert mid.parabola_mom_30d_threshold == pytest.approx(0.50)
+    assert mid.parabola_mom_30d_threshold == pytest.approx(0.80)
 
 
 def test_thresholds_monotonic_across_classes():
@@ -154,12 +161,12 @@ def test_sndk_like_high_class_no_longer_blocked_by_old_thresholds():
 
 
 def test_high_mom_30d_still_refused_above_new_threshold():
-    """Sanity: if a HIGH-class name DOES exceed +80% mom_30d, the new
-    threshold STILL refuses it. We're not gutting the filter —
-    just calibrating it to the σ regime."""
+    """Sanity: if a HIGH-class name DOES exceed the new threshold, the
+    filter STILL refuses it. PR #89 raised HIGH threshold to 1.50 —
+    so +180% in 30 days still trips it (true blowoff)."""
     high = SIGMA_CLASSES["HIGH"]
-    # +100% in 30 days IS true blow-off for HIGH-class
-    assert 1.00 > high.parabola_mom_30d_threshold
+    # +180% in 30 days IS true blow-off even on the new looser threshold
+    assert 1.80 > high.parabola_mom_30d_threshold
 
 
 def test_extreme_threshold_above_typical_extreme_monthly_swing():
