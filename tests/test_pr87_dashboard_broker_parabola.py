@@ -272,8 +272,9 @@ def test_dual_ev_detail_row_renders_for_buy():
     # Calendar dates surface
     assert "Jun 22, 2026" in html_out
     assert "May 28, 2026" in html_out
-    # Winner marker on DIRECT
-    assert "★ winner" in html_out
+    # PR #88: ★ winner marker removed (was misleading — always WAIT-wins
+    # in current data was foolish per operator feedback).
+    assert "★ winner" not in html_out
 
 
 def test_dual_ev_detail_row_skipped_when_no_data():

@@ -725,36 +725,59 @@ def _spot_source_line() -> str:
 
 
 def _ambiguity_tooltip_text(amb: float, tier: str) -> str:
-    """Plain-English tooltip text for an ambiguity value based on its
-    range + the AI tier the broker assigned."""
+    """Plain-English tooltip for ambiguity (PR #88 rewrite).
+
+    Ambiguity is the math-layer's SELF-CONFIDENCE score. It is NOT a
+    touch probability — it does NOT mean "X% of paths hit a target."
+    It's a composite of:
+      - σ-anchor disagreement: how much do GARCH / realized vol /
+        options-IV disagree on this ticker's volatility?
+      - Signal alignment: are the ~10 drift signals pointing the same
+        direction or scattered?
+      - Cross-check divergence: do MC, PDE, and closed-form math
+        agree on touch probabilities?
+    LOW ambiguity = math is internally consistent and confident.
+    HIGH ambiguity = math sees conflicting signals; AI critique adds
+    real value (which is why the broker uses ambiguity to decide tier).
+    """
     if amb is None:
         return "Ambiguity unavailable for this ticker."
     if amb <= 0.10:
         bucket = "VERY LOW"
-        narrative = "Math is extremely confident. AI critique has minimal leverage."
+        narrative = "Math layer is extremely confident in its own outputs."
     elif amb <= 0.20:
         bucket = "LOW"
-        narrative = "Math is highly confident. AI critique has limited leverage."
+        narrative = "Math layer is highly confident."
     elif amb <= 0.40:
         bucket = "LOW-MEDIUM"
-        narrative = "Moderate confidence."
+        narrative = "Moderate confidence — some signal disagreement."
     elif amb <= 0.50:
         bucket = "MEDIUM"
-        narrative = "Moderate uncertainty. AI critique adds value."
+        narrative = "Moderate uncertainty — AI critique adds value here."
     elif amb <= 0.65:
         bucket = "MEDIUM-HIGH"
-        narrative = "High uncertainty. AI critique has strong leverage."
+        narrative = "High uncertainty — math signals conflict; AI critique has strong leverage."
     else:
         bucket = "HIGH"
-        narrative = "Very high uncertainty. AI critique has maximum leverage."
+        narrative = "Very high uncertainty — math layer doesn't agree with itself."
     return (
-        f"<strong>{amb:.2f} Ambiguity ({bucket}):</strong> {narrative} "
-        f"Broker assigned {tier}."
+        f"<strong>{amb:.2f} Ambiguity ({bucket}):</strong> Math-layer "
+        f"SELF-confidence score — NOT a touch probability. {narrative} "
+        f"Broker assigned tier {tier}."
     )
 
 
 def _prt_tooltip_text(prt: float | None) -> str:
-    """Tooltip for P(round-trip) value."""
+    """Tooltip for P(round-trip) — PR #88 plain-English rewrite.
+
+    P(round-trip) is the probability that BOTH dip touches FIRST and
+    rally touches AFTER over the horizon. It is NOT P(dip)×P(rally)
+    because those events are conditional — a path that dipped has
+    already had downside drift, so its conditional rally probability
+    is LOWER than the unconditional. That's why you can have P(dip)=86%
+    and P(rally)=67% but P(round-trip)=38% (not 57% from independent
+    multiplication).
+    """
     if prt is None:
         return "P(round-trip) unavailable for this ticker."
     pct = prt * 100
@@ -766,7 +789,6 @@ def _prt_tooltip_text(prt: float | None) -> str:
         nuance = "Just above coin-flip."
     else:
         nuance = "Below coin-flip — weaker setup."
-    # PR #87 — read horizon dynamically (was hardcoded 60-day).
     try:
         from src.config import DEFAULT_HORIZON_DAYS as _H
         h = int(_H)
@@ -774,7 +796,9 @@ def _prt_tooltip_text(prt: float | None) -> str:
         h = 20
     return (
         f"<strong>{pct:.0f}% P(round-trip):</strong> {pct:.0f}% of 100,000 "
-        f"simulated {h}-trading-day paths hit both dip AND rally. {nuance}"
+        f"simulated {h}-trading-day paths touch dip FIRST then rally AFTER. "
+        f"NOT equal to P(dip)×P(rally): a path that dipped tends to have "
+        f"downward drift, so conditional rally probability is lower. {nuance}"
     )
 
 
@@ -792,9 +816,11 @@ def _ev_tooltip_text(ev_bps: float | None) -> str:
     else:
         nuance = "Significantly negative — loses money on average after friction."
     return (
-        f"<strong>{ev_bps:+.0f} bps EV ({pct:+.2f}%):</strong> Expected "
-        f"return per share after friction, weighted across all simulated "
-        f"outcomes. {nuance}"
+        f"<strong>{ev_bps:+.0f} bps EV ({pct:+.2f}%):</strong> If you "
+        f"took this trade 100 times under identical conditions, your "
+        f"average return per trade — after weighting wins, losses, "
+        f"no-fill paths, and round-trip friction — would be "
+        f"{pct:+.2f}% of your entry price. {nuance}"
     )
 
 
@@ -817,15 +843,61 @@ _VERDICT_SORT_PRIORITY = {
 
 
 def _sort_decisions_for_dashboard(decisions: list) -> list:
-    """Sort: verdict priority desc, then EV bps desc. BUYs at top
-    (highest gain first), substitutes next, then refusals by EV magnitude,
-    operator-action verdicts at the bottom."""
+    """PR #88 — sort by conviction × gain (operator-actionable ordering).
+
+    Priority bands (high → low):
+      1. BUYs            — sorted by (P_rally × conditional_gain) desc.
+         This is the operator's true "best opportunity" ranking: high
+         probability of meaningful gain rises first.
+      2. REFUSED-EV      — sorted by EV bps DESC (closest to hurdle first;
+                           these are the names worth watching).
+      3. REFUSED-PARABOLA — sorted by EV bps desc within this group
+                           (the ones the parabola filter blocked).
+      4. REFUSED-METHOD / REFUSED-TREND — math couldn't agree.
+      5. WAIT            — no setup found at any qualifying threshold.
+      6. FAIL / DELISTED — data layer problems.
+    """
+    BAND_BUY = 100
+    BAND_REFUSED_EV = 70
+    BAND_REFUSED_PARABOLA = 60
+    BAND_REFUSED_METHOD = 50
+    BAND_REFUSED_TREND = 40
+    BAND_WAIT = 20
+    BAND_FAIL = 0
+    BAND_REFUSED_CORRELATED = 80   # was a BUY-equivalent before the gate dropped it
+    BAND_MAP = {
+        "BUY": BAND_BUY,
+        "REFUSED-CORRELATED": BAND_REFUSED_CORRELATED,
+        "REFUSED-EV": BAND_REFUSED_EV,
+        "REFUSED-PARABOLA": BAND_REFUSED_PARABOLA,
+        "REFUSED-METHOD": BAND_REFUSED_METHOD,
+        "REFUSED-TREND": BAND_REFUSED_TREND,
+        "WAIT": BAND_WAIT,
+        "FAIL": BAND_FAIL,
+        "DELISTED": BAND_FAIL,
+    }
+
+    def conviction_gain_score(d):
+        """Operator-actionable score for BUY ranking: P(rally hit) ×
+        conditional gain pct. Higher = more attractive. Falls back to
+        EV bps when conviction fields aren't populated (legacy CSV
+        rows / test fixtures)."""
+        if (d.p_rally_hit is not None and d.spot is not None
+                and d.rally_target is not None and d.spot > 0):
+            gain_pct = (d.rally_target - d.spot) / d.spot
+            return float(d.p_rally_hit) * float(gain_pct) * 1e4  # → ~bps
+        # Fallback: EV bps. Same monotonic intent (higher = better).
+        return d.ev_bps_of_dip if d.ev_bps_of_dip is not None else -1e9
+
     def sort_key(d):
-        priority = _VERDICT_SORT_PRIORITY.get(d.verdict, 0)
-        # Higher EV = sorts first within a priority group
-        ev = d.ev_bps_of_dip if d.ev_bps_of_dip is not None else -1e9
-        # Sort: priority DESC, ev DESC. Use negation since Python sort ascends.
-        return (-priority, -ev, d.ticker)
+        band = BAND_MAP.get(d.verdict, BAND_FAIL)
+        if d.verdict == "BUY":
+            score = conviction_gain_score(d)
+        else:
+            # Within refusal bands, EV closer to zero (less negative) ranks first
+            score = d.ev_bps_of_dip if d.ev_bps_of_dip is not None else -1e9
+        return (-band, -score, d.ticker)
+
     return sorted(decisions, key=sort_key)
 
 
@@ -860,10 +932,11 @@ def _render_dual_ev_detail_row(d) -> str:
     direct_color = ev_color(d.ev_direct_bps)
     wait_color = ev_color(d.ev_wait_bps)
 
-    # Which strategy is the headline winner for this ticker
-    subtype = (d.verdict_subtype or "DIRECT").strip()
-    direct_winner = "★ winner" if subtype == "DIRECT" else ""
-    wait_winner = "★ winner" if subtype == "WAIT-FOR-DIP" else ""
+    # PR #88 — removed ★ winner marker (always-WAIT-wins in current
+    # data was misleading). The verdict_subtype is still in the CSV
+    # for analytics; UI just shows both strategies cleanly.
+    direct_winner = ""
+    wait_winner = ""
 
     # Conditional gain for DIRECT (rally - spot) and WAIT (rally - dip)
     direct_gain_str = "—"
@@ -888,7 +961,7 @@ def _render_dual_ev_detail_row(d) -> str:
     dip_fmt = f"${d.dip_target:.2f}" if d.dip_target else "$—"
 
     return f"""      <tr class="dual-ev-detail" data-verdict="{html.escape(d.verdict)}">
-        <td colspan="11" class="dual-ev-cell">
+        <td colspan="6" class="dual-ev-cell">
           <div class="dual-ev-grid">
             <div class="dual-ev-col">
               <div class="dual-ev-strategy">DIRECT entry @ {spot_fmt} <span class="dual-ev-winner">{direct_winner}</span></div>
@@ -930,6 +1003,19 @@ def _render_dashboard_html(decisions: list, allocation,
     # WAIT / FAIL / DELISTED at the bottom.
     sorted_decisions = _sort_decisions_for_dashboard(decisions)
 
+    # PR #88 — navigation chip strip above the table. Clicking a ticker
+    # scrolls to its row in the table. Each chip is color-coded by
+    # verdict so the operator can visually scan the universe state.
+    nav_chips = []
+    for d in sorted_decisions:
+        chip_color = _VERDICT_COLORS.get(d.verdict, "#6e7681")
+        nav_chips.append(
+            f'<a href="#row-{d.ticker}" class="ticker-chip" '
+            f'style="border-color:{chip_color}" '
+            f'title="{html.escape(d.verdict)}">{html.escape(d.ticker)}</a>'
+        )
+    ticker_nav_html = " ".join(nav_chips)
+
     rows_html = []
     for d in sorted_decisions:
         color = _VERDICT_COLORS.get(d.verdict, "#6e7681")
@@ -943,7 +1029,10 @@ def _render_dashboard_html(decisions: list, allocation,
         else:
             ev_str = "—"
 
-        # Dip cell links to the per-ticker engine dashboard
+        # PR #88: detail-row dip price links to per-ticker dashboard
+        # (was the table's Dip cell; column removed in this PR). The
+        # link is preserved on dip_cell here for the detail row to
+        # consume in _render_dual_ev_detail_row.
         dashboard_href = f"{href_prefix}{d.ticker.lower()}_dipnrally_dashboard.html"
         if d.dip_target:
             dip_cell = (
@@ -953,11 +1042,15 @@ def _render_dashboard_html(decisions: list, allocation,
         else:
             dip_cell = "—"
 
-        # Ticker cell → Trading212 instrument page (new tab)
+        # Ticker cell → Trading212 (new tab) PLUS small per-ticker
+        # dashboard chip 📊 (internal) so the operator can still reach
+        # the per-ticker analysis with one click.
         t212 = _trading212_url(d.ticker)
         ticker_cell = (
             f'<a href="{html.escape(t212)}" target="_blank" rel="noopener">'
             f'{html.escape(d.ticker)}</a>'
+            f' <a href="{html.escape(dashboard_href)}" class="ticker-details-link" '
+            f'title="Per-ticker dip-rally analysis">📊</a>'
         )
 
         # Tooltips
@@ -994,17 +1087,16 @@ def _render_dashboard_html(decisions: list, allocation,
         else:
             ev_cell = ev_str
 
-        rows_html.append(f"""      <tr data-verdict="{html.escape(d.verdict)}">
+        # PR #88: trimmed main row. Spot/Dip/Rally/P(RT)/EV bps moved
+        # to the detail row below (was duplicating data per your screenshot
+        # critique). Main row carries only the headline categorical info.
+        ticker_anchor = f'row-{d.ticker}'
+        rows_html.append(f"""      <tr id="{ticker_anchor}" data-verdict="{html.escape(d.verdict)}">
         <td class="mobile-ticker">{ticker_cell}</td>
         <td data-label="σ-class">{html.escape(d.sigma_class)}</td>
         <td data-label="Tier">{html.escape(d.tier)}</td>
         <td class="num" data-label="Ambiguity">{ambig_cell}</td>
         <td class="mobile-verdict" data-label="Verdict"><span class="verdict" style="background:{color}">{html.escape(d.verdict)}</span></td>
-        <td class="num" data-label="Spot">{spot_str}</td>
-        <td class="num" data-label="Dip">{dip_cell}</td>
-        <td class="num" data-label="Rally">{rally_str}</td>
-        <td class="num" data-label="P(RT)">{prt_cell}</td>
-        <td class="num" data-label="EV bps">{ev_cell}</td>
         <td class="note mobile-note">{html.escape(d.status_note)}</td>
       </tr>
 {_render_dual_ev_detail_row(d)}""")
@@ -1155,6 +1247,43 @@ a:hover {{ color: var(--link-hover); text-decoration: underline; }}
                     box-shadow: 0 6px 20px rgba(0,0,0,0.6); }}
 .tt:hover .tt-content {{ visibility: visible; opacity: 1; }}
 .tt strong {{ color: var(--text-primary); }}
+/* PR #88 — ticker navigation strip above the table */
+.ticker-nav {{
+    padding: 12px 16px;
+    background: rgba(56,139,253,0.06);
+    border-radius: 8px;
+    margin: 16px 0;
+    line-height: 2.2;
+}}
+.ticker-nav-label {{
+    color: var(--text-muted);
+    margin-right: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}}
+.ticker-chip {{
+    display: inline-block;
+    padding: 3px 9px;
+    margin: 0 2px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    border-left-width: 3px;
+    color: var(--text-primary);
+    text-decoration: none;
+    font-size: 12px;
+    font-weight: 500;
+    background: rgba(255,255,255,0.02);
+}}
+.ticker-chip:hover {{
+    background: rgba(56,139,253,0.12);
+    color: var(--text-primary);
+    transform: translateY(-1px);
+    transition: all 0.12s;
+}}
+table#universe tr[id^="row-"] {{ scroll-margin-top: 80px; }}
+.note-col {{ min-width: 220px; }}
 /* PR #87 — dual-EV detail row under each ticker showing both entry strategies */
 tr.dual-ev-detail td.dual-ev-cell {{
     background: rgba(56,139,253,0.04);
@@ -1334,6 +1463,11 @@ footer {{ margin-top: 32px; color: var(--text-tertiary); font-size: 11.5px;
     </div>
 </div>
 <div class="table-container">
+<div id="ticker-nav" class="ticker-nav">
+  <span class="ticker-nav-label">Jump to:</span>
+  {ticker_nav_html}
+</div>
+
 <table id="universe">
     <thead>
         <tr>
@@ -1342,12 +1476,7 @@ footer {{ margin-top: 32px; color: var(--text-tertiary); font-size: 11.5px;
             <th>Tier</th>
             <th>Ambiguity</th>
             <th>Verdict</th>
-            <th>Spot</th>
-            <th>Dip</th>
-            <th>Rally</th>
-            <th>P(RT)</th>
-            <th>EV bps (%)</th>
-            <th>Status</th>
+            <th class="note-col">Reason / status</th>
         </tr>
     </thead>
     <tbody>
