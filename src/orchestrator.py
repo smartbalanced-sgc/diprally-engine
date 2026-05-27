@@ -766,9 +766,15 @@ def _prt_tooltip_text(prt: float | None) -> str:
         nuance = "Just above coin-flip."
     else:
         nuance = "Below coin-flip — weaker setup."
+    # PR #87 — read horizon dynamically (was hardcoded 60-day).
+    try:
+        from src.config import DEFAULT_HORIZON_DAYS as _H
+        h = int(_H)
+    except Exception:
+        h = 20
     return (
         f"<strong>{pct:.0f}% P(round-trip):</strong> {pct:.0f}% of 100,000 "
-        f"simulated 60-day paths hit both dip AND rally. {nuance}"
+        f"simulated {h}-trading-day paths hit both dip AND rally. {nuance}"
     )
 
 
@@ -821,6 +827,86 @@ def _sort_decisions_for_dashboard(decisions: list) -> list:
         # Sort: priority DESC, ev DESC. Use negation since Python sort ascends.
         return (-priority, -ev, d.ticker)
     return sorted(decisions, key=sort_key)
+
+
+def _render_dual_ev_detail_row(d) -> str:
+    """PR #87 — institutional detail row under each ticker's main row.
+    Shows BOTH entry strategies' EV breakdown, win/lose probabilities,
+    and expected calendar dates so the operator can SEE why each
+    verdict was reached and which leg failed (for refusals)."""
+    # Skip detail row for failed phase 1 / delisted tickers (no math data).
+    if d.ev_direct_bps is None and d.ev_wait_bps is None:
+        return ""
+
+    def fmt_bps(v):
+        if v is None:
+            return "—"
+        sign = "+" if v >= 0 else ""
+        return f"{sign}{v:.0f} bps ({sign}{v/100:.2f}%)"
+
+    def fmt_pct(v):
+        if v is None:
+            return "—"
+        return f"{v*100:.0f}%"
+
+    # Color-code EVs: green if positive, red if negative, gray if None.
+    def ev_color(v):
+        if v is None:
+            return "#777"
+        return "#26a269" if v >= 0 else "#c01c28"
+
+    direct_ev_str = fmt_bps(d.ev_direct_bps)
+    wait_ev_str = fmt_bps(d.ev_wait_bps)
+    direct_color = ev_color(d.ev_direct_bps)
+    wait_color = ev_color(d.ev_wait_bps)
+
+    # Which strategy is the headline winner for this ticker
+    subtype = (d.verdict_subtype or "DIRECT").strip()
+    direct_winner = "★ winner" if subtype == "DIRECT" else ""
+    wait_winner = "★ winner" if subtype == "WAIT-FOR-DIP" else ""
+
+    # Conditional gain for DIRECT (rally - spot) and WAIT (rally - dip)
+    direct_gain_str = "—"
+    wait_gain_str = "—"
+    if d.spot and d.rally_target and d.spot > 0:
+        direct_gain_pct = (d.rally_target - d.spot) / d.spot * 100
+        direct_gain_str = f"+{direct_gain_pct:.2f}% if rally hits"
+    if d.dip_target and d.rally_target and d.dip_target > 0:
+        wait_gain_pct = (d.rally_target - d.dip_target) / d.dip_target * 100
+        wait_gain_str = f"+{wait_gain_pct:.2f}% if filled & rally hits"
+
+    p_rally_str = fmt_pct(d.p_rally_hit) if d.p_rally_hit is not None else "—"
+    p_dip_str = fmt_pct(d.p_dip_filled) if d.p_dip_filled is not None else "—"
+
+    # Calendar timing
+    rally_date = d.expected_rally_date or "—"
+    dip_date = d.expected_dip_date or "—"
+
+    # Pre-format dollar amounts to avoid nested f-string ternary issues
+    spot_fmt = f"${d.spot:.2f}" if d.spot else "$—"
+    rally_fmt = f"${d.rally_target:.2f}" if d.rally_target else "$—"
+    dip_fmt = f"${d.dip_target:.2f}" if d.dip_target else "$—"
+
+    return f"""      <tr class="dual-ev-detail" data-verdict="{html.escape(d.verdict)}">
+        <td colspan="11" class="dual-ev-cell">
+          <div class="dual-ev-grid">
+            <div class="dual-ev-col">
+              <div class="dual-ev-strategy">DIRECT entry @ {spot_fmt} <span class="dual-ev-winner">{direct_winner}</span></div>
+              <div class="dual-ev-row"><span class="dual-ev-label">Target:</span> {rally_fmt} &nbsp; <span class="dual-ev-detail-text">{direct_gain_str}</span></div>
+              <div class="dual-ev-row"><span class="dual-ev-label">P(rally hits):</span> {p_rally_str}</div>
+              <div class="dual-ev-row"><span class="dual-ev-label">EV (unconditional):</span> <span style="color:{direct_color}">{direct_ev_str}</span></div>
+              <div class="dual-ev-row"><span class="dual-ev-label">Expected rally:</span> {rally_date}</div>
+            </div>
+            <div class="dual-ev-col">
+              <div class="dual-ev-strategy">WAIT-FOR-DIP @ {dip_fmt} <span class="dual-ev-winner">{wait_winner}</span></div>
+              <div class="dual-ev-row"><span class="dual-ev-label">P(dip fills):</span> {p_dip_str}</div>
+              <div class="dual-ev-row"><span class="dual-ev-label">Target:</span> {rally_fmt} &nbsp; <span class="dual-ev-detail-text">{wait_gain_str}</span></div>
+              <div class="dual-ev-row"><span class="dual-ev-label">EV (unconditional, incl. no-fill paths):</span> <span style="color:{wait_color}">{wait_ev_str}</span></div>
+              <div class="dual-ev-row"><span class="dual-ev-label">Expected dip:</span> {dip_date}</div>
+            </div>
+          </div>
+        </td>
+      </tr>"""
 
 
 def _render_dashboard_html(decisions: list, allocation,
@@ -920,7 +1006,8 @@ def _render_dashboard_html(decisions: list, allocation,
         <td class="num" data-label="P(RT)">{prt_cell}</td>
         <td class="num" data-label="EV bps">{ev_cell}</td>
         <td class="note mobile-note">{html.escape(d.status_note)}</td>
-      </tr>""")
+      </tr>
+{_render_dual_ev_detail_row(d)}""")
 
     n_buy = sum(1 for d in decisions if d.verdict == "BUY")
     n_wait = sum(1 for d in decisions if d.verdict == "WAIT")
@@ -1068,6 +1155,49 @@ a:hover {{ color: var(--link-hover); text-decoration: underline; }}
                     box-shadow: 0 6px 20px rgba(0,0,0,0.6); }}
 .tt:hover .tt-content {{ visibility: visible; opacity: 1; }}
 .tt strong {{ color: var(--text-primary); }}
+/* PR #87 — dual-EV detail row under each ticker showing both entry strategies */
+tr.dual-ev-detail td.dual-ev-cell {{
+    background: rgba(56,139,253,0.04);
+    border-top: 1px dashed var(--border);
+    padding: 10px 16px 14px 16px;
+}}
+.dual-ev-grid {{
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    font-size: 12px;
+}}
+.dual-ev-col {{
+    border-left: 3px solid rgba(56,139,253,0.4);
+    padding: 4px 12px 4px 12px;
+}}
+.dual-ev-strategy {{
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 6px;
+    font-size: 13px;
+}}
+.dual-ev-row {{
+    color: var(--text-secondary);
+    margin: 2px 0;
+}}
+.dual-ev-label {{
+    color: var(--text-muted);
+    display: inline-block;
+    min-width: 200px;
+}}
+.dual-ev-detail-text {{
+    color: var(--text-primary);
+    font-style: italic;
+}}
+.dual-ev-winner {{
+    color: #d29922;
+    font-weight: 600;
+    margin-left: 6px;
+}}
+@media (max-width: 768px) {{
+    .dual-ev-grid {{ grid-template-columns: 1fr; gap: 16px; }}
+}}
 .scroll-top {{ position: fixed; bottom: 24px; right: 24px;
                 width: 46px; height: 46px; border-radius: 50%;
                 background: rgba(56,139,253,0.92); color: #fff;

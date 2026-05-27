@@ -161,6 +161,7 @@ def build_ai_pass2_prompt(
     mc_marginal_summary,
     sigma_triangulation_summary,
     prior_posterior_drift,
+    parabola_context=None,
 ):
     """Pass 2: ADVERSARIAL critique of Pass 1. Pass 2 drift REPLACES Pass 1
     in the signal blend (#7).
@@ -240,6 +241,163 @@ FACT DISCIPLINE (PR #40 — anti-hallucination guard):
   sites like TimothySykes are not institutional sources).
 - Forbidden: introducing new factual claims about price levels, share
   counts, or financials not present in Pass 1's catalysts/factors.
+{_parabola_override_section(ticker, snapshot, parabola_context)}"""
+
+
+def validate_parabola_override(raw_override: dict) -> bool:
+    """PR #87 — code-side validator for the parabola-override AI vote.
+
+    Enforces the hard rules documented in the prompt:
+      - vote must be exactly "OVERRIDE" (default to refuse otherwise)
+      - bull_evidence ≥ 2 items with specificity_score ≥ 4 AND
+        in_horizon_relevance ≥ 3
+      - bear_evidence ≤ 1 item with specificity_score ≥ 4
+      - If valuation_check.concern_flag is True, ≥ 1 bull item must
+        explicitly address valuation (claim mentions PE / multiple /
+        valuation / fairly-priced etc.)
+      - Each bull source must look like a primary source (URL or named
+        institutional outlet)
+
+    Returns True only if all rules pass. Sycophant AI outputs ("AI demand
+    is strong, override!") get rejected — they fail the specificity bar.
+    """
+    if not isinstance(raw_override, dict):
+        return False
+    if raw_override.get("vote") != "OVERRIDE":
+        return False
+
+    bull = raw_override.get("bull_evidence", [])
+    if not isinstance(bull, list):
+        return False
+    bull_strong = [
+        e for e in bull
+        if isinstance(e, dict)
+        and int(e.get("specificity_score", 0)) >= 4
+        and int(e.get("in_horizon_relevance", 0)) >= 3
+        and isinstance(e.get("source"), str)
+        and len(e.get("source", "").strip()) > 5
+    ]
+    if len(bull_strong) < 2:
+        return False
+
+    bear = raw_override.get("bear_evidence", [])
+    if isinstance(bear, list):
+        bear_strong = sum(
+            1 for e in bear
+            if isinstance(e, dict)
+            and int(e.get("specificity_score", 0)) >= 4
+        )
+        if bear_strong > 1:
+            return False
+
+    val_check = raw_override.get("valuation_check", {}) or {}
+    if val_check.get("concern_flag") is True:
+        # Tokens covering common valuation-discussion vocabulary.
+        # Substring match (not regex) — kept narrow so accidental matches
+        # are unlikely. Add tokens here as new phrasing surfaces in
+        # real AI outputs.
+        val_tokens = (
+            "valuation", "multiple", "fairly priced", "fairly-priced",
+            "pe ratio", "p/e", "price-to-earnings",
+            "ev/ebitda", "ps ratio",
+            "fwd pe", "forward pe", "fwd p/e",  # common analyst phrasing
+            "earnings multiple", "growth-adjusted",
+        )
+        has_val_response = any(
+            any(token in str(e.get("claim", "")).lower()
+                for token in val_tokens)
+            for e in bull_strong
+        )
+        if not has_val_response:
+            return False
+
+    return True
+
+
+def _parabola_override_section(ticker, snapshot, parabola_context):
+    """PR #87 — structured parabola-override question.
+
+    Sacred #18 refuses dip-buys when mom_30d crosses the σ-class
+    parabola threshold (assumption: blowoff top, mean reversion likely).
+    For tickers in fundamentally-driven momentum runs (AI-cycle names,
+    secular winners), this refusal misses real opportunities.
+
+    The override REQUIRES institutional-grade evidence — not narrative.
+    Pass 2 must provide structured bull/bear evidence with specificity
+    scores. The engine validates the response code-side: claims below
+    the evidence bar do NOT trigger override. Sycophant outputs get
+    rejected programmatically.
+
+    Only emitted when parabola_context is provided (i.e., the math layer
+    flagged the ticker as parabola-suspect for this run)."""
+    if not parabola_context:
+        return ""
+    mom_30d = parabola_context.get("mom_30d", 0.0)
+    threshold = parabola_context.get("threshold", 0.0)
+    horizon = parabola_context.get("horizon_days", 20)
+    return f"""
+
+═══ PARABOLA OVERRIDE QUESTION ═══
+{ticker} has 30-day momentum = {mom_30d*100:+.0f}%, above the σ-class
+parabola threshold of {threshold*100:.0f}%. Sacred decision #18 says:
+REFUSE this as a blowoff top unless fundamental support justifies
+continued momentum over the next {horizon} trading days.
+
+Your job: vote OVERRIDE (allow the trade) or REFUSE-BLOWOFF (keep the
+refusal). The vote is binary. The engine ENFORCES evidence requirements
+code-side — sycophant outputs get rejected automatically.
+
+Add this field to your JSON response (in addition to all fields above):
+
+"parabola_override": {{
+  "vote": "OVERRIDE" | "REFUSE-BLOWOFF",
+  "bull_evidence": [
+    {{
+      "claim": "Specific factual statement with numbers/sources",
+      "source": "Primary source — SEC filing, earnings transcript, company press release, FT/WSJ/Reuters",
+      "specificity_score": 1-5,
+      "in_horizon_relevance": 1-5
+    }}
+  ],
+  "bear_evidence": [
+    {{ "claim": "...", "source": "...", "specificity_score": 1-5, "in_horizon_relevance": 1-5 }}
+  ],
+  "valuation_check": {{
+    "fwd_pe_or_ps": <number, or null if not applicable>,
+    "vs_5y_avg": "above" | "below" | "in-range" | "unknown",
+    "concern_flag": <true if valuation is >1.5× 5y avg AND no growth justification>
+  }},
+  "blowoff_indicators": {{
+    "rsi_30d_overbought_extreme": <true if RSI > 80>,
+    "volume_spike_distribution_risk": <true if recent volume > 2× 30-day avg AND price flat-to-down>,
+    "insider_selling_30d": <true if material insider sales reported>
+  }},
+  "honest_self_assessment": "1-2 sentences. What specific event would FLIP your vote? If you cannot articulate this, default to REFUSE-BLOWOFF."
+}}
+
+HARD RULES (engine enforces — vote=OVERRIDE without these is auto-rejected):
+- bull_evidence must have ≥ 2 items with BOTH specificity_score ≥ 4 AND in_horizon_relevance ≥ 3
+- Each cited "source" must be a real primary source (NOT social media, NOT generic news aggregators)
+- IF valuation_check.concern_flag is true → at least 1 bull_evidence item must explicitly address valuation
+- IF any blowoff_indicators are true → at least 1 bull_evidence item must explain why the indicator doesn't apply here
+- bear_evidence may have at most 1 item with specificity_score ≥ 4 (otherwise the case for OVERRIDE is weak)
+
+DEFAULT TO REFUSE-BLOWOFF. The default exists because:
+- After a parabolic run, the BASE RATE of mean-reversion exceeds continuation
+- Override should be the EXCEPTION, supported by hard evidence the math layer can't see
+- "AI demand is strong" / "Earnings were great" alone are NARRATIVE — not override-worthy
+- Specific items WITH numbers and primary sources are override-worthy
+
+Examples of override-worthy bull_evidence (specificity 5):
+- "TSMC announced 40nm capacity expansion in latest earnings (date: 2026-04-22),
+   directly increasing MU's contract pricing for Q3-Q4 2026" (source: TSMC Q1 earnings call transcript)
+- "FDA accepted ANAB's BLA filing for [drug] on 2026-05-15, PDUFA date Aug 2026 within horizon"
+   (source: FDA press release URL)
+
+Examples of NON-override-worthy bull_evidence (specificity 1-2 — rejected):
+- "AI demand is growing strongly" (vague, no numbers, no source)
+- "Stock has momentum" (tautological — parabola filter already saw the momentum)
+- "Sector is in favor" (no specific catalyst, no timeline)
 """
 
 
@@ -708,4 +866,17 @@ def parse_ai_pass2(raw, pass1, cost):
         vol_regime_reasoning=_str_field("vol_regime_reasoning"),
         narrative_reasoning=_str_field("narrative_reasoning"),
         catalysts_reasoning=_str_field("catalysts_reasoning"),
+        # PR #87 — parabola-override capture. raw stored for audit;
+        # `valid` is the post-validation flag the engine reads. AI may
+        # vote OVERRIDE but the validator can still reject for failing
+        # the hard rules (insufficient evidence, valuation concern not
+        # addressed, etc).
+        parabola_override_raw=(
+            raw.get("parabola_override")
+            if isinstance(raw.get("parabola_override"), dict)
+            else None
+        ),
+        parabola_override_valid=validate_parabola_override(
+            raw.get("parabola_override")
+        ),
     )

@@ -70,12 +70,18 @@ def test_t3_goes_to_highest_ambiguity_qualified_ticker():
     assert alloc.assignments["LOW_A"] == "T2"
 
 
-def test_unqualified_ticker_capped_at_t1():
-    """qualifies_for_t2_plus=False blocks T2 and T3 regardless of
-    ambiguity. T1 is still available (mild ambiguity gate only)."""
+def test_unqualified_ticker_now_gets_t2_with_high_ambiguity():
+    """PR #87 broker fix: T2 eligibility no longer requires
+    qualifies_for_t2_plus. High ambiguity alone qualifies for T2 so AI
+    Pass 2 can engage on borderline names (the cases that benefit most
+    from AI catalyst overlay). T3 still requires qualifies_for_t2_plus
+    (deeper-budget tier reserved for confidently-qualified tickers).
+
+    Pre-PR-#87 this test expected T1 — was suppressing exactly the
+    AI overlay we want on uncertain names."""
     snaps = [_snap("HIGH_UNQUAL", 0.95, qualifies=False)]
     alloc = allocate(snaps)
-    assert alloc.assignments["HIGH_UNQUAL"] == "T1"
+    assert alloc.assignments["HIGH_UNQUAL"] == "T2"
 
 
 def test_budget_cap_strictly_respected():
@@ -168,12 +174,15 @@ def test_ambiguity_threshold_boundaries_inclusive():
     assert alloc.assignments["BOUND"] == "T3"
 
 
-def test_t2_plus_disqualified_doesnt_block_t1():
-    """A ticker that fails the T2+ gate (e.g. pre-EV negative) can
-    still get T1 if ambiguity warrants it. T1 is "cheap diagnostic"."""
+def test_t2_plus_disqualified_now_gets_t2_with_mild_ambiguity():
+    """PR #87 broker fix — see test_unqualified_ticker_now_gets_t2_with_high_ambiguity.
+    With ambiguity above ai_min_ambiguity threshold (0.45 > default
+    floor), the ticker now gets T2 even though qualifies_for_t2_plus
+    is False. Sensible — borderline cases benefit most from AI Pass 2.
+    Pre-PR-#87 expected T1 (suppressing AI engagement)."""
     snaps = [_snap("EDGE", 0.45, qualifies=False)]
     alloc = allocate(snaps)
-    assert alloc.assignments["EDGE"] == "T1"
+    assert alloc.assignments["EDGE"] == "T2"
 
 
 def test_realistic_17_ticker_universe_under_budget():
