@@ -628,3 +628,67 @@ wave, add it here. Format:
 - **Fix in W<N>**: …
 - **Acceptance**: …
 ```
+
+---
+
+## Open / pending operational items
+
+### D-OPS-1. Bump --max-parallel default from 2 → 3 (if FMP plan tier allows)
+- **Discovered**: 2026-05-27, post-PR-#87 — Phase 1 wall-time is ~45-75s/ticker × 26 / parallel 2 ≈ 10-15 min. Could be ~7-10 min at parallel-3.
+- **Symptom**: Phase 1 cycle takes 10-15 min wall-clock; operator wants faster.
+- **Root cause**: max-parallel default set to 2 (PR #72, conservative). Each ticker does ~15 FMP supplementary calls + peer fetches.
+- **Why didn't immediate fix**: needs FMP Starter plan rate-limit verification first. Bumping blindly risks triggering 429s mid-cycle (silent partial failures).
+- **Fix when next system change is needed**: bump default to 3 in tools/orchestrate.py. Verify no FMP 429 errors over 3 consecutive cycles.
+- **Acceptance**: cycle wall-time drops materially; no FMP rate-limit errors in subprocess logs.
+- **Verification command + FMP support question**: see Diagnostic D-OPS-1 below in this file.
+
+### Diagnostic D-OPS-1 — FMP Starter plan rate limits
+
+**Decision**: whether parallel-3 (~30-45 FMP req/sec at peak) is safe on Starter plan.
+
+**Data needed**: FMP Starter plan's documented request-per-minute (or per-second) cap, plus rate-limit response-header behavior.
+
+**ONE exact command — measures actual rate-limit headers FMP returns**:
+
+```bash
+python3 -c "
+import requests, os, time
+key = os.environ['FMP_API_KEY']
+# Hit the most-frequently-called endpoint in a tight loop and read
+# rate-limit response headers (FMP uses X-Plan-Limit and similar).
+print('--- Burst test: 15 requests as fast as possible ---')
+for i in range(15):
+    r = requests.get(
+        f'https://financialmodelingprep.com/stable/quote?symbol=AMAT&apikey={key}',
+        timeout=10,
+    )
+    headers_of_interest = {k: v for k, v in r.headers.items()
+                            if 'rate' in k.lower() or 'limit' in k.lower()
+                            or 'remaining' in k.lower() or 'reset' in k.lower()
+                            or 'plan' in k.lower()}
+    print(f'  req {i+1:2d}: HTTP {r.status_code}  '
+          f'body[:60]={r.text[:60]!r}  '
+          f'headers={headers_of_interest}')
+print('--- Done. If any HTTP != 200 appeared, rate limit was hit. ---')
+"
+```
+
+**Verbatim question for FMP support** (if any 429 appears OR headers are
+unclear):
+
+> Hello, my account is on the FMP Starter plan. Could you confirm in
+> writing:
+>
+> 1. What is my exact rate limit on the Starter plan — requests per
+>    second, per minute, per day?
+> 2. Which endpoints share that quota — i.e. does `/stable/quote`,
+>    `/stable/historical-price-eod`, `/stable/historical-chart/5min`,
+>    `/stable/profile`, `/stable/analyst-estimates`, etc. all draw
+>    from the same bucket, or separate buckets per endpoint family?
+> 3. What HTTP status and headers do you return when the rate limit is
+>    exceeded (429? what's the `Retry-After` header value)?
+> 4. If I run 3 parallel subprocesses each issuing ~10-15 FMP calls
+>    over ~30 seconds (peak ~1-1.5 req/sec sustained, brief bursts
+>    of 3 req/sec), will that trigger any throttling?
+> 5. If Starter throttles parallel-3, which next plan tier would
+>    eliminate that constraint, and what's the monthly price?
