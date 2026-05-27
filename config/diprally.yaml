@@ -84,7 +84,7 @@ ai_tiers:
     pass1_web_search_max: 2       # PR #52: was 3; Pass 1 already gathers
                                     # 10+ sources from 2 searches
     pass1_max_tokens: 8000
-    pass2_max_tokens: 2500        # PR #52: was 4000; actual P2 output ~1000
+    pass2_max_tokens: 6000        # PR #88: was 2500 — broken Pass 2 JSON on ~40% of T2 runs because the audit-round reasoning fields + PR #87 parabola override section pushed actual output to 7400-8500 chars (truncation mid-JSON, unparseable). 6000 gives margin for catalyst-rich tickers.
     estimated_cost_usd: 0.08      # PR #52: was 0.12 (reduced web_search + tokens)
   T3:
     pass1_model: opus            # deepest — current single-ticker default
@@ -93,7 +93,7 @@ ai_tiers:
     catalyst_verification_model: haiku
     pass1_web_search_max: 3       # PR #52: was 5; rarely-hit upper bound
     pass1_max_tokens: 8000
-    pass2_max_tokens: 2500        # PR #52: was 4000
+    pass2_max_tokens: 6000        # PR #88 — see T2 above
     estimated_cost_usd: 0.45      # PR #52: was 0.30; calibrated to actual
                                     # observed $0.55-0.70 minus PR #52 cuts
 

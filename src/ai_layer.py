@@ -187,7 +187,19 @@ def build_ai_pass2_prompt(
         "bear_factors_high": [_safe_factor(f) for f in pass1.bear_factors if _factor_weight(f) == "high"],
     }
     prior_str = f"{prior_posterior_drift:+.1%}/yr" if prior_posterior_drift is not None else "n/a (no history)"
-    return f"""You are PASS 2 — an adversarial critic of Pass 1's analysis of {ticker}.
+    return f"""You are PASS 2 — a PRECISION REVIEW of Pass 1's analysis of {ticker}.
+
+YOUR DEFAULT FAILURE MODE IS REFLEXIVE PESSIMISM. Calibrated reviewers
+revise UP and DOWN with equal probability when evidence supports it.
+Auditing-style reviewers anchor toward negative revision regardless of
+evidence — that's a known bias to actively counter. If Pass 1's drift
+estimate is well-supported by its catalysts AND the math layer's
+probability bracket, KEEP the estimate (revised_drift_estimate ≈
+pass1.drift_estimate). Only revise downward when SPECIFIC evidence —
+a missed bearish catalyst, an over-weighted single source, a math
+disagreement — justifies it. Only revise upward when Pass 1
+under-weighted a specific bullish catalyst or under-anchored to the
+strong narrative score.
 
 PASS 1 PRODUCED:
 {json.dumps(pass1_summary, indent=2)}
@@ -222,11 +234,15 @@ and catalysts REPLACE Pass 1's in the downstream blend and MC. Return JSON:
   "catalysts_reasoning": "Why this revised set differs from Pass 1's (or why kept as-is)"
 }}
 
-ADVERSARIAL POSTURE:
-- DO NOT rubber-stamp Pass 1. If Pass 1 is right, say so explicitly with reasoning.
-- If Pass 1's drift estimate is inconsistent with the math (e.g., very bullish but stock has touched dip more than rally in MC), critique it.
-- If Pass 1 missed a known catalyst in the horizon, flag it.
-- If Pass 1 anchored on single source where multiple were available, critique it.
+REVIEW POSTURE — bidirectional, not contrarian:
+- If Pass 1 is well-calibrated (drift supported by catalysts + math + sources),
+  say so explicitly. Mark agreement_with_pass1 = "agree" and KEEP drift.
+- Revise drift UPWARD when Pass 1 under-weighted a specific bullish catalyst
+  in horizon, OR under-anchored to strong narrative + multi-source support.
+- Revise drift DOWNWARD only when SPECIFIC evidence justifies it: missed
+  bearish catalyst, over-weighted single source, math disagreement.
+- If Pass 1 missed a catalyst (either direction), flag it via missing_catalysts_added.
+- If Pass 1 anchored on a single retail/non-institutional source, critique it.
 - Return ONLY valid JSON.
 
 FACT DISCIPLINE (PR #40 — anti-hallucination guard):
