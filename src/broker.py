@@ -125,16 +125,27 @@ def allocate(
         assignments[s.ticker] = "T3"
         spent += t3_cost
 
-    # 4. T2 pass — fill T2+ qualified tickers with at least mild
-    # ambiguity. Below ai_min_ambiguity the math is decisive enough
-    # that AI tokens are wasted, even on qualified tickers.
+    # 4. T2 pass — PR #87 broker fix: T2 eligibility relaxed.
+    # Old logic: required qualifies_for_t2_plus (pre-AI net EV positive).
+    # That created a cascade: short-horizon math can't find positive-EV
+    # setups, qualifies_for_t2_plus is False everywhere, AI Pass 2 never
+    # runs, math layer never gets the catalyst-driven mu kicker, EV stays
+    # negative. Self-reinforcing dead loop.
+    #
+    # New logic: T2 eligible if EITHER qualifies_for_t2_plus OR ambiguity
+    # is non-trivial (math uncertain enough to benefit from AI critique).
+    # Lets AI Pass 2 actually engage on borderline tickers where the
+    # math layer says "uncertain" — the EXACT cases that need AI's
+    # catalyst overlay to render a verdict.
     for s in ranked:
         if assignments[s.ticker] != "T0":
             continue
-        if not s.qualifies_for_t2_plus:
-            continue
         if s.ambiguity < AI_BROKER.ai_min_ambiguity:
             continue
+        # PR #87: drop the strict qualifies_for_t2_plus gate. Ambiguity
+        # is now the primary signal — uncertain math = let AI weigh in.
+        # qualifies_for_t2_plus is retained as a TIE-BREAKER in ranking
+        # (already done at line 91-97 — ranked sort).
         if spent + t2_cost > cap:
             notes.append(
                 f"{s.ticker}: T2 candidate but budget exhausted"

@@ -188,6 +188,13 @@ class AIPassOutput:
     vol_regime_reasoning: str = ""                            # Pass 2 — why vol_regime
     narrative_reasoning: str = ""                             # Pass 2 — why narrative_score
     catalysts_reasoning: str = ""                             # Pass 2 — why catalyst set differs
+    # PR #87 — parabola override (sacred #18 exception for fundamentally-
+    # supported momentum). parabola_override_valid is True iff AI Pass 2
+    # voted OVERRIDE AND the evidence cleared the hard-rules validator.
+    # When True, the engine allows the trade even though parabola filter
+    # would normally refuse.
+    parabola_override_raw: Optional[dict] = None       # raw AI response (for audit)
+    parabola_override_valid: bool = False              # post-validation flag
 
 
 @dataclass
@@ -1443,9 +1450,21 @@ def run_pipeline(args) -> int:
                 "bracket_pct_str": f"{PASS2_CLOSED_FORM_BRACKET_PCT*100:.0f}%",
             }
         sigma_summary = {"blended": blended_sigma, "divergence": divergence_pp}
+        # PR #87 — pass parabola context to Pass 2 IFF the ticker would
+        # parabola-refuse otherwise. The structured-evidence override
+        # question is appended to the Pass 2 prompt only when relevant
+        # (don't burn tokens asking about override on non-parabolic names).
+        _para_threshold = getattr(
+            SIGMA_CLASSES[sigma_class], "parabola_mom_30d_threshold", None
+        ) or PARABOLA_FILTER_MOM_30D_THRESHOLD
+        parabola_context = (
+            {"mom_30d": snapshot.mom_30d, "threshold": _para_threshold,
+             "horizon_days": horizon_days}
+            if snapshot.mom_30d >= _para_threshold else None
+        )
         pass2_prompt = build_ai_pass2_prompt(
             ticker, snapshot, pass1, mc_marginal_summary, sigma_summary,
-            None,
+            None, parabola_context=parabola_context,
         )
         # Pass 2 critique uses Sonnet 4.6 (structured-output JSON critique,
         # doesn't need Opus depth) with no web_search (relies on Pass 1's
@@ -1747,12 +1766,26 @@ def run_pipeline(args) -> int:
     parabola_filter_refused = False
     if (best is not None
             and snapshot.mom_30d >= class_parabola_threshold):
-        if not _has_bearish_derating_catalyst(effective_ai, horizon_days):
+        # PR #87 — parabola override: if Pass 2 voted OVERRIDE and the
+        # validator confirms the evidence cleared the hard rules
+        # (specific bull catalysts, valuation addressed, etc), allow the
+        # trade despite the parabola signal. Otherwise sacred #18 holds.
+        override_active = bool(
+            pass2 is not None
+            and getattr(pass2, "parabola_override_valid", False)
+        )
+        if override_active:
+            print(f"⚠ Parabola-filter OVERRIDE (PR #87): mom_30d = "
+                  f"{snapshot.mom_30d*100:+.1f}% ≥ {class_parabola_threshold*100:+.0f}% "
+                  f"would normally refuse, but AI Pass 2 voted OVERRIDE with "
+                  f"validated fundamental support. Trade ALLOWED.")
+        elif not _has_bearish_derating_catalyst(effective_ai, horizon_days):
             parabola_filter_refused = True
-            print(f"⛔ Parabola-filter refusal (PR #41/#44, σ-class-aware PR #70): "
+            print(f"⛔ Parabola-filter refusal (sacred #18): "
                   f"mom_30d = {snapshot.mom_30d*100:+.1f}% ≥ "
                   f"{class_parabola_threshold*100:+.0f}% threshold for "
-                  f"σ-class {sigma_class}, no in-horizon bearish de-rating catalyst")
+                  f"σ-class {sigma_class}, no in-horizon bearish de-rating "
+                  f"catalyst, and no AI Pass 2 override.")
             met_threshold_strict = False
 
     # --- 13. AI catalyst stress test — uses Pass 2's revised catalyst list
