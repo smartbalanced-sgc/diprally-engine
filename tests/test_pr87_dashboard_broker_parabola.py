@@ -262,18 +262,18 @@ def test_dual_ev_detail_row_renders_for_buy():
         )
     ]
     html_out = orch._render_dashboard_html(decisions, None)
-    # Detail row markers
+    # Detail row markers — PR #89 renamed "DIRECT entry" → "Option 1 — Enter now"
+    # and "WAIT-FOR-DIP" → "Option 2 — Wait for dip" in plain English.
     assert "dual-ev-detail" in html_out
-    assert "DIRECT entry" in html_out
-    assert "WAIT-FOR-DIP" in html_out
+    assert "Option 1" in html_out
+    assert "Option 2" in html_out
     # Both EVs surface
     assert "+120 bps" in html_out
     assert "+80 bps" in html_out or "+80.0 bps" in html_out
     # Calendar dates surface
     assert "Jun 22, 2026" in html_out
     assert "May 28, 2026" in html_out
-    # PR #88: ★ winner marker removed (was misleading — always WAIT-wins
-    # in current data was foolish per operator feedback).
+    # PR #88: ★ winner marker removed
     assert "★ winner" not in html_out
 
 

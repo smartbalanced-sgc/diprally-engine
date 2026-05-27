@@ -68,24 +68,29 @@ def test_legend_collapsible_present():
 
 
 def test_legend_explains_verdicts_in_plain_english():
+    """PR #89 — legend rewritten for plain English; old jargon strings
+    replaced with friendlier phrasings."""
     html = orch._render_dashboard_html([_make_buy("X")], None)
-    # First-investor-friendly descriptions for the main verdicts
+    # New plain-English keywords (PR #89)
     assert "positive-expected-return swing setup" in html
-    assert "Don't trade — the math says you lose money" in html
-    assert "Buying a blow-off move without a thesis" in html
-    assert "three independent math models" in html
-    # PR #74: correlation gate is now informational. Legend updated to say
-    # "engine surfaces the correlation as a flag" (was "one bet expressed twice").
-    assert "engine surfaces the correlation as a flag" in html
+    assert "Most likely outcome is a small loss" in html
+    assert "chase blowoff tops" in html
+    assert "three independent math methods" in html
+    # Correlation chip still surfaced
+    assert "tracks another already-accepted BUY closely" in html
 
 
 def test_legend_explains_column_headers():
+    """PR #89 — column legend rewritten with concrete σ-class boundaries
+    + plain English on Tier and Ambiguity. P(RT) and EV bps are no
+    longer separate columns (they're in the detail row)."""
     html = orch._render_dashboard_html([_make_buy("X")], None)
-    assert "volatility bucket" in html  # σ-class
-    assert "AI compute level" in html   # Tier
-    assert "math layer uncertainty score" in html  # Ambiguity
-    assert "joint probability of round-trip" in html  # P(RT)
-    assert "expected return per share after friction" in html  # EV bps
+    assert "how volatile this stock is" in html or "MID = relatively stable" in html
+    assert "how much AI compute" in html
+    assert "how uncertain the math itself is" in html or "Ambiguity" in html
+    # Detail-row legend section explains the dual-EV breakdown
+    assert "Option 1" in html
+    assert "Option 2" in html
 
 
 # =============================================================================

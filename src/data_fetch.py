@@ -172,17 +172,39 @@ def _fmp_get(endpoint, api_key, params=None):
     Use fetch_history (which raises FetchError) for endpoints where missing
     data should abort the whole pipeline. Use _fmp_get for endpoints where
     a missing fetch should degrade-gracefully (signal becomes _none_signal).
+
+    PR #89: rate-limit-aware retry. If FMP returns HTTP 429 (rate-limited),
+    wait briefly and retry once. Empirically Starter plan tolerates ~3 req/sec
+    sustained at parallel-4; this retry catches occasional bursts above that.
+    Single retry only — if it persists, fall back to degrade-gracefully None.
     """
+    import time as _time
     p = {"apikey": api_key}
     if params:
         p.update(params)
-    try:
-        r = requests.get(f"{FMP_BASE}/{endpoint}", params=p, timeout=15)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        print(f"   WARNING: FMP {endpoint} failed: {_redact(e)}")
-        return None
+    for attempt in (1, 2):
+        try:
+            r = requests.get(f"{FMP_BASE}/{endpoint}", params=p, timeout=15)
+            if r.status_code == 429 and attempt == 1:
+                # Rate-limited. Honour Retry-After if present; otherwise 2s.
+                wait_s = float(r.headers.get("Retry-After", 2))
+                wait_s = min(max(wait_s, 1.0), 5.0)  # clamp 1-5s
+                print(f"   ℹ FMP {endpoint} rate-limited (HTTP 429); "
+                      f"waiting {wait_s:.1f}s and retrying once.")
+                _time.sleep(wait_s)
+                continue
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            if attempt == 1:
+                # First-try failures (network, transient) get a single retry
+                # too, with a short jitter to avoid synchronized thundering-herd
+                # when parallel-4 subprocesses all see the same transient.
+                _time.sleep(0.5)
+                continue
+            print(f"   WARNING: FMP {endpoint} failed after retry: {_redact(e)}")
+            return None
+    return None
 
 
 def fetch_live_quote(ticker, api_key):

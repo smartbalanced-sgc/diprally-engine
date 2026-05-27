@@ -28,7 +28,7 @@ import re
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -347,6 +347,14 @@ class TickerDecision:
     p_rally_hit: Optional[float] = None
     expected_rally_date: Optional[str] = None  # e.g. "Jun 18, 2026"
     expected_dip_date: Optional[str] = None
+    # PR #89 — AI plain-English surface. Carries the Pass 2 catalyst list
+    # + AI overall agreement so the dashboard can render context-aware
+    # plain-English summaries. Empty / None when Pass 2 didn't run or
+    # CSV row is pre-PR-#89.
+    ai_catalysts: list = field(default_factory=list)  # list of {name, magnitude, direction, date}
+    ai_agreement: str = ""        # agree / partial_disagree / strong_disagree
+    ai_narrative: str = ""        # strong / neutral / weak
+    ai_primary_critique: str = ""
 
 
 _OUTPUT_ROOT = Path(__file__).resolve().parent.parent / "output"
@@ -513,6 +521,24 @@ def _decision_from_run(run: TickerRun) -> TickerDecision:
             decision.expected_rally_date = d_rally.strftime("%b %d, %Y")
         except Exception:
             pass
+
+        # PR #89 — AI plain-English findings (catalysts, agreement, narrative).
+        # These are already in the CSV per PR #54 audit work; we just surface
+        # them for the dashboard now. Empty values handled gracefully downstream.
+        import json as _json
+        pass2_cats_raw = row.get("pass2_catalysts_json") or ""
+        if pass2_cats_raw:
+            try:
+                cats = _json.loads(pass2_cats_raw)
+                if isinstance(cats, list):
+                    decision.ai_catalysts = cats
+            except (ValueError, _json.JSONDecodeError):
+                pass
+        decision.ai_agreement = (row.get("pass2_agreement") or "").strip()
+        decision.ai_narrative = (row.get("narrative_score") or "").strip()
+        decision.ai_primary_critique = (
+            row.get("pass2_revision_reasoning") or ""
+        ).strip()
     # Verdict: engine writes verdict_state to CSV directly (audit fix
     # 2026-05-24). Read it from CSV rather than reconstructing from
     # dip/EV alone — the old reconstruction silently misclassified
@@ -606,6 +632,29 @@ _VERDICT_COLORS = {
     "FAIL":               "#cf222e",
     "DELISTED":           "#57606a",     # darker gray — operator action ≠ trader action
 }
+
+# PR #89 — friendly display names for the operator-facing dashboard.
+# Internal verdict_state values (CSV column) are UNCHANGED to keep
+# historical CSV rows readable. The dashboard renders the new names
+# via this map at display time.
+_VERDICT_DISPLAY_NAMES = {
+    "BUY":                "BUY",
+    "WAIT":               "WAIT",
+    "BELOW-THRESHOLD":    "CLOSE-CALL",
+    "NEGATIVE-EV":        "EV-NEGATIVE",
+    "REFUSED-EV":         "EV-NEGATIVE",
+    "REFUSED-TREND":      "DOWNTREND",
+    "REFUSED-PARABOLA":   "OVEREXTENDED",
+    "REFUSED-CORRELATED": "CORRELATED",
+    "REFUSED-METHOD":     "MATH-CONFLICT",
+    "FAIL":               "FAIL",
+    "DELISTED":           "DELISTED",
+}
+
+
+def _verdict_display_name(verdict_state: str) -> str:
+    """Map internal verdict_state to friendly display name (PR #89)."""
+    return _VERDICT_DISPLAY_NAMES.get(verdict_state, verdict_state)
 
 
 _TRADING212_URL_BASE = "https://www.trading212.com/trading-instruments/invest/"
@@ -901,6 +950,121 @@ def _sort_decisions_for_dashboard(decisions: list) -> list:
     return sorted(decisions, key=sort_key)
 
 
+def _ai_findings_plain_english(d) -> dict:
+    """PR #89 — translate Pass 2 AI output into plain English for the
+    dashboard.
+
+    Returns a dict with:
+      - catalyst_lines: list of strings, each "• <name> (<date>) — <plain-English magnitude + direction>"
+      - ai_conclusion: short sentence framing how the AI summarised it
+      - verdict_framing: the contextual lead-in based on the engine's verdict
+    All values are empty strings when AI data isn't available."""
+    out = {"catalyst_lines": [], "ai_conclusion": "", "verdict_framing": ""}
+
+    # Plain-English magnitude/direction translation. Internal AI vocabulary
+    # ("high magnitude, bearish direction_risk") is jargon — operators don't
+    # care about the AI's internal taxonomy, they care what it MEANS for
+    # the trade.
+    mag_map = {"high": "strong signal", "med": "moderate signal", "low": "minor signal"}
+    dir_map = {
+        "bullish": "likely to push price UP",
+        "bearish": "likely to push price DOWN",
+        "two-sided": "could go either way",
+    }
+
+    for c in (d.ai_catalysts or [])[:3]:
+        if not isinstance(c, dict):
+            continue
+        name = c.get("name", "")
+        if not name:
+            continue
+        mag_key = str(c.get("magnitude", "")).lower()
+        dir_key = str(c.get("direction_risk", "")).lower()
+        # Handle "bearish-skew" / "bullish-skew" variants
+        for k in dir_map:
+            if dir_key.startswith(k):
+                dir_key = k
+                break
+        date = c.get("date_or_window", "")
+        mag_str = mag_map.get(mag_key, mag_key or "signal")
+        dir_str = dir_map.get(dir_key, "direction unclear")
+        line = f"• {name}"
+        if date and date != "?":
+            line += f" ({date})"
+        line += f" — {mag_str}, {dir_str}"
+        out["catalyst_lines"].append(line)
+
+    # AI overall conclusion (combines pass2 agreement + narrative_score)
+    agree = (d.ai_agreement or "").lower()
+    narr = (d.ai_narrative or "").lower()
+
+    if agree == "agree":
+        agree_phrase = "AI agrees with the bullish read"
+    elif agree == "partial_disagree":
+        agree_phrase = "AI partially disagrees with the initial read"
+    elif agree == "strong_disagree":
+        agree_phrase = "AI strongly disagrees with the initial read"
+    else:
+        agree_phrase = ""
+
+    if narr == "strong":
+        narr_phrase = "with multiple credible sources confirming the story"
+    elif narr == "neutral":
+        narr_phrase = "with mixed signals"
+    elif narr == "weak":
+        narr_phrase = "with limited supporting evidence"
+    else:
+        narr_phrase = ""
+
+    if agree_phrase and narr_phrase:
+        out["ai_conclusion"] = f"{agree_phrase} {narr_phrase}."
+    elif agree_phrase:
+        out["ai_conclusion"] = f"{agree_phrase}."
+    elif narr_phrase:
+        out["ai_conclusion"] = f"AI narrative is {narr_phrase}."
+
+    # Verdict-contextual framing — what does the math say in plain English,
+    # and how do the AI findings sit alongside it?
+    v = d.verdict
+    if v == "BUY":
+        out["verdict_framing"] = (
+            "The math says: take this trade many times under conditions like "
+            "today's, and you'd make money on average after weighting wins, "
+            "losses, and fees. The AI's findings (below) support this."
+        )
+    elif v in ("REFUSED-EV", "NEGATIVE-EV", "BELOW-THRESHOLD"):
+        out["verdict_framing"] = (
+            "The math says: average outcome across many trades is below the "
+            "safety bar. The AI sees the factors below, but the statistical "
+            "downside outweighs them. Take this only if you have specific "
+            "information beyond what the engine sees."
+        )
+    elif v == "REFUSED-PARABOLA":
+        out["verdict_framing"] = (
+            "The stock has rallied so much over the past 30 days that "
+            "statistical mean reversion is the higher-probability outcome. "
+            "Engine refuses to chase a peak. AI's view shown below."
+        )
+    elif v == "REFUSED-METHOD":
+        out["verdict_framing"] = (
+            "The engine's three math methods don't agree on the probabilities "
+            "for this stock. Engine refuses to publish a number it can't itself "
+            "verify."
+        )
+    elif v == "REFUSED-TREND":
+        out["verdict_framing"] = (
+            "The stock has been falling sharply with no bullish catalyst. "
+            "Engine refuses to catch a falling knife."
+        )
+    elif v == "WAIT":
+        out["verdict_framing"] = (
+            "No qualifying setup was found today. Engine is waiting for "
+            "better conditions."
+        )
+
+    return out
+
+
 def _render_dual_ev_detail_row(d) -> str:
     """PR #87 — institutional detail row under each ticker's main row.
     Shows BOTH entry strategies' EV breakdown, win/lose probabilities,
@@ -960,24 +1124,50 @@ def _render_dual_ev_detail_row(d) -> str:
     rally_fmt = f"${d.rally_target:.2f}" if d.rally_target else "$—"
     dip_fmt = f"${d.dip_target:.2f}" if d.dip_target else "$—"
 
+    # PR #89 — AI plain-English findings for the "Why this verdict" block.
+    findings = _ai_findings_plain_english(d)
+    framing_html = (
+        f'<div class="dual-ev-why">{html.escape(findings["verdict_framing"])}</div>'
+        if findings["verdict_framing"] else ""
+    )
+    catalysts_html = ""
+    if findings["catalyst_lines"]:
+        items = "".join(
+            f'<li>{html.escape(line)}</li>'
+            for line in findings["catalyst_lines"]
+        )
+        catalysts_html = (
+            f'<div class="dual-ev-ai-catalysts">'
+            f'<div class="dual-ev-ai-label">📰 What the AI found:</div>'
+            f'<ul>{items}</ul>'
+            f'</div>'
+        )
+    ai_conclusion_html = (
+        f'<div class="dual-ev-ai-conclusion">🔍 {html.escape(findings["ai_conclusion"])}</div>'
+        if findings["ai_conclusion"] else ""
+    )
+
     return f"""      <tr class="dual-ev-detail" data-verdict="{html.escape(d.verdict)}">
         <td colspan="6" class="dual-ev-cell">
+          {framing_html}
           <div class="dual-ev-grid">
             <div class="dual-ev-col">
-              <div class="dual-ev-strategy">DIRECT entry @ {spot_fmt} <span class="dual-ev-winner">{direct_winner}</span></div>
-              <div class="dual-ev-row"><span class="dual-ev-label">Target:</span> {rally_fmt} &nbsp; <span class="dual-ev-detail-text">{direct_gain_str}</span></div>
-              <div class="dual-ev-row"><span class="dual-ev-label">P(rally hits):</span> {p_rally_str}</div>
-              <div class="dual-ev-row"><span class="dual-ev-label">EV (unconditional):</span> <span style="color:{direct_color}">{direct_ev_str}</span></div>
-              <div class="dual-ev-row"><span class="dual-ev-label">Expected rally:</span> {rally_date}</div>
+              <div class="dual-ev-strategy">Option 1 — Enter now at {spot_fmt}</div>
+              <div class="dual-ev-row"><span class="dual-ev-label">Target (sell at):</span> {rally_fmt} &nbsp; <span class="dual-ev-detail-text">{direct_gain_str}</span></div>
+              <div class="dual-ev-row"><span class="dual-ev-label">Chance rally hits in 20 days:</span> {p_rally_str}</div>
+              <div class="dual-ev-row"><span class="dual-ev-label">Average return per trade:</span> <span style="color:{direct_color}">{direct_ev_str}</span></div>
+              <div class="dual-ev-row"><span class="dual-ev-label">Likely rally date:</span> {rally_date}</div>
             </div>
             <div class="dual-ev-col">
-              <div class="dual-ev-strategy">WAIT-FOR-DIP @ {dip_fmt} <span class="dual-ev-winner">{wait_winner}</span></div>
-              <div class="dual-ev-row"><span class="dual-ev-label">P(dip fills):</span> {p_dip_str}</div>
-              <div class="dual-ev-row"><span class="dual-ev-label">Target:</span> {rally_fmt} &nbsp; <span class="dual-ev-detail-text">{wait_gain_str}</span></div>
-              <div class="dual-ev-row"><span class="dual-ev-label">EV (unconditional, incl. no-fill paths):</span> <span style="color:{wait_color}">{wait_ev_str}</span></div>
-              <div class="dual-ev-row"><span class="dual-ev-label">Expected dip:</span> {dip_date}</div>
+              <div class="dual-ev-strategy">Option 2 — Wait for dip to {dip_fmt}</div>
+              <div class="dual-ev-row"><span class="dual-ev-label">Chance the dip fills:</span> {p_dip_str}</div>
+              <div class="dual-ev-row"><span class="dual-ev-label">Target (sell at):</span> {rally_fmt} &nbsp; <span class="dual-ev-detail-text">{wait_gain_str}</span></div>
+              <div class="dual-ev-row"><span class="dual-ev-label">Average return per trade:</span> <span style="color:{wait_color}">{wait_ev_str}</span></div>
+              <div class="dual-ev-row"><span class="dual-ev-label">Likely dip date:</span> {dip_date}</div>
             </div>
           </div>
+          {catalysts_html}
+          {ai_conclusion_html}
         </td>
       </tr>"""
 
@@ -1096,7 +1286,7 @@ def _render_dashboard_html(decisions: list, allocation,
         <td data-label="σ-class">{html.escape(d.sigma_class)}</td>
         <td data-label="Tier">{html.escape(d.tier)}</td>
         <td class="num" data-label="Ambiguity">{ambig_cell}</td>
-        <td class="mobile-verdict" data-label="Verdict"><span class="verdict" style="background:{color}">{html.escape(d.verdict)}</span></td>
+        <td class="mobile-verdict" data-label="Verdict"><span class="verdict" style="background:{color}">{html.escape(_verdict_display_name(d.verdict))}</span></td>
         <td class="note mobile-note">{html.escape(d.status_note)}</td>
       </tr>
 {_render_dual_ev_detail_row(d)}""")
@@ -1324,6 +1514,48 @@ tr.dual-ev-detail td.dual-ev-cell {{
     font-weight: 600;
     margin-left: 6px;
 }}
+/* PR #89 — plain-English AI findings + verdict framing */
+.dual-ev-why {{
+    background: rgba(56,139,253,0.10);
+    border-left: 3px solid rgba(56,139,253,0.7);
+    padding: 10px 14px;
+    margin-bottom: 14px;
+    border-radius: 4px;
+    font-size: 13px;
+    line-height: 1.55;
+    color: var(--text-primary);
+}}
+.dual-ev-ai-catalysts {{
+    margin-top: 14px;
+    padding: 10px 14px;
+    background: rgba(168, 96, 36, 0.08);
+    border-left: 3px solid rgba(210, 153, 34, 0.7);
+    border-radius: 4px;
+    font-size: 12.5px;
+}}
+.dual-ev-ai-catalysts ul {{
+    margin: 6px 0 0 0;
+    padding: 0 0 0 6px;
+    list-style: none;
+}}
+.dual-ev-ai-catalysts li {{
+    margin: 4px 0;
+    color: var(--text-primary);
+}}
+.dual-ev-ai-label {{
+    color: var(--text-muted);
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}}
+.dual-ev-ai-conclusion {{
+    margin-top: 10px;
+    padding: 8px 14px;
+    color: var(--text-secondary);
+    font-size: 12.5px;
+    font-style: italic;
+}}
 @media (max-width: 768px) {{
     .dual-ev-grid {{ grid-template-columns: 1fr; gap: 16px; }}
 }}
@@ -1421,43 +1653,56 @@ footer {{ margin-top: 32px; color: var(--text-tertiary); font-size: 11.5px;
         </button>
         <div class="legend-body" id="legendBody">
             <div class="legend-section">
-                <span class="legend-section-title">Verdicts</span>
+                <span class="legend-section-title">What each verdict means — plain English</span>
                 <div class="legend-verdict-row">
-                    <span class="vchip" style="background:#2ea043">BUY</span>
-                    <span class="vdef">The math and AI agree on a positive-expected-return swing setup. Place a limit-buy at the Dip price; the system projects the Rally price will be touched within 60 trading days for a profit. Size externally per your own risk tolerance.</span>
+                    <span class="vchip" style="background:#1a7f37">BUY</span>
+                    <span class="vdef">Math and AI agree: this is a positive-expected-return swing setup. If you took this trade many times under similar conditions, you'd come out ahead on average. Sized externally — engine recommends, you decide position size.</span>
                 </div>
                 <div class="legend-verdict-row">
-                    <span class="vchip" style="background:#c2580a">REFUSED-EV</span>
-                    <span class="vdef">Even if both dip and rally fill, the expected return after commissions and slippage is too low (or negative). Don't trade — the math says you lose money on average. Wait for a better setup.</span>
+                    <span class="vchip" style="background:#6e7781">CLOSE-CALL</span>
+                    <span class="vdef">Math shows a defensible setup but the average outcome doesn't quite clear the safety threshold. Borderline — consider on your own conviction if you have specific reason to take it.</span>
                 </div>
                 <div class="legend-verdict-row">
-                    <span class="vchip" style="background:#c2580a">REFUSED-PARABOLA</span>
-                    <span class="vdef">The stock is up too much in the last 30 days with no concrete bearish reason to expect mean-reversion. Buying a blow-off move without a thesis is statistically loss-making. Wait for cool-down or for a bearish catalyst (earnings reset, regulatory action, secondary offering).</span>
+                    <span class="vchip" style="background:#bc4c00">EV-NEGATIVE</span>
+                    <span class="vdef">If you took this trade many times, the AVERAGE outcome loses money. Most likely outcome is a small loss — wins don't outweigh losing trades plus fees. Skip unless your conviction beats the statistics.</span>
                 </div>
                 <div class="legend-verdict-row">
-                    <span class="vchip" style="background:#da3633">REFUSED-METHOD</span>
-                    <span class="vdef">The three independent math models (Monte Carlo, PDE, closed-form) disagree on this trade. Publishing a recommendation when the engine can't agree with itself would mean publishing a number it can't verify. Wait for inputs to stabilize.</span>
+                    <span class="vchip" style="background:#bc4c00">OVEREXTENDED</span>
+                    <span class="vdef">Stock has rallied so much in the past 30 days that statistical mean reversion is the higher-probability next move. Engine refuses to chase blowoff tops. (PR #89 raised thresholds to be AI-cycle-friendly — only flags true extremes.)</span>
+                </div>
+                <div class="legend-verdict-row">
+                    <span class="vchip" style="background:#bc4c00">DOWNTREND</span>
+                    <span class="vdef">Stock has been falling sharply (more than 25% in 30 days) with no bullish catalyst surfaced by AI. Engine refuses to "catch the falling knife."</span>
+                </div>
+                <div class="legend-verdict-row">
+                    <span class="vchip" style="background:#cf222e">MATH-CONFLICT</span>
+                    <span class="vdef">The engine's three independent math methods (Monte Carlo, PDE, closed-form) disagree on the probabilities for this stock. Engine refuses to publish a verdict it can't itself verify.</span>
                 </div>
                 <div class="legend-verdict-row">
                     <span class="vchip" style="background:#8957e5">⚠ CORRELATED note</span>
-                    <span class="vdef">A BUY that tracks another already-accepted BUY closely (correlation ≥ 0.75 over last 90 days). The engine surfaces the correlation as a flag in the status note but does NOT silence the signal — for swing trading, correlated dip-and-rally events are independent opportunities, not "one bet doubled." Operator decides whether to take both, one, or scale.</span>
+                    <span class="vdef">A BUY that tracks another already-accepted BUY closely. Surfaced as a flag — operator decides whether to take both, one, or scale.</span>
                 </div>
                 <div class="legend-verdict-row">
-                    <span class="vchip" style="background:#6e7681">WAIT</span>
-                    <span class="vdef">At the current spot, no defensible dip-and-rally pair could be found that meets the conviction thresholds. The math couldn't surface a tradeable setup today. Re-check after the next market close.</span>
+                    <span class="vchip" style="background:#6e7781">WAIT</span>
+                    <span class="vdef">No qualifying setup found today at any threshold. Engine waiting for better conditions. Re-check next cycle.</span>
                 </div>
                 <div class="legend-verdict-row">
-                    <span class="vchip" style="background:#da3633">FAIL</span>
-                    <span class="vdef">Data fetch failed for this ticker — probably a temporary provider issue. Investigate the per-ticker log; usually resolved on the next cycle.</span>
+                    <span class="vchip" style="background:#cf222e">FAIL</span>
+                    <span class="vdef">Data fetch failed for this ticker — usually a temporary provider issue, resolves on the next cycle.</span>
                 </div>
             </div>
             <div class="legend-section">
-                <span class="legend-section-title">Columns</span>
-                <div class="legend-col-row"><strong>σ-class</strong> — volatility bucket (MID under 60%, HIGH 60-100%, EXTREME above 100% annualized std dev of returns).</div>
-                <div class="legend-col-row"><strong>Tier</strong> — AI compute level: T0 = math-only, T1 = + Pass 1 (Haiku quick scan), T2 = + Pass 2 (Sonnet adversarial critique), T3 = + stress test.</div>
-                <div class="legend-col-row"><strong>Ambiguity</strong> — math layer uncertainty score (0-1). Lower = engine is confident. Higher = AI critique has more leverage.</div>
-                <div class="legend-col-row"><strong>P(RT)</strong> — joint probability of round-trip success: both Dip AND Rally prices hit within 60 trading days. Computed from 100,000 Monte Carlo simulations.</div>
-                <div class="legend-col-row"><strong>EV bps (%)</strong> — expected return per share after friction, in basis points of dip price. 1 bp = 0.01%; +50 bps = +0.50%. Positive = profitable on average; negative = loses money on average.</div>
+                <span class="legend-section-title">Column meanings — plain English</span>
+                <div class="legend-col-row"><strong>σ-class</strong> — how volatile this stock is. MID = relatively stable (under 60% annualized swings). HIGH = volatile (60-100%). EXTREME = very volatile (over 100%).</div>
+                <div class="legend-col-row"><strong>Tier</strong> — how much AI compute the engine spent on this ticker. T0 = math only, no AI. T1 = AI Pass 1 quick scan. T2 = + Pass 2 critique (default for uncertain tickers). T3 = + extra stress testing.</div>
+                <div class="legend-col-row"><strong>Ambiguity</strong> — how uncertain the math itself is about this ticker. NOT a touch probability. Low = math is self-confident; High = signals conflict, AI critique adds value.</div>
+            </div>
+            <div class="legend-section">
+                <span class="legend-section-title">Detail row (under each ticker) — what to read</span>
+                <div class="legend-col-row"><strong>Option 1 (Enter now)</strong> — buy at current spot, sell at the target if rally happens. Shows chance of rally hitting + average return per trade.</div>
+                <div class="legend-col-row"><strong>Option 2 (Wait for dip)</strong> — wait for stock to dip first, enter cheaper, sell at the same target. Shows chance of dip filling + average return.</div>
+                <div class="legend-col-row"><strong>Average return per trade</strong> — what you'd earn (or lose) on average if you took this trade many times under similar conditions. Positive = profitable over the long run; negative = unprofitable.</div>
+                <div class="legend-col-row"><strong>📰 What the AI found</strong> — Pass 2's catalysts (events expected to move the stock) translated to plain English with magnitude and direction.</div>
             </div>
         </div>
     </div>
