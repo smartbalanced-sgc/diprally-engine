@@ -110,9 +110,10 @@ def test_institutional_roster_wins_on_collision():
     overlap, but a future operator might paste-duplicate.)"""
     from src.registry import get_ticker
     # MU is institutional — must resolve to the institutional entry's
-    # σ-class (MID), not whatever a future scratch overlay might set.
+    # σ-class (HIGH, as of PR #92 Defect G fix), not whatever a future
+    # scratch overlay might set.
     cfg = get_ticker("MU")
-    assert cfg.sigma_class == "MID"
+    assert cfg.sigma_class == "HIGH"
 
 
 # =============================================================================
