@@ -906,36 +906,36 @@ tickers:
 # without a code change.
 # =============================================================================
 tickers_scratch:
-  # AI capex stack validation cohort 2026-05-28 — picks-and-shovels of the
-  # AI buildout, deliberately one ticker per lane (cooling, power gen,
-  # software, server hardware, SMR nuclear). Portfolio correlation gate
-  # won't collapse these into substitutes because the lane separation is
-  # structural — they're complements, not competitors.
-  VRT:
-    sigma_class: HIGH
-    sector_expected: "Industrials / Electrical Equipment & Parts"
-    stock_peers: ["ETN", "PWR"]
-    etf_peer: ""
-  CEG:
+  # Multi-agent debate cohort 2026-05-28 — winners of a 4-slate sub-agent
+  # debate (Catalyst Hunter / Quant Screener / Mean-Reversion / Orchestrator).
+  # Selection criteria: cross-framework convergence + MID-σ math fit +
+  # verifiable in-horizon catalyst OR clean transient dip shape.
+  # See conversation history for the full per-pick debate reasoning.
+  ADBE:
     sigma_class: MID
-    sector_expected: "Utilities / Utilities - Renewable"
-    stock_peers: ["VST", "TLN"]
-    etf_peer: ""
-  PLTR:
-    sigma_class: EXTREME
-    sector_expected: "Technology / Software - Infrastructure"
-    stock_peers: ["NBIS", "CRWV"]
+    sector_expected: "Technology / Software - Application"
+    stock_peers: ["CRM", "NOW"]
     etf_peer: "IGV"
-  SMCI:
-    sigma_class: EXTREME
-    sector_expected: "Technology / Computer Hardware"
-    stock_peers: ["DELL", "ANET"]
-    etf_peer: "SOXX"
-  OKLO:
-    sigma_class: EXTREME
-    sector_expected: "Utilities / Utilities - Renewable"
-    stock_peers: []
+  ORCL:
+    sigma_class: MID
+    sector_expected: "Technology / Software - Infrastructure"
+    stock_peers: ["CRM", "NOW"]
+    etf_peer: "IGV"
+  DE:
+    sigma_class: MID
+    sector_expected: "Industrials / Farm & Heavy Construction Machinery"
+    stock_peers: ["CAT", "CNH"]
     etf_peer: ""
+  IBM:
+    sigma_class: MID
+    sector_expected: "Technology / Information Technology Services"
+    stock_peers: ["ACN", "DELL"]
+    etf_peer: ""
+  AVGO:
+    sigma_class: MID
+    sector_expected: "Technology / Semiconductors"
+    stock_peers: ["MU", "NXPI"]
+    etf_peer: "SOXX"
 
 # -----------------------------------------------------------
 # v3 review criteria — LOCKED at v2 ship, executed at 30 days of runtime
