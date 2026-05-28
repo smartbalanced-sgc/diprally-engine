@@ -726,15 +726,17 @@ No prose before or after, no markdown fences.
 
 
 def apply_catalyst_verification(catalysts: list, verifications: list) -> list:
-    """Filter + downgrade an input catalyst list based on verification
-    results. Pure function — does not mutate inputs.
+    """Filter an input catalyst list based on verification results.
+    Pure function — does not mutate inputs.
 
-    - REFUTED catalysts are dropped entirely.
-    - UNVERIFIED catalysts have their magnitude forced to "low".
+    - REFUTED catalysts are dropped entirely (active contradiction).
+    - UNVERIFIED catalysts pass through unchanged — no-op. See PR #92:
+      the verifier (Haiku, no web search, training-bound) structurally
+      cannot confirm 2026 catalysts. Returning UNVERIFIED is non-information,
+      not negative evidence. Only REFUTED (structural contradiction) acts.
     - VERIFIED catalysts pass through unchanged.
     - Catalysts beyond the top-3 (no verification entry) pass through
-      unchanged — they didn't reach the verification threshold but
-      weren't tested either.
+      unchanged — they didn't reach the verification threshold.
 
     Each kept catalyst gets a `verification_verdict` field appended so
     downstream code (reporter, dashboard) can surface it.
@@ -762,9 +764,6 @@ def apply_catalyst_verification(catalysts: list, verifications: list) -> list:
         new_c["verification_verdict"] = verdict
         new_c["verification_reasoning"] = v.get("reasoning", "")
         new_c["verification_url"] = v.get("supporting_url")
-        if verdict == "UNVERIFIED":
-            new_c["magnitude"] = "low"
-            new_c["magnitude_pre_verification"] = c.get("magnitude")
         out.append(new_c)
     return out
 
