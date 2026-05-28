@@ -52,6 +52,42 @@ sandbox FIRST (synthesize realistic inputs, decompose by axis, identify root
 cause with hard numbers), THEN propose a single surgical fix with a regression
 test that fails before and passes after.
 
+## End-to-end audit protocol (CANON — MANDATORY when asked to audit/evaluate, OR when any output looks structurally extreme)
+Added 2026-05-28 after repeated failures where the operator (a self-described
+novice) out-diagnosed the engine's root causes — EV payoff asymmetry, catalyst
+blindness, invisible analyst signals — that a shallow "the code does what it
+says / the math checks out" pass missed. The cardinal sin: confirming
+self-consistency instead of fitness-for-purpose. This protocol forces
+falsification and input-auditing by default. Run ALL steps in ONE pass; the
+deliverable is a ranked defect list, never reassurance.
+
+  1. **Anomaly-first / falsify.** An extreme output (0 BUYs in N runs,
+     all-identical verdicts, every value at a cap) is a STRUCTURAL red flag,
+     not data coincidence. State the null — "the system CANNOT produce
+     outcome X" — and try to FALSIFY it with a numerical harness on realistic
+     inputs BEFORE touching anything else.
+  2. **Two separate questions, always:** (a) does the code do what it
+     documents? (b) is what it documents CORRECT for the goal? Passing (a)
+     while never asking (b) is the cardinal sin.
+  3. **Trace the full pipeline, stage by stage:** data source → fetch →
+     signal → AI catalyst → drift → MC → EV → gate → verdict → display. One
+     line per stage: what flows in, what flows out, what can be silently
+     wrong/empty here.
+  4. **Audit inputs before math.** Sample the ACTUAL AI catalysts / signals
+     for ≥1 ticker against an INDEPENDENT ground-truth web search. Garbage-in
+     invalidates any downstream correctness.
+  5. **Enumerate every silent-failure path:** try/except swallows,
+     `_none_signal` fallbacks, plan-restricted endpoints returning `[]`,
+     "degrade gracefully" branches, hard-coded block/allow-lists. Verify each
+     is firing as intended, not masking a problem.
+  6. **Interrogate the objective function directly.** Harness + decompose by
+     axis (upside cap vs downside tail, win-prob vs loss-magnitude) to expose
+     structural bias in the metric itself.
+  7. **Adversarial, not confirmatory.** The deliverable is a ranked list of
+     what's WRONG or FRAGILE by impact. "I found nothing / the math checks
+     out" means the audit wasn't deep enough — and that claim is NEVER made
+     without a harness reproducing the observed behavior on real inputs.
+
 ## Hard constraints
 - AI cost cap: **$2/day across all tickers** (HARD)
 - Token discipline: AI allocated by budget broker, never sprayed
