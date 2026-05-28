@@ -861,7 +861,7 @@ tickers:
     stock_peers: ["IPGP", "COHR"]
     etf_peer: ""
   MU:
-    sigma_class: MID
+    sigma_class: HIGH                 # PR #92: was MID — auto-detector flags HIGH (σ ~88%) every run; AI-memory regime moved MU structurally into HIGH
     sector_expected: "Technology / Semiconductors"
     stock_peers: ["SNDK", "WDC", "STX"]
     etf_peer: ""

@@ -1529,7 +1529,7 @@ def run_pipeline(args) -> int:
         n_verified = sum(1 for v in catalyst_verifications if v.get("verdict") == "VERIFIED")
         print(
             f"   Verification: {n_verified} VERIFIED, {n_unverified} UNVERIFIED "
-            f"(magnitude → low), {n_refuted} REFUTED (dropped). "
+            f"(kept — non-destructive, PR #92), {n_refuted} REFUTED (dropped). "
             f"Catalysts: {before} → {len(effective_ai.catalysts)}"
         )
 
