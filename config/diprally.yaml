@@ -891,6 +891,52 @@ tickers:
     stock_peers: ["AMAT", "KLAC"]
     etf_peer: "SOXX"
 
+# =============================================================================
+# Ad-hoc / temporary cohort tickers.
+#
+# Lookups (peer_rs, σ-class hint, sector sanity check) fall back to this
+# block, so a `--tickers VRT CEG PLTR SMCI OKLO` run gets full registry
+# support. But `list_universe()` does NOT include these — so a default
+# orchestrator run (no --tickers flag) continues to iterate the
+# institutional `tickers:` roster above, unchanged.
+#
+# Use this for validation cohorts, one-off batches, theme experiments.
+# Move a ticker UP into `tickers:` when it earns a permanent slot; delete
+# the entry here when the cohort is retired. Engine handles either action
+# without a code change.
+# =============================================================================
+tickers_scratch:
+  # AI capex stack validation cohort 2026-05-28 — picks-and-shovels of the
+  # AI buildout, deliberately one ticker per lane (cooling, power gen,
+  # software, server hardware, SMR nuclear). Portfolio correlation gate
+  # won't collapse these into substitutes because the lane separation is
+  # structural — they're complements, not competitors.
+  VRT:
+    sigma_class: HIGH
+    sector_expected: "Industrials / Electrical Equipment & Parts"
+    stock_peers: ["ETN", "PWR"]
+    etf_peer: ""
+  CEG:
+    sigma_class: MID
+    sector_expected: "Utilities / Utilities - Renewable"
+    stock_peers: ["VST", "TLN"]
+    etf_peer: ""
+  PLTR:
+    sigma_class: EXTREME
+    sector_expected: "Technology / Software - Infrastructure"
+    stock_peers: ["NBIS", "CRWV"]
+    etf_peer: "IGV"
+  SMCI:
+    sigma_class: EXTREME
+    sector_expected: "Technology / Computer Hardware"
+    stock_peers: ["DELL", "ANET"]
+    etf_peer: "SOXX"
+  OKLO:
+    sigma_class: EXTREME
+    sector_expected: "Utilities / Utilities - Renewable"
+    stock_peers: []
+    etf_peer: ""
+
 # -----------------------------------------------------------
 # v3 review criteria — LOCKED at v2 ship, executed at 30 days of runtime
 # -----------------------------------------------------------

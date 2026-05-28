@@ -3,6 +3,16 @@
 The universe is data, not code (sacred #17 + universe-is-config). Adding or
 removing tickers is a YAML edit, never a code change.
 
+Two namespaces:
+  - `tickers`        — the institutional roster. `list_universe()` returns
+                       these. Default orchestrator runs iterate this set.
+  - `tickers_scratch`— ad-hoc / temporary cohorts. NOT in `list_universe()`,
+                       so default runs ignore them. Lookups (get_ticker /
+                       resolve_peers / classify / expected_sector) fall back
+                       to this namespace, so a `--tickers VRT CEG ...` run
+                       gets full registry support (peer_rs, σ-class hint,
+                       sector check) without polluting the default cohort.
+
 Public API:
     get_ticker(symbol) -> TickerConfig
     resolve_peers(symbol) -> list[str]
@@ -29,16 +39,29 @@ class TickerNotInUniverse(KeyError):
     """
 
 
+def _lookup(symbol: str) -> Optional[TickerConfig]:
+    """Return the registry entry from either `tickers` or `tickers_scratch`
+    (in that order), or None if not registered in either namespace."""
+    upper = symbol.upper()
+    entry = _CONFIG.tickers.get(upper)
+    if entry is not None:
+        return entry
+    return getattr(_CONFIG, "tickers_scratch", {}).get(upper)
+
+
 def get_ticker(symbol: str) -> TickerConfig:
     """Look up a ticker's registry entry. Raises TickerNotInUniverse if not
-    in the loaded YAML."""
-    upper = symbol.upper()
-    if upper not in _CONFIG.tickers:
+    in either the institutional roster or the scratch cohort."""
+    entry = _lookup(symbol)
+    if entry is None:
+        upper = symbol.upper()
         raise TickerNotInUniverse(
-            f"{upper} not in universe. Edit config/diprally.yaml to add, "
+            f"{upper} not in universe or scratch cohort. Edit "
+            f"config/diprally.yaml (add to `tickers:` for the permanent "
+            f"roster, or `tickers_scratch:` for a temporary cohort), "
             f"or pass --peers explicitly to override registry."
         )
-    return _CONFIG.tickers[upper]
+    return entry
 
 
 def resolve_peers(symbol: str) -> list[str]:
@@ -50,13 +73,12 @@ def resolve_peers(symbol: str) -> list[str]:
          names that have no comparable stock peers)
       3. [] empty list — signal_from_peer_rs returns _none_signal cleanly
 
-    Tickers not in the universe return [] (caller is responsible for either
-    adding the ticker to YAML or passing --peers explicitly). Letting an
-    unknown ticker silently fall through to empty peers is safer than
-    raising — the engine's other 10 signals still work.
+    Tickers not in either namespace return [] (caller is responsible for
+    either adding the ticker to YAML or passing --peers explicitly).
+    Letting an unknown ticker silently fall through to empty peers is
+    safer than raising — the engine's other 10 signals still work.
     """
-    upper = symbol.upper()
-    entry = _CONFIG.tickers.get(upper)
+    entry = _lookup(symbol)
     if entry is None:
         return []
     if entry.stock_peers:
@@ -67,28 +89,32 @@ def resolve_peers(symbol: str) -> list[str]:
 
 
 def list_universe() -> list[str]:
-    """Return all ticker symbols in the loaded universe, sorted."""
+    """Return the permanent ticker roster, sorted.
+
+    Scratch-cohort tickers are intentionally excluded — they are only
+    accessible via explicit `--tickers ...` CLI selection. This keeps
+    default orchestrator runs (no --tickers) iterating the institutional
+    universe regardless of what's parked in `tickers_scratch:`.
+    """
     return sorted(_CONFIG.tickers.keys())
 
 
 def classify(symbol: str) -> Optional[str]:
     """Return the σ-class hint for a ticker (EXTREME/HIGH/MID), or None if
-    not in the universe.
+    not in either namespace.
 
     σ-class is a HINT — W3's auto-detection will compute the actual class
     from realized vol + GARCH. The registry value is the starting point /
     fallback when the auto-detector lacks data.
     """
-    upper = symbol.upper()
-    entry = _CONFIG.tickers.get(upper)
+    entry = _lookup(symbol)
     return entry.sigma_class if entry else None
 
 
 def expected_sector(symbol: str) -> Optional[str]:
     """Return the expected sector string from the registry. Used as a
     sanity check against FMP's profile.sector field."""
-    upper = symbol.upper()
-    entry = _CONFIG.tickers.get(upper)
+    entry = _lookup(symbol)
     return entry.sector_expected if entry else None
 
 
@@ -108,7 +134,7 @@ def provider_symbol(symbol: str, provider: str) -> str:
     where providers diverge (e.g. BRK.B on FMP vs BRK-B on Yahoo).
     """
     upper = symbol.upper()
-    entry = _CONFIG.tickers.get(upper)
+    entry = _lookup(symbol)
     if entry is None:
         return upper
     provider_lower = provider.lower()

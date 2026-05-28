@@ -494,6 +494,13 @@ class DiprallyConfig(_StrictModel):
     ai_cache: AICacheConfig
     bag_hold_terminal_assumption: str
     tickers: dict[str, TickerConfig]
+    # Ad-hoc / temporary cohort tickers. Looked up by the registry helpers
+    # (get_ticker / resolve_peers / classify / expected_sector) so a
+    # `--tickers VRT CEG ...` run gets full registry support (peer_rs signal,
+    # σ-class hint, sector sanity check) WITHOUT polluting `list_universe()`.
+    # Default orchestrator runs (no --tickers flag) iterate `tickers` only,
+    # so the default cohort stays the institutional roster.
+    tickers_scratch: dict[str, TickerConfig] = Field(default_factory=dict)
     v3_review_criteria: V3ReviewCriteriaConfig
 
 
