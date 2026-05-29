@@ -1,7 +1,7 @@
 # DIPRALLY-ENGINE — Claude Code session contract
 
-Multi-ticker swing decision engine. Daily quant + AI analysis of 17 volatile
-stocks to identify defensible dip-and-rally round-trip setups within 60 trading
+Multi-ticker swing decision engine. Daily quant + AI analysis of 31 volatile
+stocks to identify defensible dip-and-rally round-trip setups within 20 trading
 days. Refuses negative-EV setups.
 
 ## Working style (Jesse)
@@ -93,11 +93,25 @@ deliverable is a ranked defect list, never reassurance.
 - Token discipline: AI allocated by budget broker, never sprayed
 - Same-day re-runs must not corrupt CSV or double-charge AI
 - No "capital" concept — recommendation tool, user sizes externally
-- Ticker universe is CONFIG (YAML), not code. Current roster is 17 names
+- Ticker universe is CONFIG (YAML), not code. Current roster is 31 names
   but adding/removing is a YAML edit, not a code change. Engine must
   handle any universe size without modification.
+- Mean reversion: the engine supports a mean-reversion drift term
+  (`run.py --mean-reversion`, anchor in YAML `mean_reversion.anchor_pct_below_spot`)
+  but it DEFAULTS TO 0.0 (OFF) and the orchestrator does NOT pass it. Pure
+  GBM is the live default. Treat this as a known structural lever, not an
+  accident — enabling it is a deliberate calibration decision, not a bugfix.
 
-## Sacred decisions — NEVER violate
+## Sacred decisions
+**Two tiers of "sacred":**
+- **Architecture** (truly NEVER violate — changing these would corrupt the
+  model's mathematical or statistical integrity): #1-12, 15-17.
+- **Calibration thresholds** (these LOOK like sacred rules but are YAML
+  values that must be recalibrated as market regimes shift): #13 EV hurdle,
+  #14 trend filter threshold, #18 parabola thresholds. When the engine
+  produces structurally extreme output (0 BUYs, all-refuse), interrogate
+  these first. Recalibrating a YAML threshold is NOT a sacred violation —
+  it is the correct response to a miscalibrated engine.
  1. No block bootstrap
  2. No multi-step vol forecast
  3. No synthesized reliability score (components shown separately)
@@ -115,8 +129,21 @@ deliverable is a ranked defect list, never reassurance.
     HIGH and EXTREME 25 bps (0.25%) — the lower hurdle on HIGH/EXTREME
     acknowledges that the engine's "blind execution" EV estimate
     understates realized EV for active swing traders who time entry/exit
-    discretionarily (sacred #6 — trader sizes / manages externally)
-14. Trend filter — refuse dip if 30d momentum < -25% AND no fundamental catalyst
+    discretionarily (sacred #6 — trader sizes / manages externally).
+    **Calibration note**: EXTREME friction is 70 bps (0.70%) RT, so
+    EXTREME names need 95 bps (0.95%) gross EV just to clear the gate.
+    With pure GBM (mean reversion OFF by default), this is achievable but
+    tight. If 0-BUY persists, interrogate friction bps and EV hurdle as a
+    combined threshold — they are YAML values, not architectural constants.
+14. Trend filter — refuse dip if 30d momentum < -25% AND no fundamental
+    catalyst. **Calibration note**: this threshold is GLOBAL (not σ-class
+    adjusted). At EXTREME σ≈130%, a 30-day 1σ move is ~36%, so a -25%
+    drop is LESS than 1σ — normal variance, not a falling knife. The filter
+    is miscalibrated for high-vol classes and will block legitimate dip-buy
+    setups on EXTREME/HIGH names where the dip IS the opportunity. The
+    -0.25 threshold lives in YAML (`trend_filter.mom_30d_threshold`) and
+    can be recalibrated per-class. Recommended direction: -0.40 or -0.50
+    for EXTREME, -0.35 for HIGH, leave -0.25 for MID.
 15. Insider signal dropped (Form 4 lag + noise)
 16. Method-disagreement refusal — MC vs PDE diverge >5pp on marginal = no recommendation
 17. **All configurable values live in `config/diprally.yaml`. `src/` holds code only.**
@@ -133,14 +160,15 @@ deliverable is a ranked defect list, never reassurance.
     must NEVER require a code edit, a PR, or a deploy.
 18. **Parabola filter** — refuse dip-buy when `mom_30d ≥` σ-class threshold
     AND no in-horizon bearish-direction catalyst surfaced by AI Pass 1/Pass 2.
-    σ-class thresholds (PR #70): MID +50%, HIGH +80%, EXTREME +100% —
-    calibrated to the actual vol regime of each class (a +50% monthly
-    move is exceptional for AMAT-class names but baseline for the AI/
-    semi/momentum names this engine targets). Mirror of sacred #14
-    (falling-knife trend filter) for blow-off tops. Asymmetric exception:
-    requires SPECIFICALLY bearish catalyst — generic "two-sided earnings"
-    is the math layer's default, not a de-rating thesis. Codified by
-    PRs #41 / #44 / #45 / #46 / #51 / #70.
+    σ-class thresholds (PR #89, supersedes PR #70's +50/+80/+100): MID +80%,
+    HIGH +150%, EXTREME +200% — recalibrated for the AI bull cycle where
+    EXTREME/HIGH names (MRAM/LWLG/VELO/INOD; MU/ARM/NBIS/INTC/MRVL) routinely
+    ran 80-180% mom_30d WITHOUT parabolic reversal, so the old thresholds
+    were refusing legitimate continuation setups. Only TRUE blow-offs trip
+    it now. Mirror of sacred #14 (falling-knife trend filter) for blow-off
+    tops. Asymmetric exception: requires SPECIFICALLY bearish catalyst —
+    generic "two-sided earnings" is the math layer's default, not a
+    de-rating thesis. Codified by PRs #41 / #44 / #45 / #46 / #51 / #70 / #89.
 
 ## Ticker universe (current roster — adjust via YAML)
 - **EXTREME (11)**: LWLG, MRAM, ENGN, VELO, SNDK, ARM, CRWV, NBIS, INOD, CRDO, ANAB
@@ -148,8 +176,13 @@ deliverable is a ranked defect list, never reassurance.
   - SNDK = WDC Flash spinoff (Feb 2025 IPO); ARM IPO Sep 2023; CRWV IPO Mar 2025;
     NBIS = post-Yandex restructure. Limited history names — auto-detector may
     flag class shifts in early cycles.
-- **HIGH (6)**: ASTS, RKLB, PL, SATS, GHM, MRVL
-- **MID (9)**: INTC, IPGP, LITE, MU, STX, AMAT, MOG-A, GLW, LRCX
+- **HIGH (7)**: ASTS, RKLB, PL, SATS, GHM, MRVL, MU
+  - MU reclassified MID→HIGH (realized vol consistently 70-90% annualised
+    in the AI-cycle semi regime; now sits above the 65% high_min boundary)
+- **MID (13)**: INTC, IPGP, LITE, STX, AMAT, MOG-A, GLW, LRCX,
+  ADBE, ORCL, DE, IBM, AVGO
+  - ADBE, ORCL, DE, IBM, AVGO added as large-cap diversifiers (lower-vol
+    anchors to improve BUY hit rate across the universe)
 
 > **Ticker convention**: canonical form across this repo uses dashes for
 > class shares (MOG-A, BRK-B, BF-B) — the Yahoo Finance / industry-standard
@@ -160,19 +193,29 @@ deliverable is a ranked defect list, never reassurance.
 > different separator, the W2 registry adds per-provider translation.
 
 ## σ-class defaults
+Conviction recalibrated 2026-05-24 (the old EXTREME/HIGH rally_conditional 0.75
+was mathematically unachievable at σ>60% and guaranteed 0 BUYs). Grid + panic
+columns are 20d-horizon values (PR #86 rescaled them from the legacy 60d grid by
+√(20/60)). EV hurdle is per-class (sacred #13): EXTREME/HIGH 25 bps (0.25%),
+MID 50 bps (0.50%). These are the LIVE config/diprally.yaml values — if this
+table and the YAML ever disagree, the YAML is authoritative; fix this table.
+
 | Class    | Conv-dip | Conv-rally | Grid dip | Grid rally | Panic floor | Friction bps RT | AI vol_mult (H/M/L) |
 |----------|----------|-----------|----------|-----------|-------------|-----------------|---------------------|
-| EXTREME  | 0.60     | 0.75      | -50%     | +60%      | -35%        | 70              | 1.10 / 1.00 / 0.90  |
-| HIGH     | 0.65     | 0.75      | -35%     | +50%      | -25%        | 35              | 1.15 / 1.00 / 0.90  |
-| MID      | 0.65     | 0.70      | -20%     | +30%      | -18%        | 18              | 1.25 / 1.00 / 0.80  |
+| EXTREME  | 0.55     | 0.55      | -29%     | +35%      | -20%        | 70              | 1.10 / 1.00 / 0.90  |
+| HIGH     | 0.60     | 0.65      | -20%     | +29%      | -14%        | 35              | 1.15 / 1.00 / 0.90  |
+| MID      | 0.65     | 0.70      | -12%     | +18%      | -10%        | 18              | 1.25 / 1.00 / 0.80  |
 
 ## AI tier system (broker, $2/day hard cap)
 - **T0** ($0)    — math only. Default; every ticker daily.
 - **T1** (~$0.02) — Haiku Pass 1 only (web_search cap 1). Mild trigger.
-- **T2** (~$0.10) — Sonnet Pass 1 + Pass 2. Pre-AI net EV positive AND conviction met.
-- **T3** (~$0.30) — Opus Pass 1 + Sonnet Pass 2 + Haiku stress. T2 critique passed + budget allows.
+- **T2** (~$0.10) — Sonnet Pass 1 + Pass 2. Gated on ambiguity ≥ `ai_min_ambiguity`
+  (PR #87 dropped the old "pre-AI net EV positive AND conviction met" gate — it
+  was screening out exactly the ambiguous names AI exists to resolve).
+- **T3** (~$0.30) — Opus Pass 1 + Sonnet Pass 2 + Haiku stress. Ambiguity ≥
+  `t3_min_ambiguity` AND `qualifies_for_t2_plus` AND budget allows.
 
-Broker: T0 all 17 first, sort by ambiguity, greedy allocate T3→T2→T1 within $2.
+Broker: T0 all 31 first, sort by ambiguity, greedy allocate T3→T2→T1 within $2.
 
 ## Wave plan (11 waves, sequential, approval-gated)
 W0 scaffolding + v2 migration → W1 AI efficiency → W2 multi-ticker + registry →
