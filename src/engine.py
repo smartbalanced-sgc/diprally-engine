@@ -902,6 +902,27 @@ def _compact_stress_json(stress_results) -> str:
     return _json.dumps(keep, separators=(",", ":"))
 
 
+def replay_costs_from_cache(payload) -> tuple:
+    """Defect F — recover the AI dollars the ORIGINAL same-day run incurred
+    from its cache payload. Returns (pass1, pass2, verification, stress).
+
+    A cache replay is $0.00 INCREMENTAL (no new API call), but the day's
+    recorded cost for (ticker, date) must preserve the original spend.
+    Otherwise the cache-hit row writes ai_cost_total=0.00 and same-day dedup
+    (sacred #11, append_history_row) overwrites the original real-cost row —
+    erasing the day's AI spend from the canonical ledger and making any
+    cost-accounting reconstruction undercount. Missing fields (legacy
+    payloads) default to 0.0.
+    """
+    if not isinstance(payload, dict):
+        return 0.0, 0.0, 0.0, 0.0
+
+    def _g(k):
+        return float(payload.get(k, 0.0) or 0.0)
+
+    return _g("pass1_cost"), _g("pass2_cost"), _g("verification_cost"), _g("stress_cost")
+
+
 def append_history_row(history_path, row):
     """Write a row, replacing any existing row with the same date (#11)."""
     history_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1420,6 +1441,7 @@ def run_pipeline(args) -> int:
     pass2_status = "skipped"
     cached_stress_results = None  # set on cache hit, used in step 13
     cached_stress_cost = 0.0
+    cached_verification_cost = 0.0  # Defect F — day's incurred verify cost on replay
     cache_hit = False
 
     # Raw outputs accumulated for end-of-pipeline cache write (miss path only).
@@ -1441,18 +1463,25 @@ def run_pipeline(args) -> int:
     if bust_cache:
         print("AI cache bypass (--bust-cache): forcing fresh Pass 1/2/verify/stress")
     if cache_payload:
+        # Defect F — recover the day's real spend so the ledger isn't erased
+        # by the same-day dedup overwrite. $0.00 INCREMENTAL (no new call),
+        # but ai_cost_total must reflect the original run's cost.
+        (pass1_cost_charged, pass2_cost_charged,
+         cached_verification_cost, cached_stress_cost) = replay_costs_from_cache(cache_payload)
+        _day_cost = pass1_cost_charged + pass2_cost_charged + cached_verification_cost + cached_stress_cost
         print(f"   AI cache HIT for {ticker} ({cache_payload.get('date')}, "
-              f"spot ${cache_payload.get('spot'):.2f}) — Pass 1/2/stress replayed at $0.00")
+              f"spot ${cache_payload.get('spot'):.2f}) — Pass 1/2/verify/stress "
+              f"replayed at $0.00 incremental (day's spend ${_day_cost:.2f} "
+              f"preserved in ledger)")
         cache_hit = True
         p1_raw = cache_payload.get("pass1_raw")
         p1_sources = int(cache_payload.get("pass1_sources", 0))
         if p1_raw:
-            pass1 = parse_ai_pass1(p1_raw, p1_sources, 0.0)  # cost=0.00 on cache hit
+            pass1 = parse_ai_pass1(p1_raw, p1_sources, 0.0)  # $0 incremental
         p2_raw = cache_payload.get("pass2_raw")
         if p2_raw and pass1:
             pass2 = parse_ai_pass2(p2_raw, pass1, 0.0)
         cached_stress_results = cache_payload.get("stress_results") or []
-        cached_stress_cost = 0.0
     elif not tier.runs_ai:
         print(f"AI Pass 1 skipped (tier {tier.name})")
     else:
@@ -1577,6 +1606,8 @@ def run_pipeline(args) -> int:
     verification_cost = 0.0
     if cache_hit and cache_payload is not None:
         catalyst_verifications = cache_payload.get("catalyst_verifications") or []
+        # Defect F — preserve the day's incurred verification cost on replay.
+        verification_cost = cached_verification_cost
     elif (tier.catalyst_verification_model is not None
           and effective_ai and effective_ai.catalysts):
         print(f"AI catalyst verification (model={tier.catalyst_verification_model})...")
@@ -1858,9 +1889,10 @@ def run_pipeline(args) -> int:
     catalyst_stress_results = []
     catalyst_stress_cost = 0.0
     if cache_hit and cached_stress_results is not None:
-        # Replay from cache. Cost = $0.00.
+        # Replay from cache. $0.00 incremental, but preserve the day's
+        # incurred stress cost so the ledger reflects real spend (Defect F).
         catalyst_stress_results = cached_stress_results
-        catalyst_stress_cost = 0.0
+        catalyst_stress_cost = cached_stress_cost
     elif tier.stress_model is not None and effective_ai and best:
         print(f"AI catalyst impact stress test (model={tier.stress_model})...")
         catalyst_stress_results, catalyst_stress_cost = call_ai_catalyst_stress_test(
