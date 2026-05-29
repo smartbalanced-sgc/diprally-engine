@@ -1,9 +1,10 @@
 # DIPRALLY-ENGINE — Claude Code session contract
 
-Multi-ticker swing decision engine. Daily quant + AI analysis of 26 volatile
-stocks (default roster; +5 large-caps in YAML `tickers_scratch`, run only on
-explicit `--tickers`) to identify defensible dip-and-rally round-trip setups
-within 20 trading days. Refuses negative-EV setups.
+Multi-ticker swing decision engine. Daily quant + AI analysis of a roster of
+volatile stocks (the `tickers` block in `config/diprally.yaml`; an additional
+`tickers_scratch` block runs only on explicit `--tickers`) to identify
+defensible dip-and-rally round-trip setups within 20 trading days. Refuses
+negative-EV setups.
 
 ## Working style (Jesse)
 - Caveman: terse, surgical, no fluff
@@ -13,9 +14,9 @@ within 20 trading days. Refuses negative-EV setups.
 - No "yes-man" — push back honestly
 - End every response with `#End`
 - **Basis-point clarity**: whenever you state a value in bps (basis points) — in
-  chat or in engine output / reports — ALSO express it as a percentage in
-  parentheses. Examples: "EV hurdle +25 bps (0.25%)", "friction 35 bps (0.35%)",
-  "+182 bps EV (1.82%)". 1 bp = 0.01% always. Never drop the percentage gloss.
+  chat or in engine output / reports — ALWAYS add the percentage equivalent in
+  parentheses. E.g. 100 bps (1%), 25 bps (0.25%), 182 bps (1.82%). 1 bp = 0.01%
+  always. Never drop the percentage gloss.
 
 ## Asking questions
 - ALWAYS explain each question in plain English first (what the question is
@@ -92,12 +93,20 @@ deliverable is a ranked defect list, never reassurance.
 ## Hard constraints
 - AI cost cap: **$2/day across all tickers** (HARD)
 - Token discipline: AI allocated by budget broker, never sprayed
+- **AI output must never be silently dropped.** Every datum the AI searches for,
+  collects, or generates (catalysts, narrative evidence, Pass-2 critique /
+  reasoning, verification verdicts, stress shocks, cited sources) MUST flow into
+  the next pipeline stage AND be persisted to the run artifacts (CSV / AI cache).
+  If a field is prompted for, it is paid for — discarding it wastes tokens AND
+  blinds the engine. A parsed-but-unused AI field is a defect, not a no-op. The
+  audit protocol (step 5) explicitly hunts for these drops; same-day re-runs
+  must replay persisted AI rather than re-charging (sacred #11/#12, ai_cache).
 - Same-day re-runs must not corrupt CSV or double-charge AI
 - No "capital" concept — recommendation tool, user sizes externally
-- Ticker universe is CONFIG (YAML), not code. Default roster is 26 names
-  (`tickers`); 5 more in `tickers_scratch` run only on explicit `--tickers`.
+- Ticker universe is CONFIG (YAML), not code. Default roster is the `tickers`
+  block; `tickers_scratch` runs only on explicit `--tickers`.
   Adding/removing/promoting is a YAML edit, not a code change. Engine must
-  handle any universe size without modification.
+  handle any universe size without modification — never hard-code a count.
 - Mean reversion: the engine supports a mean-reversion drift term
   (`run.py --mean-reversion`, anchor in YAML `mean_reversion.anchor_pct_below_spot`)
   but it DEFAULTS TO 0.0 (OFF) and the orchestrator does NOT pass it. Pure
@@ -186,20 +195,21 @@ universe grouped by class:
     for k,v in c.get(blk,{}).items()]; print('DEFAULT roster = tickers block; scratch runs only on --tickers'); \
     [print(f'{cl} ({len(g[cl])}): {sorted(g[cl])}') for cl in ('EXTREME','HIGH','MID')]"
 
-As of 2026-05-29 the DEFAULT daily roster (`tickers` block) is 26 names
-(11 EXTREME / 7 HIGH / 8 MID). A separate `tickers_scratch` block holds 5
-large-caps (ADBE, AVGO, DE, IBM, ORCL) that are ad-hoc only: default
-orchestrator runs (no `--tickers` flag) iterate `tickers` ONLY, so scratch
-names get full registry support when explicitly requested but do NOT run in
-the daily cycle. **Watch-out**: if the intent was for those large-cap
-diversifiers to lift the universe BUY hit rate, leaving them in scratch means
-they never run daily — promoting them into `tickers` is a YAML move, not code.
+The DEFAULT daily cycle iterates the `tickers` block ONLY. A separate
+`tickers_scratch` block holds large-caps that are ad-hoc: default orchestrator
+runs (no `--tickers` flag) skip them, so scratch names get full registry
+support when explicitly requested but do NOT run in the daily cycle.
+**Watch-out**: if scratch names were intended as diversifiers to lift the
+universe BUY hit rate, leaving them in scratch means they never run daily —
+promoting them into `tickers` is a YAML move, not code. Run the dump command
+above to see the live split; never assume a count.
 Notable registry facts that aren't obvious from the symbol alone:
 - VELO replaces VELO3D (delisted 2024, relisted Aug 2025 as VELO).
-- Limited-history names (SNDK Feb-2025 spinoff, ARM Sep-2023 IPO, CRWV Mar-2025
-  IPO, NBIS post-Yandex restructure) — σ auto-detector may flag class shifts
-  in early cycles; broker forces ≥T2 on limited-history tickers.
-- MU is HIGH (realized vol 70-90% annualised in the AI-cycle semi regime).
+- Limited-history names (recent IPOs / spinoffs / restructures) — σ
+  auto-detector may flag class shifts in early cycles; broker forces ≥T2 on
+  limited-history tickers.
+- σ-class is data-driven and can shift a name between classes as realized vol
+  moves (e.g. a semi name riding 70-90% annualised vol sits in HIGH, not MID).
 
 > **Ticker convention**: canonical form across this repo uses dashes for
 > class shares (MOG-A, BRK-B, BF-B) — the Yahoo Finance / industry-standard
@@ -235,19 +245,20 @@ values (PR #86 rescaled from the legacy 60d grid by √(20/60)).
 - **T3** (~$0.30) — Opus Pass 1 + Sonnet Pass 2 + Haiku stress. Ambiguity ≥
   `t3_min_ambiguity` AND `qualifies_for_t2_plus` AND budget allows.
 
-Broker: T0 all 26 (default roster) first, sort by ambiguity, greedy allocate
+Broker: T0 every ticker in the run first, sort by ambiguity, greedy allocate
 T3→T2→T1 within $2.
 
-## Wave plan (11 waves, sequential, approval-gated)
-W0 scaffolding + v2 migration → W1 AI efficiency → W2 multi-ticker + registry →
-W3 σ-class auto-detection → W4 budget broker + ambiguity → W5 orchestrator + cron
-+ dashboard → W6 institutional signals → W7 execution realism → W8 risk mgmt
-→ W9 fat-tail MC → W10 calibration.
+## Wave plan (build history — for orienting on PR references only)
+The engine was built in 11 sequential, approval-gated waves; PR comments and
+code reference them by number: W0 scaffolding + v2 migration → W1 AI efficiency
+→ W2 multi-ticker + registry → W3 σ-class auto-detection → W4 budget broker +
+ambiguity → W5 orchestrator + cron + dashboard → W6 institutional signals →
+W7 execution realism → W8 risk mgmt → W9 fat-tail MC → W10 calibration. This is
+historical scaffolding — the live source of truth is `src/` + the YAML, not the
+wave plan.
 
 ## Pointers
-- Full session-start context: seed handover (Jesse's clipboard) or
-  `docs/handover/01_SESSION_CONTEXT.md` (populated at W2+).
-- **Deferred fixes from earlier waves**: `docs/handover/_DEFERRED.md`. Scan at
-  the start of each wave; clear items whose target wave is now active.
-- v1 seed (`tools/_seed_v1.py`) and v2 seed (`tools/_seed_v2.py`) are deleted at
-  end of W0. After W0, source of truth is `src/`.
+- **Deferred fixes**: `docs/handover/_DEFERRED.md` — running list of punted
+  items. Scan it at the start of substantive work; it's the canonical backlog.
+- After W0 the source of truth is `src/` (code) + `config/diprally.yaml`
+  (all tunable values); the v1/v2 migration seeds no longer exist.
