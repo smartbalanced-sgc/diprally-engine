@@ -71,6 +71,7 @@ from src.data_fetch import (
     fetch_history,
     fetch_macro_indicators,
     fetch_next_earnings,
+    fetch_pt_news,
     fetch_options_iv,
     fetch_peer_history,
     fetch_sector_perf,
@@ -107,6 +108,7 @@ from src.signals import (
     signal_from_historical,
     signal_from_macro,
     signal_from_peer_rs,
+    signal_from_pt_revision,
     signal_from_revision_momentum,
     signal_from_sector,
     signal_from_sector_decoupling,
@@ -352,6 +354,7 @@ def _signals_dict_to_display_list(signals_dict, weights, blend=None):
         "short_interest": "Short interest (squeeze tail)",
         "fundamentals": "Fundamentals (FCF + leverage + margin trend)",
         "revision_momentum": "Analyst revision momentum (90d, time-decayed)",
+        "pt_revision": "Analyst PT revision (90d, decay-wtd magnitude)",
         "peer_rs": "Peer RS (60d)",
         "sector_decoupling": "Sector decoupling (vs sector, 30d)",
         "ai": "AI analyst",
@@ -1328,6 +1331,8 @@ def run_pipeline(args) -> int:
     fundamentals = fetch_fundamentals(ticker, api_key, market_cap=market_cap)
     # W6 PR #35: analyst upgrade/downgrade history.
     grades_history = fetch_grades_history(ticker, api_key)
+    # Defect C: per-analyst price-target revision stream.
+    pt_news = fetch_pt_news(ticker, api_key)
 
     # Peer resolution via registry (D-W2-1 closed). CLI --peers is an override;
     # absent --peers falls back to config/diprally.yaml's per-ticker entry
@@ -1392,6 +1397,7 @@ def run_pipeline(args) -> int:
         "short_interest": signal_from_short_interest(short_data),
         "fundamentals": signal_from_fundamentals(fundamentals),
         "revision_momentum": signal_from_revision_momentum(grades_history),
+        "pt_revision": signal_from_pt_revision(pt_news),
         "peer_rs": signal_from_peer_rs(history_df, peer_dfs, lookback_days=60, ticker=ticker),
         "sector_decoupling": signal_from_sector_decoupling(history_df, sector_perf,
                                                             lookback_days=30, ticker=ticker),

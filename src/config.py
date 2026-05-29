@@ -380,6 +380,22 @@ class RevisionMomentumSignalConfig(_StrictModel):
     lookback_days: int = Field(ge=30)
 
 
+class PTRevisionSignalConfig(_StrictModel):
+    """Defect C: analyst price-target REVISION signal thresholds. The signal
+    is the exp-time-decay-weighted mean change in analyst-implied return,
+    (new_PT - prior_PT)/spot_at_post — already in the engine's native drift
+    unit (same as signal_from_analyst_targets' target/spot-1), so there is NO
+    scale coefficient. Distinct from revision_momentum (counts) and analyst
+    (implied-return level). per_entry_cap clamps one revision; drift_cap_abs
+    bounds the aggregate."""
+    lookback_days: int = Field(ge=30)
+    half_life_days: float = Field(gt=0.0)
+    per_entry_cap: float = Field(gt=0.0)
+    drift_cap_abs: float = Field(gt=0.0)
+    conf_high_count: int = Field(ge=1)
+    conf_medium_count: int = Field(ge=1)
+
+
 class FundamentalsSignalConfig(_StrictModel):
     """W6 PR #34: fundamentals signal thresholds. Three sub-components
     (FCF yield, net debt / EBITDA, operating margin trend) combined to
@@ -423,6 +439,7 @@ class SignalsConfig(_StrictModel):
     catalyst_proximity: CatalystProximityConfig
     fundamentals: FundamentalsSignalConfig
     revision_momentum: RevisionMomentumSignalConfig
+    pt_revision: PTRevisionSignalConfig
 
 
 class V3ReviewCriteriaConfig(_StrictModel):
@@ -776,6 +793,7 @@ def _rebind_module_constants() -> None:
     g["SIGNAL_CATALYST_PROXIMITY"] = sig.catalyst_proximity
     g["SIGNAL_FUNDAMENTALS"] = sig.fundamentals
     g["SIGNAL_REVISION_MOMENTUM"] = sig.revision_momentum
+    g["SIGNAL_PT_REVISION"] = sig.pt_revision
     g["MULTI_SATURATION"] = _CONFIG.multi_saturation
     g["PHANTOM_SIGNAL_SE_CONFIG"] = _CONFIG.phantom_signal_se  # signals.py reads PHANTOM_SIGNAL_SE locally
 

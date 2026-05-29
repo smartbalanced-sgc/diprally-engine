@@ -6,6 +6,7 @@ move Z and bull/bear factor arithmetic helpers.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta
 
 import numpy as np
@@ -25,6 +26,7 @@ from src.config import (
     SIGNAL_HISTORICAL,
     SIGNAL_MACRO_DRIFT_LEVELS,
     SIGNAL_PEER_RS,
+    SIGNAL_PT_REVISION,
     SIGNAL_REGIME_DETECTION,
     SIGNAL_FUNDAMENTALS,
     SIGNAL_REVISION_MOMENTUM,
@@ -443,6 +445,120 @@ def signal_from_revision_momentum(grades, today=None):
         "confidence": confidence,
         "source_quality": "PRIMARY",
         "sources_count": in_window_count,
+        "notes": note,
+    }
+
+
+# The prior target lives only in the title, e.g. "raised to $1,500 from
+# $1,000 at DA Davidson". The new target is read from the structured
+# priceTarget field; the prior is parsed from "from $X". Requiring a parseable
+# prior naturally restricts the stream to actual REVISIONS — initiations /
+# reiterations carry no "from $X" and are skipped. Direction is intrinsic to
+# (new - prior), so no keyword parsing is needed.
+_PT_FROM_RE = re.compile(r"from\s*\$?\s*([\d,]+(?:\.\d+)?)", re.IGNORECASE)
+
+
+def signal_from_pt_revision(pt_news, today=None):
+    """Defect C — recency-weighted CHANGE in analyst-implied return.
+
+    A price-target revision, in this engine's native drift unit, is the
+    change in implied return to target:
+
+        revision_i = (new_PT_i - prior_PT_i) / spot_at_post_i
+
+    i.e. the delta of the very same (target/spot - 1) quantity that
+    signal_from_analyst_targets already treats as drift (signals.py:102).
+    No scale factor is introduced — the signal is the exp-time-decay-weighted
+    mean revision, already in drift units:
+
+        drift = Σ w_i·revision_i / Σ w_i,   w_i = 0.5**(age_days/half_life_days)
+
+    Distinct from signal_from_analyst_targets (implied-return LEVEL — a stock
+    can sit at a steady +60% target gap with zero revision) and
+    signal_from_revision_momentum (upgrade/downgrade COUNTS). This is
+    analyst-conviction MOMENTUM.
+
+    Inputs: data_fetch.fetch_pt_news rows (publishedDate, priceTarget,
+    priceWhenPosted, title). The prior target lives only in the title
+    ("from $X"); entries without a parseable prior are not revisions we can
+    measure and are skipped (no manufactured fallback). Direction is intrinsic
+    to (new - prior). spot_at_post is priceWhenPosted — the implied-return
+    change AT the moment of revision, not contaminated by later price drift.
+
+    age uses CALENDAR days (analyst desks publish on calendar time, not the
+    NYSE schedule — same rationale as signal_from_revision_momentum, PR #81).
+
+    Returns the standard signal dict; _none_signal when no measurable
+    revisions fall in the lookback window.
+    """
+    if not pt_news:
+        return _none_signal("no analyst price-target activity")
+
+    cfg = SIGNAL_PT_REVISION
+    if today is None:
+        today = datetime.now().date()
+
+    num = 0.0
+    den = 0.0
+    n_up = 0
+    n_down = 0
+    in_window = 0
+
+    for e in pt_news:
+        if not isinstance(e, dict):
+            continue
+        date_str = e.get("publishedDate") or e.get("date") or ""
+        try:
+            edate = datetime.strptime(date_str[:10], "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            continue
+        age_days = (today - edate).days
+        if age_days < 0 or age_days > cfg.lookback_days:
+            continue
+        m = _PT_FROM_RE.search(str(e.get("title", "") or ""))
+        if not m:
+            continue  # no prior in title → not a measurable revision
+        try:
+            prior = float(m.group(1).replace(",", ""))
+            new_pt = float(e.get("priceTarget"))
+            spot = float(e.get("priceWhenPosted"))
+        except (TypeError, ValueError):
+            continue
+        if prior <= 0 or new_pt <= 0 or spot <= 0:
+            continue
+
+        revision = (new_pt - prior) / spot  # change in implied return
+        # Clamp one entry so a split-stale prior can't dominate the mean.
+        revision = max(-cfg.per_entry_cap, min(cfg.per_entry_cap, revision))
+        w = 0.5 ** (age_days / cfg.half_life_days)
+        num += w * revision
+        den += w
+        in_window += 1
+        if new_pt >= prior:
+            n_up += 1
+        else:
+            n_down += 1
+
+    if in_window == 0 or den <= 0:
+        return _none_signal("no measurable PT revisions in lookback window")
+
+    drift = num / den  # already in implied-return (drift) units; no scale
+    capped = max(-cfg.drift_cap_abs, min(cfg.drift_cap_abs, drift))
+
+    if in_window >= cfg.conf_high_count:
+        confidence = "HIGH"
+    elif in_window >= cfg.conf_medium_count:
+        confidence = "MEDIUM"
+    else:
+        confidence = "LOW"
+
+    note = (f"{n_up} PT raises / {n_down} cuts over {cfg.lookback_days}d "
+            f"(decay-wtd Δimplied-return {drift*100:+.1f}%)")
+    return {
+        "drift": float(capped),
+        "confidence": confidence,
+        "source_quality": "PRIMARY",
+        "sources_count": in_window,
         "notes": note,
     }
 

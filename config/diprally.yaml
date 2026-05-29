@@ -173,7 +173,13 @@ blend_weights_v2:
   catalyst_proximity: 0.13               # was 0.10 (+0.03 from PR #58)
   narrative: 0.07
   fundamentals: 0.10                     # was 0.08 (+0.02 from PR #58)
-  revision_momentum: 0.04
+  # Defect C — revision_momentum (analyst upgrade/downgrade COUNTS) reported
+  # n/a on nearly every run; its 0.04 is reallocated to pt_revision, the
+  # working magnitude signal in the same analyst-revision slot. The count
+  # signal still computes + displays at weight 0; W10 Brier calibration may
+  # restore a nonzero weight if the resolved-outcome data warrants it.
+  revision_momentum: 0.00
+  pt_revision: 0.04                      # Defect C — Δimplied-return revision
 
 # Multi-saturation detector (PR #59 — D-W2-18 interim mitigation).
 # When N≥min_count signals all saturate at their caps in the SAME
@@ -659,6 +665,21 @@ signals:
     conf_high_count: 6
     conf_medium_count: 3
     lookback_days: 90                   # rolling window
+
+  # Defect C — analyst price-target REVISION signal. Reads the per-analyst
+  # price-target-news stream (FMP /stable/price-target-news) and measures the
+  # recency-weighted mean CHANGE in implied return, (new_PT-prior_PT)/spot —
+  # the engine's native drift unit (same as the analyst signal's target/spot-1),
+  # so NO scale coefficient. Distinct from revision_momentum (counts) and
+  # analyst (implied-return level). Prior target parsed from the title's
+  # "from $X"; entries without a parseable prior are skipped (not revisions).
+  pt_revision:
+    lookback_days: 90                   # rolling window (calendar days)
+    half_life_days: 30.0                # exp decay: 30d-old revision = half weight
+    per_entry_cap: 0.50                 # clamp one revision's Δimplied-return at ±50%
+    drift_cap_abs: 0.20                 # aggregate drift capped at ±20%
+    conf_high_count: 5
+    conf_medium_count: 2
 
   # W6 PR #34 — fundamentals signal. Three sub-components combined to
   # an annualised drift contribution: FCF yield (cash-generative names
