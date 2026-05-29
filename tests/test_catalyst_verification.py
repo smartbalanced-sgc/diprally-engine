@@ -6,11 +6,12 @@ smoke). These tests cover apply_catalyst_verification(), the pure
 function that filters + downgrades the catalyst list based on verdict
 inputs.
 
-Verdicts:
+Verdicts (PR #92 — UNVERIFIED is now non-destructive):
   VERIFIED   → magnitude unchanged, verification fields appended
-  UNVERIFIED → magnitude forced to "low", original preserved as
-               magnitude_pre_verification
-  REFUTED    → catalyst dropped entirely
+  UNVERIFIED → no-op; magnitude preserved (verifier is training-bound and
+               cannot confirm in-horizon catalysts, so a non-confirmation
+               must NOT bury Pass 1's findings)
+  REFUTED    → catalyst dropped entirely (active contradiction)
 """
 from __future__ import annotations
 
@@ -56,14 +57,17 @@ def test_verified_passes_through_with_metadata():
     assert out[0]["verification_url"] == "https://sec.gov/8k/123"
 
 
-def test_unverified_downgrades_magnitude_to_low():
+def test_unverified_preserves_magnitude():
+    """PR #92: UNVERIFIED is non-destructive — magnitude is preserved.
+    The verifier (training-bound, no web search) cannot confirm in-horizon
+    catalysts, so a non-confirmation must not zero out Pass 1's signal."""
     catalysts = [_cat("Convertible Q2 window", "med")]
     verifications = [_verdict("Convertible Q2 window", "UNVERIFIED",
                                reasoning="no 10-Q footnote supports a Q2 window")]
     out = apply_catalyst_verification(catalysts, verifications)
     assert len(out) == 1
-    assert out[0]["magnitude"] == "low"
-    assert out[0]["magnitude_pre_verification"] == "med"
+    assert out[0]["magnitude"] == "med"  # preserved (non-destructive)
+    assert "magnitude_pre_verification" not in out[0]
     assert out[0]["verification_verdict"] == "UNVERIFIED"
 
 
@@ -92,7 +96,7 @@ def test_mixed_verdicts_apply_independently():
     names = [c["name"] for c in out]
     assert names == ["Q2 earnings", "Convertible Q2 window"]
     assert out[0]["magnitude"] == "high"
-    assert out[1]["magnitude"] == "low"
+    assert out[1]["magnitude"] == "med"  # PR #92: UNVERIFIED preserves magnitude
 
 
 def test_catalysts_beyond_verified_topN_passthrough():

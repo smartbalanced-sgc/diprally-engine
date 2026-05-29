@@ -302,6 +302,52 @@ def fetch_analyst_summary(ticker, api_key):
     }
 
 
+def fetch_pt_news(ticker, api_key, limit=100, lookback_days=120):
+    """Defect C — individual analyst price-target CHANGE entries.
+
+    FMP `/stable/price-target-news?symbol=X` (200 OK on Starter, verified
+    2026-05-29) returns one row per analyst PT action, newest first. Each
+    row: publishedDate (ISO-8601 Z), newsTitle (carries the PRIOR target,
+    e.g. "raised to $1,500 from $1,000 at DA Davidson"), priceTarget (new
+    target, structured), priceWhenPosted (spot at post), analystCompany.
+
+    There is NO structured prior-target field — the prior lives only in
+    newsTitle, which signal_from_pt_revision parses. This endpoint is the
+    per-analyst revision STREAM, distinct from price-target-summary
+    (consensus averages) and price-target-consensus (single consensus).
+
+    Client-side date truncation (lookback_days default 120d — wider than
+    the signal's 90d window) keeps the payload small. Degrades gracefully
+    to [] on fetch failure (signal → _none_signal).
+    """
+    data = _fmp_get("price-target-news", api_key, {"symbol": ticker})
+    if not data or not isinstance(data, list):
+        return []
+    today = datetime.now().date()
+    cutoff = today - timedelta(days=lookback_days)
+    out = []
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        date_str = row.get("publishedDate") or row.get("date") or ""
+        try:
+            row_date = datetime.strptime(date_str[:10], "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            continue
+        if row_date < cutoff:
+            continue
+        out.append({
+            "publishedDate": date_str,
+            "priceTarget": row.get("priceTarget"),
+            "priceWhenPosted": row.get("priceWhenPosted"),
+            "title": row.get("newsTitle", "") or "",
+            "company": row.get("analystCompany", "") or "",
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
 def fetch_next_earnings(ticker, api_key, lookahead_days=120):
     """FMP earnings-calendar — find next scheduled earnings event."""
     from_date = datetime.now().strftime("%Y-%m-%d")

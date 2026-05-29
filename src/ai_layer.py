@@ -423,9 +423,16 @@ Examples of NON-override-worthy bull_evidence (specificity 1-2 — rejected):
 
 def call_ai_pass(prompt, max_tokens=3000, pass_label="Pass",
                  model=MODEL_OPUS, web_search_max_uses=5):
-    """Call Claude, parse JSON, return (parsed, cost, sources_cited).
+    """Call Claude, parse JSON, return (parsed, cost, sources_cited, status).
 
-    Returns (None, 0.0, 0) on failure.
+    status (Defect B — distinguish AI-unavailable from empty result so the
+    engine can flag INCOMPLETE/DEGRADED runs instead of silently computing a
+    verdict on degraded data):
+      "ok"        — parsed a usable JSON object
+      "no_client" — no Anthropic client (missing key / init failed); $0 cost
+      "error"     — the API call raised (network / 429 / timeout); $0 cost
+      "empty"     — model responded (real charge) but no parseable JSON
+    On any non-"ok" status the parsed payload is None.
 
     model: full model ID (MODEL_OPUS / MODEL_SONNET / MODEL_HAIKU).
     web_search_max_uses: cap on web_search tool uses. Set to 0 to disable
@@ -435,7 +442,7 @@ def call_ai_pass(prompt, max_tokens=3000, pass_label="Pass",
     client = _anthropic_client()
     if client is None:
         print(f"⚠️  No Anthropic client — {pass_label} skipped")
-        return None, 0.0, 0
+        return None, 0.0, 0, "no_client"
 
     tools = []
     if web_search_max_uses > 0:
@@ -463,7 +470,7 @@ def call_ai_pass(prompt, max_tokens=3000, pass_label="Pass",
         end = full_text.rfind("}")
         if start < 0 or end < 0:
             print(f"⚠️  {pass_label}: no JSON found in response")
-            return None, cost, 0
+            return None, cost, 0, "empty"
         json_text = full_text[start:end + 1]
 
         try:
@@ -476,7 +483,7 @@ def call_ai_pass(prompt, max_tokens=3000, pass_label="Pass",
             except json.JSONDecodeError as e2:
                 print(f"⚠️  {pass_label}: JSON parse error after sanitisation: {e2}")
                 print(f"   (first 400 chars of response): {full_text[:400]}")
-                return None, cost, 0
+                return None, cost, 0, "empty"
 
         sources = set()
 
@@ -495,10 +502,10 @@ def call_ai_pass(prompt, max_tokens=3000, pass_label="Pass",
                     collect_sources(item)
 
         collect_sources(parsed)
-        return parsed, cost, len(sources)
+        return parsed, cost, len(sources), "ok"
     except Exception as e:
         print(f"⚠️  {pass_label} call failed: {e}")
-        return None, 0.0, 0
+        return None, 0.0, 0, "error"
 
 
 def call_ai_catalyst_stress_test(ticker, spot, dip_price, rally_price,
@@ -726,15 +733,17 @@ No prose before or after, no markdown fences.
 
 
 def apply_catalyst_verification(catalysts: list, verifications: list) -> list:
-    """Filter + downgrade an input catalyst list based on verification
-    results. Pure function — does not mutate inputs.
+    """Filter an input catalyst list based on verification results.
+    Pure function — does not mutate inputs.
 
-    - REFUTED catalysts are dropped entirely.
-    - UNVERIFIED catalysts have their magnitude forced to "low".
+    - REFUTED catalysts are dropped entirely (active contradiction).
+    - UNVERIFIED catalysts pass through unchanged — no-op. See PR #92:
+      the verifier (Haiku, no web search, training-bound) structurally
+      cannot confirm 2026 catalysts. Returning UNVERIFIED is non-information,
+      not negative evidence. Only REFUTED (structural contradiction) acts.
     - VERIFIED catalysts pass through unchanged.
     - Catalysts beyond the top-3 (no verification entry) pass through
-      unchanged — they didn't reach the verification threshold but
-      weren't tested either.
+      unchanged — they didn't reach the verification threshold.
 
     Each kept catalyst gets a `verification_verdict` field appended so
     downstream code (reporter, dashboard) can surface it.
@@ -762,9 +771,6 @@ def apply_catalyst_verification(catalysts: list, verifications: list) -> list:
         new_c["verification_verdict"] = verdict
         new_c["verification_reasoning"] = v.get("reasoning", "")
         new_c["verification_url"] = v.get("supporting_url")
-        if verdict == "UNVERIFIED":
-            new_c["magnitude"] = "low"
-            new_c["magnitude_pre_verification"] = c.get("magnitude")
         out.append(new_c)
     return out
 

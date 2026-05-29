@@ -53,15 +53,15 @@ def test_extreme_class_membership():
 
 
 def test_high_class_membership():
-    """CLAUDE.md HIGH group as of 2026-05-24 expansion: original 5 + MRVL."""
+    """HIGH group: original 5 + MRVL + MU (PR #92 reclassified MU MID→HIGH)."""
     high = {t for t in list_universe() if classify(t) == "HIGH"}
-    assert high == {"ASTS", "RKLB", "PL", "SATS", "GHM", "MRVL"}, high
+    assert high == {"ASTS", "RKLB", "PL", "SATS", "GHM", "MRVL", "MU"}, high
 
 
 def test_mid_class_membership():
-    """CLAUDE.md MID group as of 2026-05-24 expansion: original 8 + LRCX."""
+    """MID group: original 8 + LRCX, minus MU (PR #92 moved MU to HIGH)."""
     mid = {t for t in list_universe() if classify(t) == "MID"}
-    assert mid == {"INTC", "IPGP", "LITE", "MU", "STX", "AMAT", "MOG-A", "GLW", "LRCX"}, mid
+    assert mid == {"INTC", "IPGP", "LITE", "STX", "AMAT", "MOG-A", "GLW", "LRCX"}, mid
 
 
 def test_class_counts_sum_to_universe():

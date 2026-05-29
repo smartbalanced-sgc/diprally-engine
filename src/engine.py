@@ -50,6 +50,7 @@ from src.config import (
     MEAN_REVERSION_ANCHOR_PCT_BELOW_SPOT,
     MIN_DIP_PROBABILITY,
     PASS2_CLOSED_FORM_BRACKET_PCT,
+    PATIENCE_WINDOW_TD,
     SENSITIVITY_SCENARIOS,
     SIGMA_CLASSES,
     PARABOLA_FILTER_MOM_30D_THRESHOLD,
@@ -71,6 +72,7 @@ from src.data_fetch import (
     fetch_history,
     fetch_macro_indicators,
     fetch_next_earnings,
+    fetch_pt_news,
     fetch_options_iv,
     fetch_peer_history,
     fetch_sector_perf,
@@ -107,6 +109,7 @@ from src.signals import (
     signal_from_historical,
     signal_from_macro,
     signal_from_peer_rs,
+    signal_from_pt_revision,
     signal_from_revision_momentum,
     signal_from_sector,
     signal_from_sector_decoupling,
@@ -352,6 +355,7 @@ def _signals_dict_to_display_list(signals_dict, weights, blend=None):
         "short_interest": "Short interest (squeeze tail)",
         "fundamentals": "Fundamentals (FCF + leverage + margin trend)",
         "revision_momentum": "Analyst revision momentum (90d, time-decayed)",
+        "pt_revision": "Analyst PT revision (90d, decay-wtd magnitude)",
         "peer_rs": "Peer RS (60d)",
         "sector_decoupling": "Sector decoupling (vs sector, 30d)",
         "ai": "AI analyst",
@@ -484,6 +488,7 @@ def scan_dip_rally_grid(
                 paths, S0, float(dip), float(rally), friction_per_share,
                 dip_first_days=dip_first_days_all[:, i],
                 rally_first_days=rally_first_days_all[:, j],
+                patience_window_td=PATIENCE_WINDOW_TD,
             )
 
             # Apply min_dip_probability gate — if the wait strategy has too
@@ -582,6 +587,39 @@ def _compute_verdict_state(*, best, met_threshold_strict, method_check,
     if best.net_ev_per_share < 0:
         return "NEGATIVE-EV"
     return "BUY"
+
+
+AI_STATUSES = ("OK", "DEGRADED", "INCOMPLETE")
+
+
+def _compute_ai_status(*, tier, cache_hit: bool,
+                        pass1_status: str, pass2_status: str) -> str:
+    """Defect B — did the intended AI drift pipeline (Pass 1 + Pass 2,
+    the sacred-#7 pair) deliver? Orthogonal to verdict_state, which keeps
+    reporting the math verdict regardless.
+
+      INCOMPLETE — an intended Pass 1 failed (no_client / error / empty),
+                   so effective_ai is None and the verdict ran math-only
+                   despite the operator asking for AI.
+      DEGRADED   — Pass 1 delivered but an intended Pass 2 failed; sacred #7
+                   ("Pass 2 wins") is violated and Pass 1's drift was used.
+      OK         — everything intended ran, OR no AI was intended
+                   (T0 / --no-ai), OR a same-day cache replay served it.
+
+    Pure function; no side effects. Verification/stress failures are NOT
+    folded in here — they're non-destructive (catalysts pass through
+    unchanged) and don't corrupt the core drift.
+    """
+    if not tier.runs_ai or cache_hit:
+        return "OK"
+    failed = {"error", "no_client", "empty"}
+    if pass1_status in failed:
+        return "INCOMPLETE"
+    # Pass 2 only counts as a failure when the tier actually intends to run
+    # it (tier.pass2_model set). "skipped" means not attempted → not degraded.
+    if tier.pass2_model is not None and pass2_status in failed:
+        return "DEGRADED"
+    return "OK"
 
 
 def _all_refusal_reasons(*, best, method_check,
@@ -733,6 +771,12 @@ CSV_COLUMNS = [
     "garch_alpha_plus_beta", "horizon_days",
     "method_agreement_flags", "ai_cost_total", "data_source",
     "ai_tier", "ambiguity_score",
+    # Defect B — AI-delivery status, orthogonal to verdict_state.
+    # OK / DEGRADED (Pass 2 failed, Pass 1 drift used) / INCOMPLETE
+    # (Pass 1 failed, verdict ran math-only despite an AI tier). Lets
+    # calibration filter out runs whose AI layer was dark instead of
+    # treating them as genuine math-only T0 runs.
+    "ai_status",
     # W10 PR #47 — calibration harness. Outcome fields populated by
     # src.calibration.resolve_outcomes() at each engine run; the row's
     # prediction is locked at write time but its outcome accumulates as
@@ -856,6 +900,27 @@ def _compact_stress_json(stress_results) -> str:
     if not keep:
         return ""
     return _json.dumps(keep, separators=(",", ":"))
+
+
+def replay_costs_from_cache(payload) -> tuple:
+    """Defect F — recover the AI dollars the ORIGINAL same-day run incurred
+    from its cache payload. Returns (pass1, pass2, verification, stress).
+
+    A cache replay is $0.00 INCREMENTAL (no new API call), but the day's
+    recorded cost for (ticker, date) must preserve the original spend.
+    Otherwise the cache-hit row writes ai_cost_total=0.00 and same-day dedup
+    (sacred #11, append_history_row) overwrites the original real-cost row —
+    erasing the day's AI spend from the canonical ledger and making any
+    cost-accounting reconstruction undercount. Missing fields (legacy
+    payloads) default to 0.0.
+    """
+    if not isinstance(payload, dict):
+        return 0.0, 0.0, 0.0, 0.0
+
+    def _g(k):
+        return float(payload.get(k, 0.0) or 0.0)
+
+    return _g("pass1_cost"), _g("pass2_cost"), _g("verification_cost"), _g("stress_cost")
 
 
 def append_history_row(history_path, row):
@@ -1289,6 +1354,8 @@ def run_pipeline(args) -> int:
     fundamentals = fetch_fundamentals(ticker, api_key, market_cap=market_cap)
     # W6 PR #35: analyst upgrade/downgrade history.
     grades_history = fetch_grades_history(ticker, api_key)
+    # Defect C: per-analyst price-target revision stream.
+    pt_news = fetch_pt_news(ticker, api_key)
 
     # Peer resolution via registry (D-W2-1 closed). CLI --peers is an override;
     # absent --peers falls back to config/diprally.yaml's per-ticker entry
@@ -1353,6 +1420,7 @@ def run_pipeline(args) -> int:
         "short_interest": signal_from_short_interest(short_data),
         "fundamentals": signal_from_fundamentals(fundamentals),
         "revision_momentum": signal_from_revision_momentum(grades_history),
+        "pt_revision": signal_from_pt_revision(pt_news),
         "peer_rs": signal_from_peer_rs(history_df, peer_dfs, lookback_days=60, ticker=ticker),
         "sector_decoupling": signal_from_sector_decoupling(history_df, sector_perf,
                                                             lookback_days=30, ticker=ticker),
@@ -1366,8 +1434,14 @@ def run_pipeline(args) -> int:
     pass1_cost_charged = 0.0
     pass2 = None
     pass2_cost_charged = 0.0
+    # Defect B — AI-delivery status per pass. "skipped" = not attempted
+    # (cache hit / T0 / tier has no Pass 2); only a call that ran and failed
+    # sets error/no_client/empty. _compute_ai_status reads these.
+    pass1_status = "skipped"
+    pass2_status = "skipped"
     cached_stress_results = None  # set on cache hit, used in step 13
     cached_stress_cost = 0.0
+    cached_verification_cost = 0.0  # Defect F — day's incurred verify cost on replay
     cache_hit = False
 
     # Raw outputs accumulated for end-of-pipeline cache write (miss path only).
@@ -1389,18 +1463,25 @@ def run_pipeline(args) -> int:
     if bust_cache:
         print("AI cache bypass (--bust-cache): forcing fresh Pass 1/2/verify/stress")
     if cache_payload:
+        # Defect F — recover the day's real spend so the ledger isn't erased
+        # by the same-day dedup overwrite. $0.00 INCREMENTAL (no new call),
+        # but ai_cost_total must reflect the original run's cost.
+        (pass1_cost_charged, pass2_cost_charged,
+         cached_verification_cost, cached_stress_cost) = replay_costs_from_cache(cache_payload)
+        _day_cost = pass1_cost_charged + pass2_cost_charged + cached_verification_cost + cached_stress_cost
         print(f"   AI cache HIT for {ticker} ({cache_payload.get('date')}, "
-              f"spot ${cache_payload.get('spot'):.2f}) — Pass 1/2/stress replayed at $0.00")
+              f"spot ${cache_payload.get('spot'):.2f}) — Pass 1/2/verify/stress "
+              f"replayed at $0.00 incremental (day's spend ${_day_cost:.2f} "
+              f"preserved in ledger)")
         cache_hit = True
         p1_raw = cache_payload.get("pass1_raw")
         p1_sources = int(cache_payload.get("pass1_sources", 0))
         if p1_raw:
-            pass1 = parse_ai_pass1(p1_raw, p1_sources, 0.0)  # cost=0.00 on cache hit
+            pass1 = parse_ai_pass1(p1_raw, p1_sources, 0.0)  # $0 incremental
         p2_raw = cache_payload.get("pass2_raw")
         if p2_raw and pass1:
             pass2 = parse_ai_pass2(p2_raw, pass1, 0.0)
         cached_stress_results = cache_payload.get("stress_results") or []
-        cached_stress_cost = 0.0
     elif not tier.runs_ai:
         print(f"AI Pass 1 skipped (tier {tier.name})")
     else:
@@ -1410,7 +1491,7 @@ def run_pipeline(args) -> int:
             ticker, snapshot, vol_profile, horizon_days, display_signals_for_prompt,
             self_earnings_dt, peer_tickers,
         )
-        pass1_raw, pass1_cost, pass1_sources = call_ai_pass(
+        pass1_raw, pass1_cost, pass1_sources, pass1_status = call_ai_pass(
             pass1_prompt, max_tokens=tier.pass1_max_tokens, pass_label="Pass 1",
             model=tier.pass1_model, web_search_max_uses=tier.pass1_web_search_max,
         )
@@ -1470,7 +1551,7 @@ def run_pipeline(args) -> int:
         # doesn't need Opus depth) with no web_search (relies on Pass 1's
         # sourced material + math context embedded in the prompt). Saves
         # ~$0.40-0.50 per full-AI run vs Opus+web.
-        pass2_raw, pass2_cost, _ = call_ai_pass(
+        pass2_raw, pass2_cost, _, pass2_status = call_ai_pass(
             pass2_prompt, max_tokens=tier.pass2_max_tokens, pass_label="Pass 2",
             model=tier.pass2_model, web_search_max_uses=0,
         )
@@ -1504,6 +1585,19 @@ def run_pipeline(args) -> int:
     # in --no-ai or full AI failure.
     effective_ai = pass2 if pass2 else pass1
 
+    # Defect B — classify whether the intended AI pipeline delivered. Drives
+    # the report banner + CSV ai_status column. Does NOT touch verdict_state.
+    ai_status = _compute_ai_status(
+        tier=tier, cache_hit=cache_hit,
+        pass1_status=pass1_status, pass2_status=pass2_status,
+    )
+    if ai_status == "INCOMPLETE":
+        print(f"⚠️  AI INCOMPLETE — tier {tier.name} intended AI but Pass 1 "
+              f"failed ({pass1_status}); verdict computed math-only.")
+    elif ai_status == "DEGRADED":
+        print(f"⚠️  AI DEGRADED — Pass 2 failed ({pass2_status}); using Pass 1 "
+              f"drift (sacred #7 'Pass 2 wins' not satisfied).")
+
     # --- 5a. Catalyst verification (W6 PR #33, closes D-W5-1).
     # Haiku-constrained primary-source check on top-3 catalysts.
     # UNVERIFIED → magnitude downgrade to "low"; REFUTED → drop. Same-day
@@ -1512,6 +1606,8 @@ def run_pipeline(args) -> int:
     verification_cost = 0.0
     if cache_hit and cache_payload is not None:
         catalyst_verifications = cache_payload.get("catalyst_verifications") or []
+        # Defect F — preserve the day's incurred verification cost on replay.
+        verification_cost = cached_verification_cost
     elif (tier.catalyst_verification_model is not None
           and effective_ai and effective_ai.catalysts):
         print(f"AI catalyst verification (model={tier.catalyst_verification_model})...")
@@ -1529,7 +1625,7 @@ def run_pipeline(args) -> int:
         n_verified = sum(1 for v in catalyst_verifications if v.get("verdict") == "VERIFIED")
         print(
             f"   Verification: {n_verified} VERIFIED, {n_unverified} UNVERIFIED "
-            f"(magnitude → low), {n_refuted} REFUTED (dropped). "
+            f"(kept — non-destructive, PR #92), {n_refuted} REFUTED (dropped). "
             f"Catalysts: {before} → {len(effective_ai.catalysts)}"
         )
 
@@ -1793,9 +1889,10 @@ def run_pipeline(args) -> int:
     catalyst_stress_results = []
     catalyst_stress_cost = 0.0
     if cache_hit and cached_stress_results is not None:
-        # Replay from cache. Cost = $0.00.
+        # Replay from cache. $0.00 incremental, but preserve the day's
+        # incurred stress cost so the ledger reflects real spend (Defect F).
         catalyst_stress_results = cached_stress_results
-        catalyst_stress_cost = 0.0
+        catalyst_stress_cost = cached_stress_cost
     elif tier.stress_model is not None and effective_ai and best:
         print(f"AI catalyst impact stress test (model={tier.stress_model})...")
         catalyst_stress_results, catalyst_stress_cost = call_ai_catalyst_stress_test(
@@ -2009,6 +2106,7 @@ def run_pipeline(args) -> int:
         "ai_cost_total": f"{total_ai_cost:.2f}",
         "data_source": data_source,
         "ai_tier": tier.name,
+        "ai_status": ai_status,
         "ambiguity_score": f"{ambiguity.overall:.4f}",
         # W10 PR #54 — D-W10-1 catalyst-accuracy capture.
         "pass1_catalysts_json": _compact_catalysts_json(
@@ -2071,6 +2169,7 @@ def run_pipeline(args) -> int:
         ambiguity=ambiguity,
         tier=tier,
         pass2_fact_violations=pass2_fact_violations,
+        ai_status=ai_status,
     )
     print(report)
 

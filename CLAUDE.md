@@ -1,8 +1,37 @@
 # DIPRALLY-ENGINE — Claude Code session contract
 
-Multi-ticker swing decision engine. Daily quant + AI analysis of 17 volatile
-stocks to identify defensible dip-and-rally round-trip setups within 60 trading
-days. Refuses negative-EV setups.
+Multi-ticker swing decision engine. Daily quant + AI analysis of a roster of
+volatile stocks (the `tickers` block in `config/diprally.yaml`; an additional
+`tickers_scratch` block runs only on explicit `--tickers`) to identify
+defensible dip-and-rally round-trip setups within 20 trading days. Refuses
+negative-EV setups.
+
+## Mission & philosophy (the WHY — read before touching anything)
+- **Purpose: lock in gains from expected short-horizon RALLIES** via
+  dip-and-rally round-trips inside 20 trading days. This is NOT long-term
+  investing — no buy-and-hold, no multi-year value thesis. Enter on a
+  defensible dip, exit into the rally, bank the swing, move on.
+- **Volatility is the raw material, not the enemy.** High-σ names are WHERE the
+  round-trip edge lives — a name running 100-130% annualised vol swings far
+  enough to make a dip→rally round-trip pay inside 20 days. The mandate is to
+  HARNESS volatility intelligently (size the grid to the vol, time the entry,
+  respect only TRUE blow-off tops), never to refuse a name simply FOR being
+  volatile. A gate that refuses opportunity because the stock moves is refusing
+  the whole point. Volatility optimized wisely = profit; volatility feared = the
+  0-BUY failure mode.
+- **Institutional-grade, not retail/hobby.** Three-method math cross-check,
+  fat-tail MC, Bayesian priors across days, AI catalyst overlay, execution-
+  friction realism. The bar is a desk that answers to a risk committee — not a
+  screenshot in a chat room. "Looks plausible" is never the standard; reproduced-
+  on-real-inputs is.
+- **AI-leveraged, hard-capped at $2 per complete run.** Intelligence is
+  mandatory but metered — the broker spends tokens where ambiguity is highest,
+  and every token bought MUST produce persisted, used signal (see hard
+  constraints). Brilliance that gets dropped is waste twice over.
+- **The engine MUST actually recommend.** A recommendation tool that returns
+  0 BUYs across the roster has failed at its one job. Persistent 0-BUY (or any
+  all-refuse / all-identical output) is a STRUCTURAL DEFECT to hunt via the
+  audit protocol — never a "the market's just bad today" shrug.
 
 ## Working style (Jesse)
 - Caveman: terse, surgical, no fluff
@@ -12,9 +41,9 @@ days. Refuses negative-EV setups.
 - No "yes-man" — push back honestly
 - End every response with `#End`
 - **Basis-point clarity**: whenever you state a value in bps (basis points) — in
-  chat or in engine output / reports — ALSO express it as a percentage in
-  parentheses. Examples: "EV hurdle +25 bps (0.25%)", "friction 35 bps (0.35%)",
-  "+182 bps EV (1.82%)". 1 bp = 0.01% always. Never drop the percentage gloss.
+  chat or in engine output / reports — ALWAYS add the percentage equivalent in
+  parentheses. E.g. 100 bps (1%), 25 bps (0.25%), 182 bps (1.82%). 1 bp = 0.01%
+  always. Never drop the percentage gloss.
 
 ## Asking questions
 - ALWAYS explain each question in plain English first (what the question is
@@ -52,16 +81,75 @@ sandbox FIRST (synthesize realistic inputs, decompose by axis, identify root
 cause with hard numbers), THEN propose a single surgical fix with a regression
 test that fails before and passes after.
 
+## End-to-end audit protocol (CANON — MANDATORY when asked to audit/evaluate, OR when any output looks structurally extreme)
+Added 2026-05-28 after repeated failures where the operator (a self-described
+novice) out-diagnosed the engine's root causes — EV payoff asymmetry, catalyst
+blindness, invisible analyst signals — that a shallow "the code does what it
+says / the math checks out" pass missed. The cardinal sin: confirming
+self-consistency instead of fitness-for-purpose. This protocol forces
+falsification and input-auditing by default. Run ALL steps in ONE pass; the
+deliverable is a ranked defect list, never reassurance.
+
+  1. **Anomaly-first / falsify.** An extreme output (0 BUYs in N runs,
+     all-identical verdicts, every value at a cap) is a STRUCTURAL red flag,
+     not data coincidence. State the null — "the system CANNOT produce
+     outcome X" — and try to FALSIFY it with a numerical harness on realistic
+     inputs BEFORE touching anything else.
+  2. **Two separate questions, always:** (a) does the code do what it
+     documents? (b) is what it documents CORRECT for the goal? Passing (a)
+     while never asking (b) is the cardinal sin.
+  3. **Trace the full pipeline, stage by stage:** data source → fetch →
+     signal → AI catalyst → drift → MC → EV → gate → verdict → display. One
+     line per stage: what flows in, what flows out, what can be silently
+     wrong/empty here.
+  4. **Audit inputs before math.** Sample the ACTUAL AI catalysts / signals
+     for ≥1 ticker against an INDEPENDENT ground-truth web search. Garbage-in
+     invalidates any downstream correctness.
+  5. **Enumerate every silent-failure path:** try/except swallows,
+     `_none_signal` fallbacks, plan-restricted endpoints returning `[]`,
+     "degrade gracefully" branches, hard-coded block/allow-lists. Verify each
+     is firing as intended, not masking a problem.
+  6. **Interrogate the objective function directly.** Harness + decompose by
+     axis (upside cap vs downside tail, win-prob vs loss-magnitude) to expose
+     structural bias in the metric itself.
+  7. **Adversarial, not confirmatory.** The deliverable is a ranked list of
+     what's WRONG or FRAGILE by impact. "I found nothing / the math checks
+     out" means the audit wasn't deep enough — and that claim is NEVER made
+     without a harness reproducing the observed behavior on real inputs.
+
 ## Hard constraints
 - AI cost cap: **$2/day across all tickers** (HARD)
 - Token discipline: AI allocated by budget broker, never sprayed
+- **AI output must never be silently dropped.** Every datum the AI searches for,
+  collects, or generates (catalysts, narrative evidence, Pass-2 critique /
+  reasoning, verification verdicts, stress shocks, cited sources) MUST flow into
+  the next pipeline stage AND be persisted to the run artifacts (CSV / AI cache).
+  If a field is prompted for, it is paid for — discarding it wastes tokens AND
+  blinds the engine. A parsed-but-unused AI field is a defect, not a no-op. The
+  audit protocol (step 5) explicitly hunts for these drops; same-day re-runs
+  must replay persisted AI rather than re-charging (sacred #11/#12, ai_cache).
 - Same-day re-runs must not corrupt CSV or double-charge AI
 - No "capital" concept — recommendation tool, user sizes externally
-- Ticker universe is CONFIG (YAML), not code. Current roster is 17 names
-  but adding/removing is a YAML edit, not a code change. Engine must
-  handle any universe size without modification.
+- Ticker universe is CONFIG (YAML), not code. Default roster is the `tickers`
+  block; `tickers_scratch` runs only on explicit `--tickers`.
+  Adding/removing/promoting is a YAML edit, not a code change. Engine must
+  handle any universe size without modification — never hard-code a count.
+- Mean reversion: the engine supports a mean-reversion drift term
+  (`run.py --mean-reversion`, anchor in YAML `mean_reversion.anchor_pct_below_spot`)
+  but it DEFAULTS TO 0.0 (OFF) and the orchestrator does NOT pass it. Pure
+  GBM is the live default. Treat this as a known structural lever, not an
+  accident — enabling it is a deliberate calibration decision, not a bugfix.
 
-## Sacred decisions — NEVER violate
+## Sacred decisions
+**Two tiers of "sacred":**
+- **Architecture** (truly NEVER violate — changing these would corrupt the
+  model's mathematical or statistical integrity): #1-12, 15-17.
+- **Calibration thresholds** (these LOOK like sacred rules but are YAML
+  values that must be recalibrated as market regimes shift): #13 EV hurdle,
+  #14 trend filter threshold, #18 parabola thresholds. When the engine
+  produces structurally extreme output (0 BUYs, all-refuse), interrogate
+  these first. Recalibrating a YAML threshold is NOT a sacred violation —
+  it is the correct response to a miscalibrated engine.
  1. No block bootstrap
  2. No multi-step vol forecast
  3. No synthesized reliability score (components shown separately)
@@ -79,8 +167,21 @@ test that fails before and passes after.
     HIGH and EXTREME 25 bps (0.25%) — the lower hurdle on HIGH/EXTREME
     acknowledges that the engine's "blind execution" EV estimate
     understates realized EV for active swing traders who time entry/exit
-    discretionarily (sacred #6 — trader sizes / manages externally)
-14. Trend filter — refuse dip if 30d momentum < -25% AND no fundamental catalyst
+    discretionarily (sacred #6 — trader sizes / manages externally).
+    **Calibration note**: EXTREME friction is 70 bps (0.70%) RT, so
+    EXTREME names need 95 bps (0.95%) gross EV just to clear the gate.
+    With pure GBM (mean reversion OFF by default), this is achievable but
+    tight. If 0-BUY persists, interrogate friction bps and EV hurdle as a
+    combined threshold — they are YAML values, not architectural constants.
+14. Trend filter — refuse dip if 30d momentum < -25% AND no fundamental
+    catalyst. **Calibration note**: this threshold is GLOBAL (not σ-class
+    adjusted). At EXTREME σ≈130%, a 30-day 1σ move is ~36%, so a -25%
+    drop is LESS than 1σ — normal variance, not a falling knife. The filter
+    is miscalibrated for high-vol classes and will block legitimate dip-buy
+    setups on EXTREME/HIGH names where the dip IS the opportunity. The
+    -0.25 threshold lives in YAML (`trend_filter.mom_30d_threshold`) and
+    can be recalibrated per-class. Recommended direction: -0.40 or -0.50
+    for EXTREME, -0.35 for HIGH, leave -0.25 for MID.
 15. Insider signal dropped (Form 4 lag + noise)
 16. Method-disagreement refusal — MC vs PDE diverge >5pp on marginal = no recommendation
 17. **All configurable values live in `config/diprally.yaml`. `src/` holds code only.**
@@ -97,23 +198,45 @@ test that fails before and passes after.
     must NEVER require a code edit, a PR, or a deploy.
 18. **Parabola filter** — refuse dip-buy when `mom_30d ≥` σ-class threshold
     AND no in-horizon bearish-direction catalyst surfaced by AI Pass 1/Pass 2.
-    σ-class thresholds (PR #70): MID +50%, HIGH +80%, EXTREME +100% —
-    calibrated to the actual vol regime of each class (a +50% monthly
-    move is exceptional for AMAT-class names but baseline for the AI/
-    semi/momentum names this engine targets). Mirror of sacred #14
-    (falling-knife trend filter) for blow-off tops. Asymmetric exception:
-    requires SPECIFICALLY bearish catalyst — generic "two-sided earnings"
-    is the math layer's default, not a de-rating thesis. Codified by
-    PRs #41 / #44 / #45 / #46 / #51 / #70.
+    σ-class thresholds (PR #89, supersedes PR #70's +50/+80/+100): MID +80%,
+    HIGH +150%, EXTREME +200% — recalibrated for the AI bull cycle where
+    EXTREME/HIGH names (MRAM/LWLG/VELO/INOD; MU/ARM/NBIS/INTC/MRVL) routinely
+    ran 80-180% mom_30d WITHOUT parabolic reversal, so the old thresholds
+    were refusing legitimate continuation setups. Only TRUE blow-offs trip
+    it now. Mirror of sacred #14 (falling-knife trend filter) for blow-off
+    tops. Asymmetric exception: requires SPECIFICALLY bearish catalyst —
+    generic "two-sided earnings" is the math layer's default, not a
+    de-rating thesis. Codified by PRs #41 / #44 / #45 / #46 / #51 / #70 / #89.
 
-## Ticker universe (current roster — adjust via YAML)
-- **EXTREME (11)**: LWLG, MRAM, ENGN, VELO, SNDK, ARM, CRWV, NBIS, INOD, CRDO, ANAB
-  - VELO replaces VELO3D (delisted 2024, relisted Aug 2025 as VELO)
-  - SNDK = WDC Flash spinoff (Feb 2025 IPO); ARM IPO Sep 2023; CRWV IPO Mar 2025;
-    NBIS = post-Yandex restructure. Limited history names — auto-detector may
-    flag class shifts in early cycles.
-- **HIGH (6)**: ASTS, RKLB, PL, SATS, GHM, MRVL
-- **MID (9)**: INTC, IPGP, LITE, MU, STX, AMAT, MOG-A, GLW, LRCX
+## Ticker universe — lives in YAML, NOT here (sacred #17)
+The roster, σ-class assignment, stock/ETF peers, and every per-ticker setting
+live in the `config/diprally.yaml` registry block (each entry keyed by symbol,
+carrying `sigma_class`, `stock_peers`, `etf_peer`). The YAML is the SINGLE
+source of truth — do NOT maintain a ticker list here (it drifts and contradicts
+the config, which is exactly what sacred #17 forbids). To see the current
+universe grouped by class:
+
+    python3 -c "import yaml,collections; c=yaml.safe_load(open('config/diprally.yaml')); \
+    g=collections.defaultdict(list); \
+    [g[v['sigma_class']].append(k) for blk in ('tickers','tickers_scratch') \
+    for k,v in c.get(blk,{}).items()]; print('DEFAULT roster = tickers block; scratch runs only on --tickers'); \
+    [print(f'{cl} ({len(g[cl])}): {sorted(g[cl])}') for cl in ('EXTREME','HIGH','MID')]"
+
+The DEFAULT daily cycle iterates the `tickers` block ONLY. A separate
+`tickers_scratch` block holds large-caps that are ad-hoc: default orchestrator
+runs (no `--tickers` flag) skip them, so scratch names get full registry
+support when explicitly requested but do NOT run in the daily cycle.
+**Watch-out**: if scratch names were intended as diversifiers to lift the
+universe BUY hit rate, leaving them in scratch means they never run daily —
+promoting them into `tickers` is a YAML move, not code. Run the dump command
+above to see the live split; never assume a count.
+Notable registry facts that aren't obvious from the symbol alone:
+- VELO replaces VELO3D (delisted 2024, relisted Aug 2025 as VELO).
+- Limited-history names (recent IPOs / spinoffs / restructures) — σ
+  auto-detector may flag class shifts in early cycles; broker forces ≥T2 on
+  limited-history tickers.
+- σ-class is data-driven and can shift a name between classes as realized vol
+  moves (e.g. a semi name riding 70-90% annualised vol sits in HIGH, not MID).
 
 > **Ticker convention**: canonical form across this repo uses dashes for
 > class shares (MOG-A, BRK-B, BF-B) — the Yahoo Finance / industry-standard
@@ -123,31 +246,46 @@ test that fails before and passes after.
 > form, use it as-is when calling FMP. If a future provider requires a
 > different separator, the W2 registry adds per-provider translation.
 
-## σ-class defaults
-| Class    | Conv-dip | Conv-rally | Grid dip | Grid rally | Panic floor | Friction bps RT | AI vol_mult (H/M/L) |
-|----------|----------|-----------|----------|-----------|-------------|-----------------|---------------------|
-| EXTREME  | 0.60     | 0.75      | -50%     | +60%      | -35%        | 70              | 1.10 / 1.00 / 0.90  |
-| HIGH     | 0.65     | 0.75      | -35%     | +50%      | -25%        | 35              | 1.15 / 1.00 / 0.90  |
-| MID      | 0.65     | 0.70      | -20%     | +30%      | -18%        | 18              | 1.25 / 1.00 / 0.80  |
+## σ-class defaults — lives in YAML, NOT here (sacred #17)
+The per-class conviction / grid / panic / friction / EV-hurdle / parabola /
+vol-mult values are the `sigma_classes` block in `config/diprally.yaml`. That
+YAML is authoritative — read it directly rather than trusting a transcribed
+table here (the previous hardcoded table drifted to stale 60d/0.75 values and
+caused 0-BUY misdiagnosis). Quick dump:
+
+    python3 -c "import yaml,json; c=yaml.safe_load(open('config/diprally.yaml')); \
+    print(json.dumps(c['sigma_classes'], indent=2))"
+
+Orientation only (verify against YAML before acting): conviction is far lower
+than a naive reader expects — EXTREME ≈0.55/0.55, HIGH ≈0.60/0.65, MID
+≈0.65/0.70 — because the old 0.75 rally-conditional was mathematically
+unachievable at σ>60% and guaranteed 0 BUYs. EV hurdle is per-class
+(EXTREME/HIGH 25 bps = 0.25%, MID 50 bps = 0.50%). Grid/panic are 20d-horizon
+values (PR #86 rescaled from the legacy 60d grid by √(20/60)).
 
 ## AI tier system (broker, $2/day hard cap)
 - **T0** ($0)    — math only. Default; every ticker daily.
 - **T1** (~$0.02) — Haiku Pass 1 only (web_search cap 1). Mild trigger.
-- **T2** (~$0.10) — Sonnet Pass 1 + Pass 2. Pre-AI net EV positive AND conviction met.
-- **T3** (~$0.30) — Opus Pass 1 + Sonnet Pass 2 + Haiku stress. T2 critique passed + budget allows.
+- **T2** (~$0.10) — Sonnet Pass 1 + Pass 2. Gated on ambiguity ≥ `ai_min_ambiguity`
+  (PR #87 dropped the old "pre-AI net EV positive AND conviction met" gate — it
+  was screening out exactly the ambiguous names AI exists to resolve).
+- **T3** (~$0.30) — Opus Pass 1 + Sonnet Pass 2 + Haiku stress. Ambiguity ≥
+  `t3_min_ambiguity` AND `qualifies_for_t2_plus` AND budget allows.
 
-Broker: T0 all 17 first, sort by ambiguity, greedy allocate T3→T2→T1 within $2.
+Broker: T0 every ticker in the run first, sort by ambiguity, greedy allocate
+T3→T2→T1 within $2.
 
-## Wave plan (11 waves, sequential, approval-gated)
-W0 scaffolding + v2 migration → W1 AI efficiency → W2 multi-ticker + registry →
-W3 σ-class auto-detection → W4 budget broker + ambiguity → W5 orchestrator + cron
-+ dashboard → W6 institutional signals → W7 execution realism → W8 risk mgmt
-→ W9 fat-tail MC → W10 calibration.
+## Wave plan (build history — for orienting on PR references only)
+The engine was built in 11 sequential, approval-gated waves; PR comments and
+code reference them by number: W0 scaffolding + v2 migration → W1 AI efficiency
+→ W2 multi-ticker + registry → W3 σ-class auto-detection → W4 budget broker +
+ambiguity → W5 orchestrator + cron + dashboard → W6 institutional signals →
+W7 execution realism → W8 risk mgmt → W9 fat-tail MC → W10 calibration. This is
+historical scaffolding — the live source of truth is `src/` + the YAML, not the
+wave plan.
 
 ## Pointers
-- Full session-start context: seed handover (Jesse's clipboard) or
-  `docs/handover/01_SESSION_CONTEXT.md` (populated at W2+).
-- **Deferred fixes from earlier waves**: `docs/handover/_DEFERRED.md`. Scan at
-  the start of each wave; clear items whose target wave is now active.
-- v1 seed (`tools/_seed_v1.py`) and v2 seed (`tools/_seed_v2.py`) are deleted at
-  end of W0. After W0, source of truth is `src/`.
+- **Deferred fixes**: `docs/handover/_DEFERRED.md` — running list of punted
+  items. Scan it at the start of substantive work; it's the canonical backlog.
+- After W0 the source of truth is `src/` (code) + `config/diprally.yaml`
+  (all tunable values); the v1/v2 migration seeds no longer exist.

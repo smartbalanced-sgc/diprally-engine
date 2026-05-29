@@ -173,7 +173,13 @@ blend_weights_v2:
   catalyst_proximity: 0.13               # was 0.10 (+0.03 from PR #58)
   narrative: 0.07
   fundamentals: 0.10                     # was 0.08 (+0.02 from PR #58)
-  revision_momentum: 0.04
+  # Defect C — revision_momentum (analyst upgrade/downgrade COUNTS) reported
+  # n/a on nearly every run; its 0.04 is reallocated to pt_revision, the
+  # working magnitude signal in the same analyst-revision slot. The count
+  # signal still computes + displays at weight 0; W10 Brier calibration may
+  # restore a nonzero weight if the resolved-outcome data warrants it.
+  revision_momentum: 0.00
+  pt_revision: 0.04                      # Defect C — Δimplied-return revision
 
 # Multi-saturation detector (PR #59 — D-W2-18 interim mitigation).
 # When N≥min_count signals all saturate at their caps in the SAME
@@ -324,6 +330,12 @@ horizon:
 # few paths would actually enter.
 wait_for_dip:
   min_dip_probability: 0.30
+  # Defect D — trading days a swing trader waits for the rally after entry
+  # before time-stopping at market. Applies to BOTH DIRECT and WAIT EVs.
+  # ~8 weeks: beyond this the conditional rally probability has decayed and
+  # the thesis is treated as broken. Tunable per sacred #17; W10 calibration
+  # can refine it against resolved round-trip outcomes.
+  patience_window_td: 40
 
 # -----------------------------------------------------------
 # W9 PR #48 — fat-tail Monte Carlo.
@@ -660,6 +672,21 @@ signals:
     conf_medium_count: 3
     lookback_days: 90                   # rolling window
 
+  # Defect C — analyst price-target REVISION signal. Reads the per-analyst
+  # price-target-news stream (FMP /stable/price-target-news) and measures the
+  # recency-weighted mean CHANGE in implied return, (new_PT-prior_PT)/spot —
+  # the engine's native drift unit (same as the analyst signal's target/spot-1),
+  # so NO scale coefficient. Distinct from revision_momentum (counts) and
+  # analyst (implied-return level). Prior target parsed from the title's
+  # "from $X"; entries without a parseable prior are skipped (not revisions).
+  pt_revision:
+    lookback_days: 90                   # rolling window (calendar days)
+    half_life_days: 30.0                # exp decay: 30d-old revision = half weight
+    per_entry_cap: 0.50                 # clamp one revision's Δimplied-return at ±50%
+    drift_cap_abs: 0.20                 # aggregate drift capped at ±20%
+    conf_high_count: 5
+    conf_medium_count: 2
+
   # W6 PR #34 — fundamentals signal. Three sub-components combined to
   # an annualised drift contribution: FCF yield (cash-generative names
   # get a structural bid), net debt / EBITDA (over-levered balance
@@ -861,7 +888,7 @@ tickers:
     stock_peers: ["IPGP", "COHR"]
     etf_peer: ""
   MU:
-    sigma_class: MID
+    sigma_class: HIGH                 # PR #92: was MID — auto-detector flags HIGH (σ ~88%) every run; AI-memory regime moved MU structurally into HIGH
     sector_expected: "Technology / Semiconductors"
     stock_peers: ["SNDK", "WDC", "STX"]
     etf_peer: ""
@@ -889,6 +916,52 @@ tickers:
     sigma_class: MID
     sector_expected: "Technology / Semiconductor Equipment"
     stock_peers: ["AMAT", "KLAC"]
+    etf_peer: "SOXX"
+
+# =============================================================================
+# Ad-hoc / temporary cohort tickers.
+#
+# Lookups (peer_rs, σ-class hint, sector sanity check) fall back to this
+# block, so a `--tickers VRT CEG PLTR SMCI OKLO` run gets full registry
+# support. But `list_universe()` does NOT include these — so a default
+# orchestrator run (no --tickers flag) continues to iterate the
+# institutional `tickers:` roster above, unchanged.
+#
+# Use this for validation cohorts, one-off batches, theme experiments.
+# Move a ticker UP into `tickers:` when it earns a permanent slot; delete
+# the entry here when the cohort is retired. Engine handles either action
+# without a code change.
+# =============================================================================
+tickers_scratch:
+  # Multi-agent debate cohort 2026-05-28 — winners of a 4-slate sub-agent
+  # debate (Catalyst Hunter / Quant Screener / Mean-Reversion / Orchestrator).
+  # Selection criteria: cross-framework convergence + MID-σ math fit +
+  # verifiable in-horizon catalyst OR clean transient dip shape.
+  # See conversation history for the full per-pick debate reasoning.
+  ADBE:
+    sigma_class: MID
+    sector_expected: "Technology / Software - Application"
+    stock_peers: ["CRM", "NOW"]
+    etf_peer: "IGV"
+  ORCL:
+    sigma_class: MID
+    sector_expected: "Technology / Software - Infrastructure"
+    stock_peers: ["CRM", "NOW"]
+    etf_peer: "IGV"
+  DE:
+    sigma_class: MID
+    sector_expected: "Industrials / Farm & Heavy Construction Machinery"
+    stock_peers: ["CAT", "CNH"]
+    etf_peer: ""
+  IBM:
+    sigma_class: MID
+    sector_expected: "Technology / Information Technology Services"
+    stock_peers: ["ACN", "DELL"]
+    etf_peer: ""
+  AVGO:
+    sigma_class: MID
+    sector_expected: "Technology / Semiconductors"
+    stock_peers: ["MU", "NXPI"]
     etf_peer: "SOXX"
 
 # -----------------------------------------------------------

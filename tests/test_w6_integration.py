@@ -38,8 +38,9 @@ def _grade(action, days_ago):
 
 
 def _make_full_signal_dict(fund_drift=0.02, rev_drift=0.015,
-                            ai_drift=0.05, hist_drift=0.03):
-    """Build a signal dict with all 12 v2 slots populated. Numeric drifts
+                            ai_drift=0.05, hist_drift=0.03,
+                            ptrev_drift=0.015):
+    """Build a signal dict with all 13 v2 slots populated. Numeric drifts
     are arbitrary but realistic; this is for plumbing verification, not
     drift accuracy."""
     def s(drift, conf="MEDIUM"):
@@ -59,6 +60,7 @@ def _make_full_signal_dict(fund_drift=0.02, rev_drift=0.015,
         "narrative": s(0.01),
         "fundamentals": s(fund_drift, "HIGH"),
         "revision_momentum": s(rev_drift, "MEDIUM"),
+        "pt_revision": s(ptrev_drift, "MEDIUM"),
     }
 
 
@@ -87,10 +89,23 @@ def test_fundamentals_contribution_moves_blend_drift():
     assert blend_high["blended"] > blend_low["blended"]
 
 
-def test_revision_momentum_contribution_moves_blend_drift():
-    """Same test for revision_momentum."""
+def test_revision_momentum_now_inert_in_blend():
+    """Defect C clean swap: revision_momentum's blend weight is 0.00, so
+    changing its drift no longer moves the blended mu. The signal still
+    computes + displays; it just doesn't drive drift. (Was a 0.04-weight
+    contributor pre-Defect-C.)"""
     low = _make_full_signal_dict(rev_drift=0.0)
     high = _make_full_signal_dict(rev_drift=0.05)
+    blend_low = blend_with_uncertainty(low, BLEND_WEIGHTS_V2)
+    blend_high = blend_with_uncertainty(high, BLEND_WEIGHTS_V2)
+    assert blend_high["blended"] == blend_low["blended"]
+
+
+def test_pt_revision_contribution_moves_blend_drift():
+    """Defect C: pt_revision now carries the analyst-revision slot's weight
+    (0.04), so changing its drift detectably moves the blended mu."""
+    low = _make_full_signal_dict(ptrev_drift=0.0)
+    high = _make_full_signal_dict(ptrev_drift=0.05)
     blend_low = blend_with_uncertainty(low, BLEND_WEIGHTS_V2)
     blend_high = blend_with_uncertainty(high, BLEND_WEIGHTS_V2)
     assert blend_high["blended"] > blend_low["blended"]

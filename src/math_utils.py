@@ -549,6 +549,7 @@ def compute_dual_ev(
     friction_per_share: float,
     dip_first_days: Optional[np.ndarray] = None,
     rally_first_days: Optional[np.ndarray] = None,
+    patience_window_td: Optional[int] = None,
 ) -> dict:
     """PR #86 — compute EV under BOTH entry strategies on the same MC paths.
 
@@ -577,17 +578,37 @@ def compute_dual_ev(
     higher-EV path. The trader's true objective is "capture the rally";
     waiting for a dip is a (sometimes-better) entry optimization, not a
     precondition for the trade to exist.
+
+    Defect D — patience_window_td: trading days a trader waits for the rally
+    AFTER entry before time-stopping at market. When None (default), the
+    legacy "hold to horizon-end" model is used (rally credited any time after
+    entry; no-rally exit at the terminal price). When set, the rally must hit
+    within `patience_window_td` trading days of entry to count as a
+    round-trip, and a non-rallying position is marked to the price at
+    entry+window (or the terminal if the window runs past the horizon), not
+    the horizon-end terminal. The window applies to BOTH entries (DIRECT
+    entry = day 0; WAIT entry = the dip-touch day) so strategy selection
+    isn't biased by an asymmetric exit rule.
     """
     n_paths, n_days = paths.shape
+    days_idx = np.arange(n_days)[None, :]
 
     # === DIRECT entry payoffs ===
-    # Vectorized: payoff = (rally - spot) if rally touched else (terminal - spot)
-    max_per_path = paths.max(axis=1)
-    rally_touched = max_per_path >= rally_price
+    # Entry at spot (day 0). Rally credited if touched within the patience
+    # window; otherwise exit at the window-end price (or terminal if no
+    # window / window past horizon).
+    if patience_window_td is None:
+        rally_touched = paths.max(axis=1) >= rally_price
+        direct_exit_price = paths[:, -1]
+    else:
+        direct_window = days_idx <= patience_window_td
+        rally_touched = ((paths >= rally_price) & direct_window).any(axis=1)
+        direct_exit_idx = min(patience_window_td, n_days - 1)
+        direct_exit_price = paths[:, direct_exit_idx]
     payoff_direct_per_path = np.where(
         rally_touched,
         rally_price - S0 - friction_per_share,
-        paths[:, -1] - S0 - friction_per_share,
+        direct_exit_price - S0 - friction_per_share,
     )
     ev_direct_per_share = float(payoff_direct_per_path.mean())
     ev_direct_pct_of_spot = ev_direct_per_share / S0 if S0 > 0 else 0.0
@@ -605,12 +626,24 @@ def compute_dual_ev(
         dip_first = dip_first_days
         dip_any = dip_first < n_days
 
-    days_idx = np.arange(n_days)[None, :]
     after_dip_mask = days_idx >= dip_first[:, None]
-    rally_after_dip = ((paths >= rally_price) & after_dip_mask).any(axis=1)
+    if patience_window_td is None:
+        rally_after_dip = ((paths >= rally_price) & after_dip_mask).any(axis=1)
+        wait_exit_price = paths[:, -1]
+    else:
+        within_window = after_dip_mask & (
+            days_idx <= (dip_first[:, None] + patience_window_td)
+        )
+        rally_after_dip = ((paths >= rally_price) & within_window).any(axis=1)
+        # Time-stop exit at entry+window (clamped to horizon). No-fill rows
+        # (dip_first == n_days) clamp to the terminal but are masked out below.
+        wait_exit_idx = np.minimum(
+            dip_first + patience_window_td, n_days - 1
+        ).astype(int)
+        wait_exit_price = paths[np.arange(n_paths), wait_exit_idx]
 
     rt_payoff = rally_price - dip_price - friction_per_share
-    bag_payoff_per_path = paths[:, -1] - dip_price - friction_per_share
+    bag_payoff_per_path = wait_exit_price - dip_price - friction_per_share
 
     payoff_wait_per_path = np.where(
         ~dip_any,
