@@ -227,11 +227,29 @@ def format_report(
     ambiguity=None,
     tier=None,
     pass2_fact_violations=None,
+    ai_status=None,
 ) -> str:
     if pass2_fact_violations is None:
         pass2_fact_violations = []
     lines: list[str] = []
     lines.append(hr(f"DIPRALLY ENGINE ({V2_VERSION}) — {snapshot.ticker} — {snapshot.timestamp:%Y-%m-%d %H:%M}"))
+
+    # Defect B — loud AI-delivery banner at the very top, ABOVE the verdict
+    # card. When an intended AI tier did not deliver, the operator must see
+    # it before reading the verdict — the verdict is math-only (INCOMPLETE)
+    # or missing its Pass 2 critique (DEGRADED), not a full-AI recommendation.
+    tier_name = tier.name if tier is not None else "?"
+    if ai_status == "INCOMPLETE":
+        lines.append(hr("⚠⚠  AI UNAVAILABLE — VERDICT IS MATH-ONLY  ⚠⚠"))
+        lines.append(f"  Tier {tier_name} requested AI but Pass 1 did not run.")
+        lines.append("  Catalyst / narrative / AI-drift signals are ABSENT from the")
+        lines.append("  verdict below. This is NOT a full-AI recommendation — do not")
+        lines.append("  trade on it. Re-run when the AI layer is reachable.")
+    elif ai_status == "DEGRADED":
+        lines.append(hr("⚠⚠  AI DEGRADED — PASS 2 CRITIQUE MISSING  ⚠⚠"))
+        lines.append(f"  Tier {tier_name} ran Pass 1 but its Pass 2 critique failed.")
+        lines.append("  Sacred #7 (Pass 2 wins) could not apply — Pass 1's unrevised")
+        lines.append("  drift was used. Treat the verdict as provisional and re-run.")
 
     # PR #56: trader headline card — single-line verdict at the top.
     # Operator no longer needs to scroll the dense report to find the

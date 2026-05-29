@@ -584,6 +584,39 @@ def _compute_verdict_state(*, best, met_threshold_strict, method_check,
     return "BUY"
 
 
+AI_STATUSES = ("OK", "DEGRADED", "INCOMPLETE")
+
+
+def _compute_ai_status(*, tier, cache_hit: bool,
+                        pass1_status: str, pass2_status: str) -> str:
+    """Defect B — did the intended AI drift pipeline (Pass 1 + Pass 2,
+    the sacred-#7 pair) deliver? Orthogonal to verdict_state, which keeps
+    reporting the math verdict regardless.
+
+      INCOMPLETE — an intended Pass 1 failed (no_client / error / empty),
+                   so effective_ai is None and the verdict ran math-only
+                   despite the operator asking for AI.
+      DEGRADED   — Pass 1 delivered but an intended Pass 2 failed; sacred #7
+                   ("Pass 2 wins") is violated and Pass 1's drift was used.
+      OK         — everything intended ran, OR no AI was intended
+                   (T0 / --no-ai), OR a same-day cache replay served it.
+
+    Pure function; no side effects. Verification/stress failures are NOT
+    folded in here — they're non-destructive (catalysts pass through
+    unchanged) and don't corrupt the core drift.
+    """
+    if not tier.runs_ai or cache_hit:
+        return "OK"
+    failed = {"error", "no_client", "empty"}
+    if pass1_status in failed:
+        return "INCOMPLETE"
+    # Pass 2 only counts as a failure when the tier actually intends to run
+    # it (tier.pass2_model set). "skipped" means not attempted → not degraded.
+    if tier.pass2_model is not None and pass2_status in failed:
+        return "DEGRADED"
+    return "OK"
+
+
 def _all_refusal_reasons(*, best, method_check,
                           trend_filter_refused: bool,
                           parabola_filter_refused: bool,
@@ -733,6 +766,12 @@ CSV_COLUMNS = [
     "garch_alpha_plus_beta", "horizon_days",
     "method_agreement_flags", "ai_cost_total", "data_source",
     "ai_tier", "ambiguity_score",
+    # Defect B — AI-delivery status, orthogonal to verdict_state.
+    # OK / DEGRADED (Pass 2 failed, Pass 1 drift used) / INCOMPLETE
+    # (Pass 1 failed, verdict ran math-only despite an AI tier). Lets
+    # calibration filter out runs whose AI layer was dark instead of
+    # treating them as genuine math-only T0 runs.
+    "ai_status",
     # W10 PR #47 — calibration harness. Outcome fields populated by
     # src.calibration.resolve_outcomes() at each engine run; the row's
     # prediction is locked at write time but its outcome accumulates as
@@ -1366,6 +1405,11 @@ def run_pipeline(args) -> int:
     pass1_cost_charged = 0.0
     pass2 = None
     pass2_cost_charged = 0.0
+    # Defect B — AI-delivery status per pass. "skipped" = not attempted
+    # (cache hit / T0 / tier has no Pass 2); only a call that ran and failed
+    # sets error/no_client/empty. _compute_ai_status reads these.
+    pass1_status = "skipped"
+    pass2_status = "skipped"
     cached_stress_results = None  # set on cache hit, used in step 13
     cached_stress_cost = 0.0
     cache_hit = False
@@ -1410,7 +1454,7 @@ def run_pipeline(args) -> int:
             ticker, snapshot, vol_profile, horizon_days, display_signals_for_prompt,
             self_earnings_dt, peer_tickers,
         )
-        pass1_raw, pass1_cost, pass1_sources = call_ai_pass(
+        pass1_raw, pass1_cost, pass1_sources, pass1_status = call_ai_pass(
             pass1_prompt, max_tokens=tier.pass1_max_tokens, pass_label="Pass 1",
             model=tier.pass1_model, web_search_max_uses=tier.pass1_web_search_max,
         )
@@ -1470,7 +1514,7 @@ def run_pipeline(args) -> int:
         # doesn't need Opus depth) with no web_search (relies on Pass 1's
         # sourced material + math context embedded in the prompt). Saves
         # ~$0.40-0.50 per full-AI run vs Opus+web.
-        pass2_raw, pass2_cost, _ = call_ai_pass(
+        pass2_raw, pass2_cost, _, pass2_status = call_ai_pass(
             pass2_prompt, max_tokens=tier.pass2_max_tokens, pass_label="Pass 2",
             model=tier.pass2_model, web_search_max_uses=0,
         )
@@ -1503,6 +1547,19 @@ def run_pipeline(args) -> int:
     # `effective_ai`. Pass 2 if it ran and parsed; otherwise Pass 1. None
     # in --no-ai or full AI failure.
     effective_ai = pass2 if pass2 else pass1
+
+    # Defect B — classify whether the intended AI pipeline delivered. Drives
+    # the report banner + CSV ai_status column. Does NOT touch verdict_state.
+    ai_status = _compute_ai_status(
+        tier=tier, cache_hit=cache_hit,
+        pass1_status=pass1_status, pass2_status=pass2_status,
+    )
+    if ai_status == "INCOMPLETE":
+        print(f"⚠️  AI INCOMPLETE — tier {tier.name} intended AI but Pass 1 "
+              f"failed ({pass1_status}); verdict computed math-only.")
+    elif ai_status == "DEGRADED":
+        print(f"⚠️  AI DEGRADED — Pass 2 failed ({pass2_status}); using Pass 1 "
+              f"drift (sacred #7 'Pass 2 wins' not satisfied).")
 
     # --- 5a. Catalyst verification (W6 PR #33, closes D-W5-1).
     # Haiku-constrained primary-source check on top-3 catalysts.
@@ -2009,6 +2066,7 @@ def run_pipeline(args) -> int:
         "ai_cost_total": f"{total_ai_cost:.2f}",
         "data_source": data_source,
         "ai_tier": tier.name,
+        "ai_status": ai_status,
         "ambiguity_score": f"{ambiguity.overall:.4f}",
         # W10 PR #54 — D-W10-1 catalyst-accuracy capture.
         "pass1_catalysts_json": _compact_catalysts_json(
@@ -2071,6 +2129,7 @@ def run_pipeline(args) -> int:
         ambiguity=ambiguity,
         tier=tier,
         pass2_fact_violations=pass2_fact_violations,
+        ai_status=ai_status,
     )
     print(report)
 
