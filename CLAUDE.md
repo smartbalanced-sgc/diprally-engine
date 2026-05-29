@@ -6,6 +6,33 @@ volatile stocks (the `tickers` block in `config/diprally.yaml`; an additional
 defensible dip-and-rally round-trip setups within 20 trading days. Refuses
 negative-EV setups.
 
+## Mission & philosophy (the WHY — read before touching anything)
+- **Purpose: lock in gains from expected short-horizon RALLIES** via
+  dip-and-rally round-trips inside 20 trading days. This is NOT long-term
+  investing — no buy-and-hold, no multi-year value thesis. Enter on a
+  defensible dip, exit into the rally, bank the swing, move on.
+- **Volatility is the raw material, not the enemy.** High-σ names are WHERE the
+  round-trip edge lives — a name running 100-130% annualised vol swings far
+  enough to make a dip→rally round-trip pay inside 20 days. The mandate is to
+  HARNESS volatility intelligently (size the grid to the vol, time the entry,
+  respect only TRUE blow-off tops), never to refuse a name simply FOR being
+  volatile. A gate that refuses opportunity because the stock moves is refusing
+  the whole point. Volatility optimized wisely = profit; volatility feared = the
+  0-BUY failure mode.
+- **Institutional-grade, not retail/hobby.** Three-method math cross-check,
+  fat-tail MC, Bayesian priors across days, AI catalyst overlay, execution-
+  friction realism. The bar is a desk that answers to a risk committee — not a
+  screenshot in a chat room. "Looks plausible" is never the standard; reproduced-
+  on-real-inputs is.
+- **AI-leveraged, hard-capped at $2 per complete run.** Intelligence is
+  mandatory but metered — the broker spends tokens where ambiguity is highest,
+  and every token bought MUST produce persisted, used signal (see hard
+  constraints). Brilliance that gets dropped is waste twice over.
+- **The engine MUST actually recommend.** A recommendation tool that returns
+  0 BUYs across the roster has failed at its one job. Persistent 0-BUY (or any
+  all-refuse / all-identical output) is a STRUCTURAL DEFECT to hunt via the
+  audit protocol — never a "the market's just bad today" shrug.
+
 ## Working style (Jesse)
 - Caveman: terse, surgical, no fluff
 - Restate task before acting
