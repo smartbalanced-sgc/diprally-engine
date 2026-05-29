@@ -1,8 +1,9 @@
 # DIPRALLY-ENGINE — Claude Code session contract
 
-Multi-ticker swing decision engine. Daily quant + AI analysis of 31 volatile
-stocks to identify defensible dip-and-rally round-trip setups within 20 trading
-days. Refuses negative-EV setups.
+Multi-ticker swing decision engine. Daily quant + AI analysis of 26 volatile
+stocks (default roster; +5 large-caps in YAML `tickers_scratch`, run only on
+explicit `--tickers`) to identify defensible dip-and-rally round-trip setups
+within 20 trading days. Refuses negative-EV setups.
 
 ## Working style (Jesse)
 - Caveman: terse, surgical, no fluff
@@ -93,8 +94,9 @@ deliverable is a ranked defect list, never reassurance.
 - Token discipline: AI allocated by budget broker, never sprayed
 - Same-day re-runs must not corrupt CSV or double-charge AI
 - No "capital" concept — recommendation tool, user sizes externally
-- Ticker universe is CONFIG (YAML), not code. Current roster is 31 names
-  but adding/removing is a YAML edit, not a code change. Engine must
+- Ticker universe is CONFIG (YAML), not code. Default roster is 26 names
+  (`tickers`); 5 more in `tickers_scratch` run only on explicit `--tickers`.
+  Adding/removing/promoting is a YAML edit, not a code change. Engine must
   handle any universe size without modification.
 - Mean reversion: the engine supports a mean-reversion drift term
   (`run.py --mean-reversion`, anchor in YAML `mean_reversion.anchor_pct_below_spot`)
@@ -170,19 +172,34 @@ deliverable is a ranked defect list, never reassurance.
     generic "two-sided earnings" is the math layer's default, not a
     de-rating thesis. Codified by PRs #41 / #44 / #45 / #46 / #51 / #70 / #89.
 
-## Ticker universe (current roster — adjust via YAML)
-- **EXTREME (11)**: LWLG, MRAM, ENGN, VELO, SNDK, ARM, CRWV, NBIS, INOD, CRDO, ANAB
-  - VELO replaces VELO3D (delisted 2024, relisted Aug 2025 as VELO)
-  - SNDK = WDC Flash spinoff (Feb 2025 IPO); ARM IPO Sep 2023; CRWV IPO Mar 2025;
-    NBIS = post-Yandex restructure. Limited history names — auto-detector may
-    flag class shifts in early cycles.
-- **HIGH (7)**: ASTS, RKLB, PL, SATS, GHM, MRVL, MU
-  - MU reclassified MID→HIGH (realized vol consistently 70-90% annualised
-    in the AI-cycle semi regime; now sits above the 65% high_min boundary)
-- **MID (13)**: INTC, IPGP, LITE, STX, AMAT, MOG-A, GLW, LRCX,
-  ADBE, ORCL, DE, IBM, AVGO
-  - ADBE, ORCL, DE, IBM, AVGO added as large-cap diversifiers (lower-vol
-    anchors to improve BUY hit rate across the universe)
+## Ticker universe — lives in YAML, NOT here (sacred #17)
+The roster, σ-class assignment, stock/ETF peers, and every per-ticker setting
+live in the `config/diprally.yaml` registry block (each entry keyed by symbol,
+carrying `sigma_class`, `stock_peers`, `etf_peer`). The YAML is the SINGLE
+source of truth — do NOT maintain a ticker list here (it drifts and contradicts
+the config, which is exactly what sacred #17 forbids). To see the current
+universe grouped by class:
+
+    python3 -c "import yaml,collections; c=yaml.safe_load(open('config/diprally.yaml')); \
+    g=collections.defaultdict(list); \
+    [g[v['sigma_class']].append(k) for blk in ('tickers','tickers_scratch') \
+    for k,v in c.get(blk,{}).items()]; print('DEFAULT roster = tickers block; scratch runs only on --tickers'); \
+    [print(f'{cl} ({len(g[cl])}): {sorted(g[cl])}') for cl in ('EXTREME','HIGH','MID')]"
+
+As of 2026-05-29 the DEFAULT daily roster (`tickers` block) is 26 names
+(11 EXTREME / 7 HIGH / 8 MID). A separate `tickers_scratch` block holds 5
+large-caps (ADBE, AVGO, DE, IBM, ORCL) that are ad-hoc only: default
+orchestrator runs (no `--tickers` flag) iterate `tickers` ONLY, so scratch
+names get full registry support when explicitly requested but do NOT run in
+the daily cycle. **Watch-out**: if the intent was for those large-cap
+diversifiers to lift the universe BUY hit rate, leaving them in scratch means
+they never run daily — promoting them into `tickers` is a YAML move, not code.
+Notable registry facts that aren't obvious from the symbol alone:
+- VELO replaces VELO3D (delisted 2024, relisted Aug 2025 as VELO).
+- Limited-history names (SNDK Feb-2025 spinoff, ARM Sep-2023 IPO, CRWV Mar-2025
+  IPO, NBIS post-Yandex restructure) — σ auto-detector may flag class shifts
+  in early cycles; broker forces ≥T2 on limited-history tickers.
+- MU is HIGH (realized vol 70-90% annualised in the AI-cycle semi regime).
 
 > **Ticker convention**: canonical form across this repo uses dashes for
 > class shares (MOG-A, BRK-B, BF-B) — the Yahoo Finance / industry-standard
@@ -192,19 +209,22 @@ deliverable is a ranked defect list, never reassurance.
 > form, use it as-is when calling FMP. If a future provider requires a
 > different separator, the W2 registry adds per-provider translation.
 
-## σ-class defaults
-Conviction recalibrated 2026-05-24 (the old EXTREME/HIGH rally_conditional 0.75
-was mathematically unachievable at σ>60% and guaranteed 0 BUYs). Grid + panic
-columns are 20d-horizon values (PR #86 rescaled them from the legacy 60d grid by
-√(20/60)). EV hurdle is per-class (sacred #13): EXTREME/HIGH 25 bps (0.25%),
-MID 50 bps (0.50%). These are the LIVE config/diprally.yaml values — if this
-table and the YAML ever disagree, the YAML is authoritative; fix this table.
+## σ-class defaults — lives in YAML, NOT here (sacred #17)
+The per-class conviction / grid / panic / friction / EV-hurdle / parabola /
+vol-mult values are the `sigma_classes` block in `config/diprally.yaml`. That
+YAML is authoritative — read it directly rather than trusting a transcribed
+table here (the previous hardcoded table drifted to stale 60d/0.75 values and
+caused 0-BUY misdiagnosis). Quick dump:
 
-| Class    | Conv-dip | Conv-rally | Grid dip | Grid rally | Panic floor | Friction bps RT | AI vol_mult (H/M/L) |
-|----------|----------|-----------|----------|-----------|-------------|-----------------|---------------------|
-| EXTREME  | 0.55     | 0.55      | -29%     | +35%      | -20%        | 70              | 1.10 / 1.00 / 0.90  |
-| HIGH     | 0.60     | 0.65      | -20%     | +29%      | -14%        | 35              | 1.15 / 1.00 / 0.90  |
-| MID      | 0.65     | 0.70      | -12%     | +18%      | -10%        | 18              | 1.25 / 1.00 / 0.80  |
+    python3 -c "import yaml,json; c=yaml.safe_load(open('config/diprally.yaml')); \
+    print(json.dumps(c['sigma_classes'], indent=2))"
+
+Orientation only (verify against YAML before acting): conviction is far lower
+than a naive reader expects — EXTREME ≈0.55/0.55, HIGH ≈0.60/0.65, MID
+≈0.65/0.70 — because the old 0.75 rally-conditional was mathematically
+unachievable at σ>60% and guaranteed 0 BUYs. EV hurdle is per-class
+(EXTREME/HIGH 25 bps = 0.25%, MID 50 bps = 0.50%). Grid/panic are 20d-horizon
+values (PR #86 rescaled from the legacy 60d grid by √(20/60)).
 
 ## AI tier system (broker, $2/day hard cap)
 - **T0** ($0)    — math only. Default; every ticker daily.
@@ -215,7 +235,8 @@ table and the YAML ever disagree, the YAML is authoritative; fix this table.
 - **T3** (~$0.30) — Opus Pass 1 + Sonnet Pass 2 + Haiku stress. Ambiguity ≥
   `t3_min_ambiguity` AND `qualifies_for_t2_plus` AND budget allows.
 
-Broker: T0 all 31 first, sort by ambiguity, greedy allocate T3→T2→T1 within $2.
+Broker: T0 all 26 (default roster) first, sort by ambiguity, greedy allocate
+T3→T2→T1 within $2.
 
 ## Wave plan (11 waves, sequential, approval-gated)
 W0 scaffolding + v2 migration → W1 AI efficiency → W2 multi-ticker + registry →
