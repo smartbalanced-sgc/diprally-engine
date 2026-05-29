@@ -35,6 +35,50 @@ from outcome data the daily orchestrator collects.
 
 ---
 
+## 2026-05-29 — Defect-queue audit findings (B/C/D/E/F)
+
+Worked the post-PR-#92 defect queue. B/C/D/F shipped; **E rejected** as a
+misdiagnosis. Recording the two non-obvious outcomes so no future session
+re-litigates them.
+
+### D-2026-1. Defect E (two-sided catalyst drift) — REJECTED, do NOT implement
+- **Handover proposed**: in `signal_from_catalyst_proximity`, change the
+  `two-sided` direction multiplier from `0.0` to `0.5 × magnitude`
+  ("uncertain direction, not zero direction").
+- **Why rejected** (harness-verified 2026-05-29): the multiplier is applied
+  as `total += mag * sign`, so `sign=0.5` injects a **strictly positive
+  (bullish)** drift on every two-sided catalyst. Quantified: a typical
+  two-sided-earnings name gets **+7.5% bullish drift** (high+med, capped
+  +15%), ≈ +1pp on blended drift at catalyst_proximity weight 0.13 — on
+  essentially every name with earnings in window. For a DIP-buying engine
+  that systematically suppresses dip detection and inflates rally prob.
+- **Three independent reasons it's wrong**:
+  1. A direction-uncertain catalyst has ~0 expected *directional* drift by
+     definition; a signed +0.5×mag fabricates a view the AI couldn't form.
+  2. The earnings *variance* effect is already captured by
+     `build_catalyst_vol_schedule` (sacred #9) — the fix double-counts it.
+  3. Directly contradicts **sacred #18**: "generic 'two-sided earnings' is
+     the math layer's default, not a de-rating thesis."
+- **Verdict**: current `two-sided → 0.0` drift is CORRECT. No code change.
+
+### D-2026-2. Daily $2 cap not reconciled across orchestrator invocations
+- **Observation** (found while fixing Defect F, NOT fixed — out of scope):
+  the $2/day broker cap is enforced **per orchestrator invocation** off the
+  broker's *estimated* tier costs (`broker.allocate` → `spent_usd`). It is
+  never reconciled against the actual realized spend in the CSV ledger
+  across invocations.
+- **Consequence**: running the orchestrator multiple times in one day with
+  cache busts (spot moved ≥ `AI_CACHE_SPOT_MOVE_INVALIDATION_PCT`) can spend
+  **> $2/day actual** — each invocation re-grants the full $2 estimate.
+  Within a single invocation, and on cache hits, billing is correct
+  (Defect F preserved the per-(ticker,date) ledger cost).
+- **Why deferred**: it's a broker/orchestrator design decision (persistent
+  daily-spend ledger keyed on trading day, read by `broker.allocate` to
+  shrink the cap), not a clear bug, and outside Defect F's named files.
+  Needs a decision on whether same-day re-runs should share one $2 budget.
+
+---
+
 ## To W2 (config-driven multi-ticker engine — Path A "big bang" lift)  [WAVE CLOSED — all items shipped; closure ledger below]
 
 > **Closure audit 2026-05-24**: D-W2-1 through D-W2-16 all shipped in
