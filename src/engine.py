@@ -50,6 +50,7 @@ from src.config import (
     MEAN_REVERSION_ANCHOR_PCT_BELOW_SPOT,
     MIN_DIP_PROBABILITY,
     PASS2_CLOSED_FORM_BRACKET_PCT,
+    PATIENCE_WINDOW_TD,
     SENSITIVITY_SCENARIOS,
     SIGMA_CLASSES,
     PARABOLA_FILTER_MOM_30D_THRESHOLD,
@@ -487,6 +488,7 @@ def scan_dip_rally_grid(
                 paths, S0, float(dip), float(rally), friction_per_share,
                 dip_first_days=dip_first_days_all[:, i],
                 rally_first_days=rally_first_days_all[:, j],
+                patience_window_td=PATIENCE_WINDOW_TD,
             )
 
             # Apply min_dip_probability gate — if the wait strategy has too

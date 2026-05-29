@@ -330,6 +330,12 @@ horizon:
 # few paths would actually enter.
 wait_for_dip:
   min_dip_probability: 0.30
+  # Defect D — trading days a swing trader waits for the rally after entry
+  # before time-stopping at market. Applies to BOTH DIRECT and WAIT EVs.
+  # ~8 weeks: beyond this the conditional rally probability has decayed and
+  # the thesis is treated as broken. Tunable per sacred #17; W10 calibration
+  # can refine it against resolved round-trip outcomes.
+  patience_window_td: 40
 
 # -----------------------------------------------------------
 # W9 PR #48 — fat-tail Monte Carlo.

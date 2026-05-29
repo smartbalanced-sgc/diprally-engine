@@ -141,8 +141,18 @@ class HorizonConfig(_StrictModel):
 class WaitForDipConfig(_StrictModel):
     """PR #86 — dual-EV swing strategy. min_dip_probability: floor on
     P(dip touched within horizon) below which WAIT-FOR-DIP isn't even
-    considered (capital-deployment efficiency)."""
+    considered (capital-deployment efficiency).
+
+    Defect D — patience_window_td: trading days a swing trader will wait
+    for the rally AFTER entry before time-stopping a thesis-broken position
+    at market. Applies to BOTH entries (DIRECT from spot, WAIT from the dip)
+    so the strategy selection isn't biased by an asymmetric exit rule. The
+    rally must hit within this window of entry to count as a round-trip;
+    otherwise the position is marked to the price at entry+window, not the
+    horizon-end terminal (which let losers 'recover' and credited rallies a
+    real trader would never wait for)."""
     min_dip_probability: float = Field(ge=0.0, le=1.0)
+    patience_window_td: int = Field(ge=1)
 
 
 class PortfolioGateConfig(_StrictModel):
@@ -672,6 +682,11 @@ def _rebind_module_constants() -> None:
     # Below this, only DIRECT entry is evaluated.
     g["MIN_DIP_PROBABILITY"] = getattr(
         getattr(_CONFIG, "wait_for_dip", None), "min_dip_probability", 0.30
+    )
+    # Defect D — swing patience window (trading days) before a thesis-broken
+    # position is time-stopped at market. Applies to both DIRECT and WAIT EVs.
+    g["PATIENCE_WINDOW_TD"] = getattr(
+        getattr(_CONFIG, "wait_for_dip", None), "patience_window_td", 40
     )
 
     # W9 PR #48: MC distribution config (normal vs student_t per σ-class).
