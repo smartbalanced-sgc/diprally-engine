@@ -31,37 +31,36 @@ from src.registry import (
 
 # ---------- Universe membership ----------
 
-def test_universe_has_26_tickers():
-    """Current roster per CLAUDE.md (2026-05-24 expansion: +9 names).
-    NOT a hard constraint on universe size (universe is config) —
-    just a check that the YAML hasn't drifted from the documented
-    roster without an explicit update."""
+def test_universe_has_5_tickers():
+    """2026-05-30 cull: active daily roster reduced from 26 → 5 representative
+    names until 0-BUY is reproducibly cleared on the iteration cohort. 21
+    sidelined names live in tickers_scratch with full metadata. NOT a hard
+    constraint on universe size (universe is config) — just a check that the
+    YAML hasn't drifted from the documented roster without an explicit update."""
     universe = list_universe()
-    assert len(universe) == 26, f"Universe drifted: {len(universe)} tickers"
+    assert len(universe) == 5, f"Universe drifted: {len(universe)} tickers"
 
 
 def test_extreme_class_membership():
-    """CLAUDE.md EXTREME group as of 2026-05-24 expansion:
-    LWLG, MRAM, ENGN, VELO + 7 additions (SNDK, ARM, CRWV, NBIS, INOD,
-    CRDO, ANAB). Class assignments are initial — PR #62 advisor will
-    flag any that need rebalancing after ~5 cycles per name."""
+    """EXTREME-class active roster (2026-05-30 cull): LWLG (photonics
+    narrative, thin peer data) + ARM (semi-IP, rich AI catalysts). The
+    9 sidelined EXTREME names live in tickers_scratch."""
     extreme = {t for t in list_universe() if classify(t) == "EXTREME"}
-    assert extreme == {
-        "LWLG", "MRAM", "ENGN", "VELO",
-        "SNDK", "ARM", "CRWV", "NBIS", "INOD", "CRDO", "ANAB",
-    }, extreme
+    assert extreme == {"LWLG", "ARM"}, extreme
 
 
 def test_high_class_membership():
-    """HIGH group: original 5 + MRVL + MU (PR #92 reclassified MU MID→HIGH)."""
+    """HIGH-class active roster (2026-05-30 cull): MU (HIGH override per
+    PR #92) + RKLB (aerospace/space, non-semi factor for portfolio gate)."""
     high = {t for t in list_universe() if classify(t) == "HIGH"}
-    assert high == {"ASTS", "RKLB", "PL", "SATS", "GHM", "MRVL", "MU"}, high
+    assert high == {"MU", "RKLB"}, high
 
 
 def test_mid_class_membership():
-    """MID group: original 8 + LRCX, minus MU (PR #92 moved MU to HIGH)."""
+    """MID-class active roster (2026-05-30 cull): AMAT only — the σ=0.40
+    probe for MID conviction joint-reachability + low-σ EV math."""
     mid = {t for t in list_universe() if classify(t) == "MID"}
-    assert mid == {"INTC", "IPGP", "LITE", "STX", "AMAT", "MOG-A", "GLW", "LRCX"}, mid
+    assert mid == {"AMAT"}, mid
 
 
 def test_class_counts_sum_to_universe():
@@ -154,15 +153,14 @@ def test_expected_sector_matches_known_tickers():
 # ---------- Sacred #4 (no SNDK-specific hardcodes) ----------
 
 def test_sndk_resolves_through_registry_only():
-    """Sacred #4: 'No SNDK-specific hardcodes.' SNDK was deliberately added
-    to the universe in the 2026-05-24 expansion as a tradeable name (post
-    Feb-2025 WDC Flash spinoff). Sacred #4 forbids HARDCODES in code, not
-    presence in the YAML universe. This test verifies SNDK is treated like
-    any other ticker — peers come from the YAML entry, not from a special-
-    case shim in src/."""
-    assert "SNDK" in list_universe()
+    """Sacred #4: 'No SNDK-specific hardcodes.' SNDK lives in
+    tickers_scratch as of the 2026-05-30 cull (sidelined from the active
+    daily roster pending 0-BUY clearance), but must still resolve
+    through the same generic registry path as any other ticker. Sacred
+    #4 forbids HARDCODES in code, not presence in YAML — and the
+    scratch-fallback path (PR #90) is exactly the generic mechanism."""
     peers = resolve_peers("SNDK")
-    # SNDK's YAML entry declares stock_peers: ["MU", "STX", "WDC"]
+    # SNDK's YAML entry (now under tickers_scratch:) declares stock_peers
     assert peers == ["MU", "STX", "WDC"]
 
 

@@ -38,18 +38,48 @@ def test_list_universe_excludes_scratch_tickers():
         )
 
 
-def test_list_universe_still_returns_institutional_roster():
-    """The 26 permanent tickers must still be present."""
+def test_list_universe_returns_active_cohort():
+    """The active daily roster — currently the 5-name iteration cohort
+    (2026-05-30 cull, pending 0-BUY clearance before re-expansion).
+    Originally 26; the 21 sidelined names live in tickers_scratch with
+    full metadata so re-promotion is a YAML edit only (sacred #17)."""
     from src.registry import list_universe
     universe = set(list_universe())
-    institutional = {
-        "LWLG", "MRAM", "ENGN", "VELO", "SNDK", "ARM", "CRWV", "NBIS",
-        "INOD", "CRDO", "ANAB", "ASTS", "RKLB", "PL", "SATS", "GHM",
-        "MRVL", "INTC", "IPGP", "LITE", "MU", "STX", "AMAT", "MOG-A",
-        "GLW", "LRCX",
+    active_cohort = {"LWLG", "ARM", "RKLB", "MU", "AMAT"}
+    missing = active_cohort - universe
+    assert not missing, f"Active cohort lost tickers: {missing}"
+    # Active roster must NOT contain sidelined names — that would mean
+    # the cull was reverted in code, not via YAML.
+    sidelined_extreme = {
+        "MRAM", "ENGN", "VELO", "SNDK", "CRWV", "NBIS",
+        "INOD", "CRDO", "ANAB",
     }
-    missing = institutional - universe
-    assert not missing, f"Institutional roster lost tickers: {missing}"
+    sidelined_high = {"ASTS", "PL", "SATS", "GHM", "MRVL"}
+    sidelined_mid = {
+        "INTC", "IPGP", "LITE", "STX", "MOG-A", "GLW", "LRCX",
+    }
+    leaked = (sidelined_extreme | sidelined_high | sidelined_mid) & universe
+    assert not leaked, (
+        f"Sidelined tickers leaked back into list_universe(): {leaked}"
+    )
+
+
+def test_sidelined_tickers_still_resolvable_via_scratch():
+    """Cull preserves metadata: every sidelined name must still resolve
+    via get_ticker() so an explicit `--tickers SNDK` run gets full peer
+    + σ-class + sector support. Nothing lost, only relocated."""
+    from src.registry import get_ticker
+    sidelined = (
+        "MRAM", "ENGN", "VELO", "SNDK", "CRWV", "NBIS",
+        "INOD", "CRDO", "ANAB",
+        "ASTS", "PL", "SATS", "GHM", "MRVL",
+        "INTC", "IPGP", "LITE", "STX", "MOG-A", "GLW", "LRCX",
+    )
+    for symbol in sidelined:
+        cfg = get_ticker(symbol)
+        assert cfg.sigma_class in ("MID", "HIGH", "EXTREME"), (
+            f"sidelined {symbol} lost σ-class metadata"
+        )
 
 
 # =============================================================================
