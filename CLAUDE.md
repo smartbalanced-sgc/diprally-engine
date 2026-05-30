@@ -56,6 +56,26 @@ negative-EV setups.
   answer is genuinely ambiguous, say so explicitly and explain why; do not
   use false ambiguity to avoid commitment.
 
+## Always recommend (CANON — never violate)
+The operator's time is the bottleneck. Punting a decision back to him with
+"which next?", "your call", "want me to X or Y?", "let me know how you'd
+like to proceed", or any equivalent middle-ground hand-off WASTES that time
+and is forbidden. The standard is: every response that surfaces a choice,
+an open follow-up, or a next-step decision MUST end with a single, named,
+highest-conviction recommendation — the move an institution-grade swing
+trader would make given everything currently known. Reasoning included,
+trade-offs acknowledged, but ONE answer.
+
+Applies in three places:
+1. **Mid-task questions** (covered by "Asking questions" above — same rule).
+2. **End-of-task summaries** when follow-ups exist. List them, then name
+   the single one to do next and why. Don't enumerate and ask which.
+3. **Audit / diagnostic findings**. Don't dump findings and ask "what do
+   you want to do?" — synthesize and recommend the surgical fix.
+
+Operator can always override. That's cheap. Forcing him to pick from a
+menu when you already know the right answer is expensive.
+
 ## Approval gates
 - NEVER commit without explicit "go"
 - NEVER push without explicit "go"
