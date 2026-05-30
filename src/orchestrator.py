@@ -161,7 +161,8 @@ def _looks_delisted(text: str, ticker: str) -> bool:
     return False
 
 
-def _phase2_single(ticker: str, tier: str, run_dir: Path
+def _phase2_single(ticker: str, tier: str, run_dir: Path,
+                    bust_cache: bool = False
                     ) -> tuple[int, Optional[str]]:
     """AI dispatch at the broker-assigned tier. Skips T0 (Phase 1 already
     produced the report). Returns (returncode, error_or_None)."""
@@ -169,6 +170,8 @@ def _phase2_single(ticker: str, tier: str, run_dir: Path
         return 0, None
     log_path = run_dir / f"{ticker}.phase2.log"
     cmd = [sys.executable, "tools/run.py", ticker, "--tier", tier]
+    if bust_cache:
+        cmd.append("--bust-cache")
     rc, _, stderr = _run_subprocess(cmd, log_path)
     if rc != 0:
         err_lines = (stderr or "").strip().splitlines()
@@ -224,7 +227,7 @@ def run_phase1(tickers: list[str], run_dir: Path,
 
 def run_phase2(allocation: BrokerAllocation, results: list[TickerRun],
                run_dir: Path, max_parallel: int = 1,
-               progress=print) -> None:
+               progress=print, bust_cache: bool = False) -> None:
     """AI dispatch driver. Mutates results in-place with phase2 outcomes."""
     ai_tickers = [r for r in results
                   if r.snapshot is not None
@@ -240,7 +243,7 @@ def run_phase2(allocation: BrokerAllocation, results: list[TickerRun],
             r.assigned_tier = tier
             progress(f"  {r.ticker:<8} → {tier} ...")
             t0 = time.time()
-            rc, err = _phase2_single(r.ticker, tier, run_dir)
+            rc, err = _phase2_single(r.ticker, tier, run_dir, bust_cache=bust_cache)
             elapsed = time.time() - t0
             r.phase2_returncode = rc
             r.phase2_error = err
@@ -252,7 +255,9 @@ def run_phase2(allocation: BrokerAllocation, results: list[TickerRun],
             for r in ai_tickers:
                 tier = allocation.assignments[r.ticker]
                 r.assigned_tier = tier
-                futures[ex.submit(_phase2_single, r.ticker, tier, run_dir)] = r
+                futures[ex.submit(
+                    _phase2_single, r.ticker, tier, run_dir, bust_cache,
+                )] = r
             for fut in concurrent.futures.as_completed(futures):
                 r = futures[fut]
                 rc, err = fut.result()

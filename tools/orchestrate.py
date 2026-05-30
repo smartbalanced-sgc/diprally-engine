@@ -59,6 +59,11 @@ def main():
                         "Drop to 2 for slower machines.")
     p.add_argument("--run-id", default=None,
                    help="Override the output/<run_id>/ directory name.")
+    p.add_argument("--bust-cache", action="store_true",
+                   help="Bypass the same-day AI cache for every ticker "
+                        "in Phase 2 — forces fresh Pass 1/2/verify/stress "
+                        "calls. Use to re-validate AI behavior after a "
+                        "code change to the prompt or signal pipeline.")
     args = p.parse_args()
 
     tickers = args.tickers if args.tickers else list_universe()
@@ -125,7 +130,9 @@ def main():
     if args.dry_run:
         print("\n--dry-run: skipping AI dispatch.")
     elif allocation is not None:
-        run_phase2(allocation, results, run_dir, max_parallel=args.max_parallel)
+        run_phase2(allocation, results, run_dir,
+                    max_parallel=args.max_parallel,
+                    bust_cache=args.bust_cache)
 
     # Summary.
     summary = format_summary(results, allocation)

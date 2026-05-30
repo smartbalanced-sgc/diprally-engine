@@ -191,6 +191,11 @@ def main():
     ap.add_argument("--budget", type=float, default=None,
                     help="$/day cap for the real AI pass (default: orchestrator's $2)")
     ap.add_argument("--max-parallel", type=int, default=4)
+    ap.add_argument("--bust-cache", action="store_true",
+                    help="Forward --bust-cache to Pass B so cached AI from a "
+                         "prior same-day run is bypassed. Use to validate AI "
+                         "code changes (e.g. prompt restructuring) that would "
+                         "otherwise be invisible because the cache replays.")
     args = ap.parse_args()
 
     common = []
@@ -214,6 +219,8 @@ def main():
         if args.budget is not None:
             real_args += ["--budget", str(args.budget)]
         real_args += ["--run-id", "falsify_real"]
+        if args.bust_cache:
+            real_args += ["--bust-cache"]
         _run_orchestrator(real_args, "PASS B — real AI pass (broker-capped at $2/day)")
         real = _snapshot()
 
