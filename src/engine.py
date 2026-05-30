@@ -228,7 +228,17 @@ class JointConditionalResult:
     ev_wait_pct_of_dip: float = 0.0      # ev_wait_per_share / dip_price (unconditional, includes no-fill paths)
     p_dip_filled: float = 0.0            # P(dip touched at any point) — fill probability
     p_rally_hit: float = 0.0             # P(rally touched at any point) — direct-entry win prob
-    verdict_subtype: str = "DIRECT"      # "DIRECT" or "WAIT-FOR-DIP" — which strategy won max EV
+    verdict_subtype: str = "DIRECT"      # "DIRECT" or "WAIT-FOR-DIP" — winning strategy
+    # Objective-function audit (2026-05-30). Mission-aligned chosen-branch
+    # hit rate (rally hit AND not stopped). Grid now ranks by this under
+    # two-stage [EV ≥ σ-class hurdle → max P(profitable)] selection;
+    # max-EV ranking had 0/10 top-10 overlap with hit-rate ranking on
+    # synth setups across all σ-classes — engine was picking jackpot
+    # setups (low hit rate, grid-max rally) while mission asks for
+    # "lock in gains via defensible round-trips". See
+    # tools/diag/objective_audit.py for the audit harness.
+    p_profitable: float = 0.0
+    payoff_std_pct: float = 0.0          # chosen-branch payoff std / (dip|spot)
 
 
 # =============================================================================
@@ -506,13 +516,51 @@ def scan_dip_rally_grid(
                 friction_per_share_direct=friction_per_share_direct,
             )
 
-            # Apply min_dip_probability gate — if the wait strategy has too
-            # little chance of filling, don't even consider it.
+            # Branch selection (objective-function audit, 2026-05-30):
+            # mission-aligned two-stage. Among branches that clear (a)
+            # eligibility AND (b) σ-class EV hurdle, pick the one with
+            # higher P(profitable). If only one branch clears, pick it.
+            # If neither clears, fall back to max-EV (legacy) — this
+            # pair will be filtered out of the qualified set at the grid
+            # ranker step anyway, but kept around so the engine has a
+            # "best" to attach REFUSED-EV diagnostics to.
             wait_eligible = dual["p_dip_filled"] >= MIN_DIP_PROBABILITY
-            if wait_eligible and dual["ev_wait_per_share"] >= dual["ev_direct_per_share"]:
+            hurdle_pct = (
+                getattr(SIGMA_CLASSES[sigma_class], "ev_hurdle_bps", 50)
+                / 10000.0
+            )
+            wait_ev_pct = dual["ev_wait_pct_of_dip"]
+            direct_ev_pct = dual["ev_direct_pct_of_spot"]
+            wait_clears = wait_eligible and wait_ev_pct >= hurdle_pct
+            direct_clears = direct_ev_pct >= hurdle_pct
+
+            if wait_clears and direct_clears:
+                # Both clear hurdle — pick by P(profitable), tiebreak EV.
+                if (dual["p_profitable_wait"], dual["ev_wait_per_share"]) >= (
+                    dual["p_profitable_direct"], dual["ev_direct_per_share"]
+                ):
+                    pick_wait = True
+                else:
+                    pick_wait = False
+            elif wait_clears:
+                pick_wait = True
+            elif direct_clears:
+                pick_wait = False
+            else:
+                # Neither clears — legacy max-EV among eligible. WAIT
+                # eligibility still gates (don't pick a strategy that
+                # can't fill).
+                pick_wait = (
+                    wait_eligible
+                    and dual["ev_wait_per_share"] >= dual["ev_direct_per_share"]
+                )
+
+            if pick_wait:
                 net_ev_per_share = dual["ev_wait_per_share"]
                 verdict_subtype = "WAIT-FOR-DIP"
                 ev_pct_of_dip = dual["ev_wait_pct_of_dip"]
+                p_profitable_branch = dual["p_profitable_wait"]
+                payoff_std_branch = dual["payoff_std_wait_pct_of_dip"]
             else:
                 net_ev_per_share = dual["ev_direct_per_share"]
                 verdict_subtype = "DIRECT"
@@ -520,6 +568,8 @@ def scan_dip_rally_grid(
                 # — keeping the field name for backward-compat with the
                 # σ-class hurdle check, but the unit is spot-relative here.
                 ev_pct_of_dip = dual["ev_direct_pct_of_spot"]
+                p_profitable_branch = dual["p_profitable_direct"]
+                payoff_std_branch = dual["payoff_std_direct_pct_of_spot"]
 
             jc = JointConditionalResult(
                 dip_price=float(dip),
@@ -544,14 +594,41 @@ def scan_dip_rally_grid(
                 p_dip_filled=dual["p_dip_filled"],
                 p_rally_hit=dual["p_rally_hit"],
                 verdict_subtype=verdict_subtype,
+                p_profitable=p_profitable_branch,
+                payoff_std_pct=payoff_std_branch,
             )
             candidates.append(jc)
 
+    # Grid ranker — two-stage [EV ≥ σ-class hurdle → max P(profitable)].
+    # Objective-function audit (2026-05-30) found that ranking by net_ev
+    # alone produced 0/10 top-10 overlap with hit-rate ranking on every
+    # synth setup tested: max-EV always picked the rally grid maximum
+    # (jackpot setups, 10-21% hit rate), while mission language
+    # ("lock in gains via defensible round-trips inside 20 trading days")
+    # is hit-rate language. EV stays as the FLOOR (sacred #13 refusal
+    # gate downstream); the ranker now selects for completion
+    # probability among setups that already clear the hurdle.
+    # Tiers:
+    #   1. qualified (conviction met) AND ev ≥ hurdle → sort by p_profitable
+    #   2. qualified only → sort by net_ev (legacy, REFUSED-EV fires later)
+    #   3. none qualified → sort all candidates by net_ev (legacy)
     qualified = [
         c for c in candidates
         if c.p_dip_touched >= conviction_dip and c.p_rally_given_dip >= conviction_rally_cond
     ]
-    if qualified:
+    class_hurdle_pct = (
+        getattr(SIGMA_CLASSES[sigma_class], "ev_hurdle_bps", 50) / 10000.0
+    )
+    hurdle_clearing = [c for c in qualified if c.ev_pct_of_dip >= class_hurdle_pct]
+    if hurdle_clearing:
+        # Tiebreak P(profitable) by net_ev to keep ranking deterministic
+        # when many pairs hit a probability plateau.
+        hurdle_clearing.sort(
+            key=lambda c: (c.p_profitable, c.net_ev_per_share), reverse=True,
+        )
+        best = hurdle_clearing[0]
+        met_threshold_strict = True
+    elif qualified:
         qualified.sort(key=lambda c: c.net_ev_per_share, reverse=True)
         best = qualified[0]
         met_threshold_strict = True
@@ -781,6 +858,11 @@ CSV_COLUMNS = [
     # PR #86 — dual-EV fields
     "verdict_subtype", "ev_direct_bps", "ev_wait_bps",
     "p_dip_filled", "p_rally_hit",
+    # Objective-function audit (2026-05-30) — two-stage ranker output.
+    # p_profitable = chosen-branch P(rally hit AND not stopped first);
+    # payoff_std_pct = chosen-branch payoff σ as % of dip|spot. The
+    # grid now ranks by p_profitable above the EV-hurdle floor.
+    "p_profitable", "payoff_std_pct",
     "ai_drift_pass1", "ai_drift_pass2", "ai_vol_regime",
     "narrative_score", "catalyst_proximity_drift",
     "garch_alpha_plus_beta", "horizon_days",
@@ -2162,6 +2244,8 @@ def run_pipeline(args) -> int:
         "ev_wait_bps": f"{best.ev_wait_pct_of_dip*10000:.1f}" if best else "",
         "p_dip_filled": f"{best.p_dip_filled:.4f}" if best else "",
         "p_rally_hit": f"{best.p_rally_hit:.4f}" if best else "",
+        "p_profitable": f"{best.p_profitable:.4f}" if best else "",
+        "payoff_std_pct": f"{best.payoff_std_pct*100:.2f}" if best else "",
         "ai_drift_pass1": f"{pass1.drift_estimate:.4f}" if pass1 else "",
         "ai_drift_pass2": f"{pass2.drift_estimate:.4f}" if pass2 else "",
         "ai_vol_regime": effective_ai.vol_regime if effective_ai else "",

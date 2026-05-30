@@ -757,6 +757,26 @@ def compute_dual_ev(
         "bag_terminal_mean": bag_terminal_mean,
         "bag_terminal_median": bag_terminal_median,
         "p_round_trip_strict": float((dip_any & rally_after_dip).mean()),
+        # Mission-aligned hit rate (objective-function audit, 2026-05-30).
+        # PROFITABLE-exit fraction: rally hit AND not stopped first. Used
+        # as the grid ranker under two-stage [EV ≥ hurdle → max P(rt)]
+        # selection that replaced max-EV ranking. Tools harness:
+        # tools/diag/objective_audit.py.
+        "p_profitable_wait": float(
+            (dip_any & rally_after_dip & ~stopped_first_wait).mean()
+        ),
+        "p_profitable_direct": float(
+            (rally_touched & ~stopped_first_direct).mean()
+        ),
+        # Per-share payoff std for risk display. Branch-relative units
+        # match the EV fields (wait: pct_of_dip; direct: pct_of_spot).
+        "payoff_std_wait_pct_of_dip": (
+            float(payoff_wait_per_path.std() / dip_price)
+            if dip_price > 0 else 0.0
+        ),
+        "payoff_std_direct_pct_of_spot": (
+            float(payoff_direct_per_path.std() / S0) if S0 > 0 else 0.0
+        ),
     }
 
 
