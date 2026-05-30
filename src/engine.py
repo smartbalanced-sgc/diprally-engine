@@ -76,9 +76,11 @@ from src.data_fetch import (
     fetch_pt_news,
     fetch_options_iv,
     fetch_peer_history,
+    fetch_recent_news,
     fetch_sector_perf,
     fetch_short_interest,
 )
+from src.facts_bundle import build_facts_bundle, bundle_to_prompt_block
 from src.math_utils import (
     analyze_joint_conditional,
     compute_dual_ev,
@@ -1475,6 +1477,9 @@ def run_pipeline(args) -> int:
                                               current_tier=tier.name))
     if bust_cache:
         print("AI cache bypass (--bust-cache): forcing fresh Pass 1/2/verify/stress")
+    facts_bundle = None  # Stage 0 bundle, populated below when Pass 1 actually runs.
+    bundle_json = ""
+
     if cache_payload:
         # Defect F — recover the day's real spend so the ledger isn't erased
         # by the same-day dedup overwrite. $0.00 INCREMENTAL (no new call),
@@ -1497,12 +1502,42 @@ def run_pipeline(args) -> int:
         cached_stress_results = cache_payload.get("stress_results") or []
     elif not tier.runs_ai:
         print(f"AI Pass 1 skipped (tier {tier.name})")
+        facts_bundle = None
     else:
         print(f"AI Pass 1 (data gathering + multi-hypothesis catalysts) — model={tier.pass1_model}, web_search≤{tier.pass1_web_search_max}")
+        # 2026-05-30 Stage 0 facts bundle (AI-overlay audit fix). Engine
+        # already fetched profile / targets / pt_news / grades / fundamentals
+        # / sector_perf / macro / short / IV; we ALSO fetch recent_news here
+        # (previously dead code) and reshape everything into a structured
+        # ground-truth envelope. Pass 1 + Pass 2 both receive it so the AI
+        # stops hallucinating analyst names, missing news context, etc.
+        try:
+            recent_news = fetch_recent_news(ticker, api_key, limit=20) or []
+        except Exception as _e:
+            print(f"   ⚠ recent_news fetch failed: {_e!r} — bundle omits news")
+            recent_news = []
+        facts_bundle = build_facts_bundle(
+            ticker=ticker, spot=spot, sigma_blended=blended_sigma,
+            sigma_class=sigma_class, rsi=rsi, mom_5d=mom_5d, mom_30d=mom_30d,
+            ytd_return=ytd_return, horizon_days=horizon_days,
+            peer_tickers=peer_tickers,
+            self_earnings_date=self_earnings_dt,
+            peer_earnings_dates=peer_earnings_dts,
+            profile=profile, analyst_targets=targets, analyst_summary=summary,
+            pt_news=pt_news, grades_history=grades_history,
+            fundamentals=fundamentals, sector_perf=sector_perf, macro=macro,
+            short_data=short_data, iv_data=iv_data, recent_news=recent_news,
+        )
+        bundle_json = bundle_to_prompt_block(facts_bundle)
+        print(f"   Facts bundle: {len(bundle_json)} chars  "
+              f"(pt_revs={facts_bundle.get('pt_revisions_90d_count',0)}, "
+              f"grades={len(facts_bundle.get('grade_changes_90d',[]))}, "
+              f"news={facts_bundle.get('recent_news_30d_count',0)})")
         display_signals_for_prompt = _signals_dict_to_display_list(signals_dict, BLEND_WEIGHTS_V2)
         pass1_prompt = build_ai_pass1_prompt(
             ticker, snapshot, vol_profile, horizon_days, display_signals_for_prompt,
             self_earnings_dt, peer_tickers,
+            facts_bundle_json=bundle_json,
         )
         pass1_raw, pass1_cost, pass1_sources, pass1_status = call_ai_pass(
             pass1_prompt, max_tokens=tier.pass1_max_tokens, pass_label="Pass 1",
@@ -1559,6 +1594,7 @@ def run_pipeline(args) -> int:
         pass2_prompt = build_ai_pass2_prompt(
             ticker, snapshot, pass1, mc_marginal_summary, sigma_summary,
             None, parabola_context=parabola_context,
+            facts_bundle_json=bundle_json,
         )
         # Pass 2 critique uses Sonnet 4.6 (structured-output JSON critique,
         # doesn't need Opus depth) with no web_search (relies on Pass 1's

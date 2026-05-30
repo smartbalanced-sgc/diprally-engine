@@ -76,11 +76,19 @@ def build_ai_pass1_prompt(
     base_signals,
     self_earnings_date,
     peer_tickers,
+    facts_bundle_json: str = "",
 ):
     """Pass 1: data gathering + multi-hypothesis catalyst identification.
 
     Hard mandate: STRUCTURED JSON with ≥5 catalyst candidates, each cited from
     ≥2 distinct sources.
+
+    2026-05-30 facts-bundle integration: `facts_bundle_json` (when non-empty)
+    is included as a ground-truth context block. The bundle contains every
+    structured FMP fact the engine has already fetched (PT revisions, grade
+    changes, news headlines, fundamentals, etc.) — AI must cite the bundle
+    for known facts and reserve web_search for incremental info beyond the
+    bundle. Prior behavior (no bundle) preserved when kwarg is "" / omitted.
     """
     today = snapshot.timestamp.strftime("%Y-%m-%d")
     base_signal_summary = "\n".join(
@@ -92,6 +100,31 @@ def build_ai_pass1_prompt(
         if self_earnings_date else "unknown"
     )
 
+    bundle_block = ""
+    if facts_bundle_json:
+        bundle_block = f"""
+GROUND-TRUTH FACTS BUNDLE — what FMP already knows about {ticker} (JSON):
+{facts_bundle_json}
+
+FACT-CITATION DISCIPLINE — MANDATORY:
+- For ANY fact already in the bundle (PT revisions, grade changes, fundamentals,
+  news headlines, sector perf, earnings date, options IV, short interest, etc.),
+  CITE THE BUNDLE FIELD as your source. Example: "per facts_bundle.pt_revisions_90d
+  entry of 2026-05-28: DA Davidson raised PT to $1,500 from $1,000".
+- Do NOT fabricate analyst names, dates, or values that aren't in the bundle.
+  If the bundle's pt_revisions_90d lists firms ["DA Davidson", "Mizuho",
+  "Barclays", "UBS", "Melius"], name THOSE firms. Do not invent generic
+  bulge-bracket substitutes (BofA / Citi / HSBC) that aren't in the data.
+- Use web_search ONLY for INCREMENTAL info beyond the bundle: news in the
+  last 7 days not already in recent_news_30d, peer-earnings read-throughs
+  not in peer_earnings_in_horizon, sudden geopolitical / regulatory updates,
+  industry-conference takeaways. NOT to re-discover analyst PT changes,
+  grade actions, or fundamentals — those are already in the bundle.
+- Each catalyst's "sources" list must include at least one of: (a) a bundle
+  field reference (e.g. "facts_bundle.pt_revisions_90d[0]"), or (b) a real
+  URL from web_search. Publisher names alone don't count as sources.
+"""
+
     return f"""Analyse {ticker} for a {horizon_days}-trading-day round-trip swing trade.
 Today: {today}. Spot: ${snapshot.spot:.2f}. Sector: {snapshot.sector}.
 σ blended: {vol_profile.blended_sigma:.1%}. RSI: {snapshot.rsi:.1f}. 30d mom: {snapshot.mom_30d:+.1%}. YTD: {snapshot.ytd_return:+.1%}.
@@ -99,6 +132,7 @@ Next own earnings: {earnings_str}. Peers: {', '.join(peer_tickers)}.
 
 Base signal blend (math-derived):
 {base_signal_summary}
+{bundle_block}
 
 OUTPUT — single JSON object. NO PROSE BEFORE OR AFTER. NO MARKDOWN FENCES. STRINGS MUST NOT CONTAIN UNESCAPED NEWLINES. Keep each string < 250 chars.
 
@@ -162,9 +196,15 @@ def build_ai_pass2_prompt(
     sigma_triangulation_summary,
     prior_posterior_drift,
     parabola_context=None,
+    facts_bundle_json: str = "",
 ):
     """Pass 2: ADVERSARIAL critique of Pass 1. Pass 2 drift REPLACES Pass 1
     in the signal blend (#7).
+
+    2026-05-30 facts-bundle integration: `facts_bundle_json` mirrors what
+    Pass 1 saw so Pass 2 can fact-check Pass 1's catalysts against the
+    same ground truth. Pass 2's job is now explicitly: "are Pass 1's
+    catalyst claims supported by the bundle, or did Pass 1 hallucinate?"
     """
     from src.signals import _factor_weight
 
@@ -203,6 +243,21 @@ strong narrative score.
 
 PASS 1 PRODUCED:
 {json.dumps(pass1_summary, indent=2)}
+
+GROUND-TRUTH FACTS BUNDLE (same one Pass 1 was shown — fact-check Pass 1 against this):
+{facts_bundle_json or "(empty — bundle was not provided to Pass 1; cannot cross-check)"}
+
+PASS 2 FACT-CHECK MANDATE:
+- For each Pass 1 catalyst, verify the analyst name / date / PT against the bundle's
+  pt_revisions_90d, grade_changes_90d, or recent_news_30d lists.
+- If Pass 1 named an analyst (e.g. "BofA") that does NOT appear in the bundle's
+  pt_revisions_90d or grade_changes_90d for this ticker, flag as HALLUCINATED
+  and either drop the catalyst or correct the attribution using bundle data.
+- If Pass 1 missed a major item from the bundle (e.g. a +50% PT raise from
+  DA Davidson on 2026-05-28), ADD it to revised_catalysts.
+- Do NOT introduce new catalyst claims that aren't in the bundle and aren't
+  citable to a primary URL. Adversarial critique means tightening Pass 1's
+  fact-base, not inventing additional speculation.
 
 INDEPENDENT MATH LAYER SAYS:
 - σ blended (5-anchor): {sigma_triangulation_summary['blended']:.1%}
