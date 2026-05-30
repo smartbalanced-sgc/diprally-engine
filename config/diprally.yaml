@@ -251,20 +251,29 @@ sigma_classes:
     conviction:
       dip: 0.55                            # was 0.60 — purposeful-swing recalibration 2026-05-24
       rally_conditional: 0.55              # was 0.75 — strict 75% mathematically unachievable at σ>100%
-    # 2026-05-24 recalibration: per-class EV-hurdle + parabola threshold.
-    # Active swing trader's execution alpha (manual stop / move-rally / discretionary
-    # exit) adds ~50-100 bps (0.50-1.00%) above engine point-estimate EV.
-    # Lower hurdle for HIGH/EXTREME reflects this. MID stays at original 50 bps.
-    ev_hurdle_bps: 25                      # was global 50 — adjusted for high-σ regime
+    # 2026-05-31 recalibration after objective-function audit (CLAUDE.md
+    # step 6). The two-stage P(profitable) ranker now picks narrow-rally
+    # /high-hit-rate setups whose net EV naturally sits at 5-30 bps. The
+    # old 25-bp hurdle was calibrated for the max-EV ranker that picked
+    # +25-35% rallies with 100-200 bps EV. Floor is now "math agrees
+    # the trade isn't a guaranteed loss net of friction" — the ranker,
+    # not the floor, selects quality. See tools/diag/objective_audit.py.
+    ev_hurdle_bps: 5                       # was 25 — see objective audit
     parabola_mom_30d_threshold: 2.00       # PR #89: raised 1.00 → 2.00. Calibrated for AI-cycle EXTREME-class continuation (MRAM/LWLG/VELO/INOD repeatedly hit 100-180% mom_30d during the AI bull market without parabolic-reversal). Only flag TRUE doubling-in-month (+200%+) as overheated.
     swing_stop_pct: 0.10                   # 2026-05-30: swing-trader stop -10% below entry. Synth decomp showed EV swings +500bps (+5.00%) with this stop at σ=1.30; without it the bag-hold tail dominates. Tunable per sacred #17.
     grid:
       # PR #86 — grids retuned for 20d horizon (was 60d). Scale factor
       # √(20/60) = 0.577. Smaller ranges keep targets within
       # statistically-reachable regions at the shorter horizon.
+      # 2026-05-31: rally_min_reach_pct moved to YAML at +5%. EXTREME
+      # names (LWLG/MRAM/VELO/INOD) routinely move 10-25% on single-
+      # catalyst days, so +5% is achievable but not intraday noise.
+      # Pre-2026-05-31 value of +1% (hardcoded in engine.py) would let
+      # the new P(profitable) ranker pick degenerate scalps.
       dip_step_pct: 0.010
       rally_step_pct: 0.010
       dip_max_depth_pct: 0.29       # was 0.50 (60d) → ~0.29 at 20d
+      rally_min_reach_pct: 0.05     # 2026-05-31: was hardcoded 0.01 in engine.py
       rally_max_reach_pct: 0.35     # was 0.60 (60d) → ~0.35 at 20d
     friction_bps_round_trip: 70.0
     panic_floor_pct: 0.20            # was 0.35 (60d) → ~0.20 at 20d (must be < dip_max_depth_pct)
@@ -276,13 +285,14 @@ sigma_classes:
     conviction:
       dip: 0.60                            # was 0.65 — purposeful-swing recalibration
       rally_conditional: 0.65              # was 0.75 — strict 75% unachievable at σ 60-100%
-    ev_hurdle_bps: 25                      # was global 50 — active-management alpha
+    ev_hurdle_bps: 5                       # 2026-05-31: was 25 — see objective audit (EXTREME block above)
     parabola_mom_30d_threshold: 1.50       # PR #89: raised 0.80 → 1.50. HIGH-class AI/semi names (MU, ARM, NBIS, INTC, MRVL) routinely hit 80-100% mom_30d during the secular bull cycle without mean-reverting. Only flag REAL blowoffs (+150%/30d) as overheated.
     swing_stop_pct: 0.07                   # 2026-05-30: -7% below entry. HIGH σ ~80-100%, 7% ≈ 1 daily σ, gives normal noise room.
     grid:
       dip_step_pct: 0.0075
       rally_step_pct: 0.0075
       dip_max_depth_pct: 0.20       # was 0.35 (60d) → ~0.20 at 20d
+      rally_min_reach_pct: 0.05     # 2026-05-31: HIGH σ ~80%, +5% target above daily noise (~5%) and bankable on catalyst days
       rally_max_reach_pct: 0.29     # was 0.50 (60d) → ~0.29 at 20d
     friction_bps_round_trip: 35.0
     panic_floor_pct: 0.14            # was 0.25 (60d) → ~0.14 at 20d
@@ -294,13 +304,14 @@ sigma_classes:
     conviction:
       dip: 0.65                            # unchanged — appropriate for low-σ regime
       rally_conditional: 0.70              # unchanged
-    ev_hurdle_bps: 50                      # unchanged — low-σ names have tight EV distributions
+    ev_hurdle_bps: 5                       # 2026-05-31: was 50 — see objective audit (EXTREME block above)
     parabola_mom_30d_threshold: 0.80       # PR #89: raised 0.50 → 0.80. MID-class large-caps (AMAT, LRCX, MOG-A, GHM) generally don't rally >50% in 30 days, but during AI cycle they have (LRCX +60% in past). Calibrate to +80% as true exceptional.
     swing_stop_pct: 0.05                   # 2026-05-30: -5% below entry. MID σ ~30-50%, tight stop sufficient.
     grid:
       dip_step_pct: 0.005
       rally_step_pct: 0.005
       dip_max_depth_pct: 0.12       # was 0.20 (60d) → ~0.12 at 20d
+      rally_min_reach_pct: 0.03     # 2026-05-31: MID σ ~30-45%, +3% target above daily noise (~2%) and is a meaningful swing
       rally_max_reach_pct: 0.18     # was 0.30 (60d) → ~0.18 at 20d
     friction_bps_round_trip: 18.0
     panic_floor_pct: 0.10            # was 0.18 (60d) → ~0.10 at 20d

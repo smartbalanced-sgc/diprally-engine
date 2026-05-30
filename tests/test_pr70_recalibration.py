@@ -43,36 +43,41 @@ from src.config import SIGMA_CLASSES
 # =============================================================================
 
 def test_extreme_class_has_recalibrated_thresholds():
-    """PR #89: parabola threshold raised 1.00 → 2.00 — AI-cycle EXTREME
-    names routinely hit 100-180% mom_30d without parabolic-reversal
-    (MRAM, LWLG, VELO observed +150-180% during the bull cycle)."""
+    """PR #89: parabola threshold raised 1.00 → 2.00.
+    2026-05-31 objective audit: ev_hurdle_bps 25 → 5 — old hurdle was
+    calibrated for max-EV ranker's jackpot picks; new two-stage
+    P(profitable) ranker picks narrow rallies whose net EV naturally
+    sits at 5-30 bps, so 25-bp hurdle systemically blocked legitimate
+    round-trips. 5 bps = noise floor above mission's mathematical floor
+    of 0 (refuse negative-EV)."""
     extreme = SIGMA_CLASSES["EXTREME"]
     assert extreme.conviction.dip == pytest.approx(0.55)
     assert extreme.conviction.rally_conditional == pytest.approx(0.55)
-    assert extreme.ev_hurdle_bps == pytest.approx(25.0)
+    assert extreme.ev_hurdle_bps == pytest.approx(5.0)
     assert extreme.parabola_mom_30d_threshold == pytest.approx(2.00)
 
 
 def test_high_class_has_recalibrated_thresholds():
-    """PR #89: parabola threshold raised 0.80 → 1.50 — AI-cycle HIGH
-    names (MU, ARM, NBIS, INTC) routinely hit 80-100% mom_30d without
-    mean-reverting during the secular bull cycle."""
+    """PR #89: parabola threshold raised 0.80 → 1.50.
+    2026-05-31: ev_hurdle_bps 25 → 5 (same rationale as EXTREME)."""
     high = SIGMA_CLASSES["HIGH"]
     assert high.conviction.dip == pytest.approx(0.60)
     assert high.conviction.rally_conditional == pytest.approx(0.65)
-    assert high.ev_hurdle_bps == pytest.approx(25.0)
+    assert high.ev_hurdle_bps == pytest.approx(5.0)
     assert high.parabola_mom_30d_threshold == pytest.approx(1.50)
 
 
 def test_mid_class_recalibrated_for_ai_cycle():
-    """PR #89: MID parabola threshold raised 0.50 → 0.80. Established
-    large-caps RARELY rally >50% in 30 days in normal markets, but AI-
-    cycle MID names (LRCX, AMAT) have done so. Threshold now flags
-    only true exceptional moves."""
+    """PR #89: MID parabola threshold raised 0.50 → 0.80.
+    2026-05-31: ev_hurdle_bps 50 → 5. Even MID's tighter EV
+    distribution doesn't need a 50-bp hurdle — that was a quality bar,
+    not a floor. The new ranker selects quality via P(profitable);
+    sacred #13's role is just "refuse trades the math says lose
+    money net of friction"."""
     mid = SIGMA_CLASSES["MID"]
     assert mid.conviction.dip == pytest.approx(0.65)
     assert mid.conviction.rally_conditional == pytest.approx(0.70)
-    assert mid.ev_hurdle_bps == pytest.approx(50.0)
+    assert mid.ev_hurdle_bps == pytest.approx(5.0)
     assert mid.parabola_mom_30d_threshold == pytest.approx(0.80)
 
 

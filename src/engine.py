@@ -451,7 +451,13 @@ def scan_dip_rally_grid(
     rally_step = S0 * class_grid.rally_step_pct
     dip_min = S0 * (1.0 - class_grid.dip_max_depth_pct)
     dip_max = S0 * 0.99
-    rally_min = S0 * 1.01
+    # 2026-05-31 — was hardcoded 1.01 (always +1% above spot). Sacred
+    # #17 violation + degenerate-scalp risk under the new P(profitable)
+    # ranker (which prefers narrow rallies). Now σ-class-driven in YAML
+    # so EXTREME/HIGH names get a +5% floor (above intraday noise) and
+    # MID gets +3%. Operator tunes as real picks reveal whether the
+    # floor is binding (picks land exactly at floor) or just a backstop.
+    rally_min = S0 * (1.0 + class_grid.rally_min_reach_pct)
     rally_max = S0 * (1.0 + class_grid.rally_max_reach_pct)
 
     dip_grid = np.arange(dip_min, dip_max, dip_step)

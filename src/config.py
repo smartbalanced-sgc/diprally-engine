@@ -108,6 +108,13 @@ class SigmaClassGridConfig(_StrictModel):
     rally_step_pct: float = Field(gt=0.0, lt=1.0)
     dip_max_depth_pct: float = Field(gt=0.0, lt=1.0)
     rally_max_reach_pct: float = Field(gt=0.0)
+    # Minimum rally distance above spot for the grid scan. Used to be
+    # hardcoded at 1% in engine.py — but a +1% target on an EXTREME-σ
+    # name (daily noise ~7%) is an intraday scalp, not a 20-day swing.
+    # Moved to YAML per sacred #17 with sensible σ-class defaults:
+    # MID +3%, HIGH/EXTREME +5%. Tunable as the new P(profitable) ranker
+    # exposes how often picks land at the floor (binding) vs above.
+    rally_min_reach_pct: float = Field(gt=0.0, lt=1.0, default=0.01)
 
 
 class SigmaClassThresholdConfig(_StrictModel):

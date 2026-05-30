@@ -44,6 +44,16 @@ negative-EV setups.
   chat or in engine output / reports — ALWAYS add the percentage equivalent in
   parentheses. E.g. 100 bps (1%), 25 bps (0.25%), 182 bps (1.82%). 1 bp = 0.01%
   always. Never drop the percentage gloss.
+- **Plain English + scenarios (CANON)**: Jesse is NOT a quant. Any technical
+  concept — EV, drift, σ, Bayesian, Brownian bridge, Sharpe, friction, MC, PDE,
+  GARCH, hit rate, expected value, Kelly, Sortino, posterior — must be
+  explained in everyday-language analogies with concrete scenarios BEFORE the
+  jargon, not as an aside. Pretend you're explaining to a smart friend who has
+  never taken a finance class. Use poker hands, coin flips, store inventory,
+  weather forecasting, household budgets — whatever maps the math to lived
+  experience. Skip the analogy and the diagnosis is wasted: Jesse can't act on
+  what he can't follow. Jargon AFTER the scenario is fine ("...this is what
+  finance textbooks call expected value"). Jargon FIRST is the failure mode.
 
 ## Asking questions
 - ALWAYS explain each question in plain English first (what the question is
@@ -166,10 +176,14 @@ deliverable is a ranked defect list, never reassurance.
   model's mathematical or statistical integrity): #1-12, 15-17.
 - **Calibration thresholds** (these LOOK like sacred rules but are YAML
   values that must be recalibrated as market regimes shift): #13 EV hurdle,
-  #14 trend filter threshold, #18 parabola thresholds. When the engine
-  produces structurally extreme output (0 BUYs, all-refuse), interrogate
-  these first. Recalibrating a YAML threshold is NOT a sacred violation —
-  it is the correct response to a miscalibrated engine.
+  #14 trend filter threshold, #18 parabola thresholds, plus the per-class
+  `rally_min_reach_pct` grid floor (added 2026-05-31; was hardcoded at
+  +1% in engine.py, moved to YAML at MID +3% / HIGH +5% / EXTREME +5%
+  to prevent the new P(profitable) ranker from picking degenerate
+  intraday scalps). When the engine produces structurally extreme output
+  (0 BUYs, all-refuse), interrogate these first. Recalibrating a YAML
+  threshold is NOT a sacred violation — it is the correct response to
+  a miscalibrated engine.
  1. No block bootstrap
  2. No multi-step vol forecast
  3. No synthesized reliability score (components shown separately)
@@ -183,16 +197,24 @@ deliverable is a ranked defect list, never reassurance.
 11. Same-day CSV dedup — one canonical row per (ticker, date)
 12. Bayesian prior across days with same-day artifact guard
 13. EV-hurdle gate — refuse to recommend if EV < σ-class threshold of dip
-    after friction. σ-class thresholds (PR #70): MID 50 bps (0.50%);
-    HIGH and EXTREME 25 bps (0.25%) — the lower hurdle on HIGH/EXTREME
-    acknowledges that the engine's "blind execution" EV estimate
-    understates realized EV for active swing traders who time entry/exit
-    discretionarily (sacred #6 — trader sizes / manages externally).
-    **Calibration note**: EXTREME friction is 70 bps (0.70%) RT, so
-    EXTREME names need 95 bps (0.95%) gross EV just to clear the gate.
-    With pure GBM (mean reversion OFF by default), this is achievable but
-    tight. If 0-BUY persists, interrogate friction bps and EV hurdle as a
-    combined threshold — they are YAML values, not architectural constants.
+    after friction. **Current calibration (2026-05-31 post-objective-audit)**:
+    MID / HIGH / EXTREME all at 5 bps (0.05%) — essentially "must be
+    positive net of friction" with a small noise margin. Sacred #13 is
+    a FLOOR, not a quality bar. The two-stage ranker (introduced
+    2026-05-30) picks among hurdle-clearers by P(profitable round-trip);
+    the hurdle does not need to encode trade quality.
+    **History**: pre-audit, hurdles were 50 bps (0.50%) MID and 25 bps
+    (0.25%) HIGH/EXTREME — calibrated for the legacy max-EV ranker that
+    picked jackpot setups (rally +25-35% above spot, gross EV 100-200 bps).
+    When the new ranker started picking narrow rallies (gross EV
+    30-80 bps), the old hurdle systemically blocked legitimate round-
+    trips — root cause of 2026-05-31's 0-BUY-across-5 roster run.
+    **Recalibration trigger**: if real-roster picks show median net EV
+    drifting below 10 bps for weeks, OR if persistent 0-BUY returns,
+    interrogate friction bps, rally_min_reach_pct, and hurdle together.
+    They are YAML values, not architectural constants. The mathematical
+    floor is 0 bps (mission's "refuse negative-EV"); 5 bps is the
+    noise margin for MC sampling + drift posterior uncertainty.
 14. Trend filter — refuse dip if 30d momentum < -25% AND no fundamental
     catalyst. **Calibration note**: this threshold is GLOBAL (not σ-class
     adjusted). At EXTREME σ≈130%, a 30-day 1σ move is ~36%, so a -25%
