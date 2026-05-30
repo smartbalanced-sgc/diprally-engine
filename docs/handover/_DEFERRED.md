@@ -15,6 +15,116 @@ Capture protocol (append new finds under "Open items"):
 
 # OPEN ITEMS
 
+## Operational
+
+### D-2026-3. Stale `output/round_trip_history_*.csv` from sidelined tickers pollute the falsify harness
+- **Discovered**: 2026-05-30 falsify_buy.py harness output. After the 5-name
+  cull (commit 14d59e1), the harness still reads CSVs for the 21 sidelined
+  tickers (ADBE/ANAB/ASTS/CRDO/...) — frozen at their pre-fix values, never
+  re-run. Histogram shows "3 BUYs / 36 total" when reality is "3 BUYs / 5
+  active fresh rows."
+- **Severity**: COSMETIC but actively MISLEADING when reading the harness.
+  Hides the real signal.
+- **Fix candidates**: (a) one-time `rm output/round_trip_history_<sidelined>.csv`
+  before next Pass B run; (b) recency filter in `falsify_buy.py` so it only
+  counts CSVs touched within the last 24h. (a) is simpler; (b) is more
+  durable across future cull/expand cycles.
+- **Timing**: ACTION NOW — bundle with the next falsify_buy.py run so the
+  histogram reads cleanly on Pass B.
+
+### D-2026-4. Text report does not give DIRECT and WAIT-FOR-DIP equal billing
+- **Discovered**: 2026-05-30 LWLG interrogation. The `verdict_subtype` column
+  surfaces which strategy WON (max-EV), but the text report headline may
+  bury the losing branch's EV. CSV has both ev_direct_bps + ev_wait_bps;
+  reporter.format_report likely surfaces only the chosen one prominently.
+- **Operator intent**: see BOTH numbers so the trader picks the strategy
+  themselves ("I'm willing to wait" vs "enter now"). CLAUDE.md sacred #6:
+  trader sizes externally, makes strategy choice externally.
+- **Fix**: audit `src/reporter.py` `format_report` and `_headline_card` —
+  ensure both ev_direct_bps and ev_wait_bps are surfaced equally with
+  recommended dip/spot prices for each. Add a "if entering now: …" vs
+  "if waiting for dip: …" section side-by-side.
+- **Timing**: AFTER the engine is producing reliable BUYs on the full
+  cohort (post Pass B + 26-name re-expansion). The data is already there;
+  this is purely presentation.
+
+### D-2026-5. Sacred #16 method-disagreement audit on MID names
+- **Discovered**: 2026-05-30 falsify baseline runs. 6 of 6 REFUSED-METHOD
+  refusals are MID-class (AVGO/CEG/LRCX/PLTR/SATS/STX). All show
+  `| METHOD,EV` in the joint-refusal column → would refuse on EV too if
+  method didn't fire first. Sacred #16 tolerance is σ-scaled; at MID
+  σ=0.40-0.50 the tolerance is tight.
+- **Question**: is sacred #16's MID tolerance miscalibrated post-stop-layer +
+  post-MR-re-aim? MR changes the MC paths (more restoration) without
+  changing the PDE math (no MR term in `pde_two_barrier`). Could widen MC
+  vs PDE divergence on MID names that the PDE didn't account for.
+- **Fix candidates**: (a) audit `three_method_cross_check` tolerance formula
+  with MR-enabled MC paths; (b) extend `pde_two_barrier` to model MR (PR
+  scope creep — only if (a) shows real divergence); (c) per-σ-class
+  tolerance multipliers in YAML.
+- **Timing**: AFTER 26-name re-expansion (D-2026-7) — need to see how
+  many active MID names hit REFUSED-METHOD on fresh runs, not stale CSVs.
+
+### D-2026-6. ARM/AMAT marginal-setup interrogation
+- **Discovered**: 2026-05-30 post-MR-re-aim falsify baseline. ARM
+  (+14 bps vs 25 bps hurdle, short by 11 bps) and AMAT (+29 bps vs 50 bps
+  hurdle, short by 21 bps) are near-miss after both math fixes. Math says
+  "real but insufficient edge" at T0.
+- **Question**: do AI catalysts close the gap via Bayesian μ revision
+  (the expected behavior), OR is there a structural issue with the dip/rally
+  grid placement for low-σ HIGH and MID names? AMAT specifically may be
+  facing the joint-conviction-unreachability my synth flagged earlier.
+- **Fix candidates**: defer until Pass B data arrives. If Pass B's T2
+  catalyst overlay lifts both over the hurdle → no defect, math working as
+  designed. If T2 doesn't help → interrogate grid placement, MID conviction
+  thresholds (0.65 dip / 0.70 rally|dip), and whether MID's swing_stop_pct=5%
+  is too tight at σ=0.45.
+- **Timing**: IMMEDIATELY AFTER Pass B (D-2026-7 trigger).
+
+### D-2026-7. Re-expand 5-name cohort back to 26-name institutional roster
+- **Discovered**: 2026-05-30 cull commit (14d59e1). Cull was a temporary
+  iteration measure; 21 names sit in `tickers_scratch:` with full metadata.
+- **Prerequisite**: Pass B confirms LWLG/MU/RKLB BUYs survive AI catalyst
+  review (no regime-change refusal). ARM/AMAT interrogation complete.
+- **Risk**: wider universe may surface edge cases the 5-name cohort
+  didn't (limited-history names like VELO/CRWV/NBIS/INOD; biotech binary
+  catalyst names like ENGN/ANAB; method-disagreement candidates like
+  LRCX/STX). Each could become a follow-up D-item.
+- **Timing**: AFTER D-2026-6 (ARM/AMAT interrogation). YAML edit only,
+  reversible — move the 21 entries back from `tickers_scratch:` to
+  `tickers:`.
+
+### D-2026-8. patience_window_td=40 silently inert at horizon=20
+- **Discovered**: 2026-05-30 stop-layer audit. `wait_exit_idx = min(dip_first
+  + patience_window_td, n_days - 1)` clamps to 19 every time when
+  patience_window_td (40) ≥ n_days (20). The YAML key documents a 40-td
+  hold window but the math behaves like "hold to horizon end." Probe at
+  patience=10 shows EV does change with smaller patience.
+- **Severity**: LATENT — doesn't break the engine, but the configured value
+  is silently meaningless. Operator may tune it expecting an effect.
+- **Fix candidates**: (a) align patience_window_td to horizon_days
+  (set default to 15 td or so, < horizon); (b) clarify YAML comment + log a
+  warning when patience ≥ horizon; (c) remove the field entirely and use
+  horizon - some_buffer.
+- **Timing**: PARALLEL to D-2026-5 audit. Low priority.
+
+### D-2026-9. Stop slippage at high σ (instant-fill assumption gap)
+- **Discovered**: 2026-05-30 stop-layer design. `compute_dual_ev` assumes
+  the stop fills at exactly `stop_level - friction`. At EXTREME σ=148%
+  daily σ ≈ 9.4%, overnight gaps could blow through the stop by 5-10%
+  before fill. Slippage modeled in friction term collectively but not
+  per-leg.
+- **Severity**: REAL — under-states left-tail loss on EXTREME names. The
+  engine's EV is therefore optimistic by ~30-50 bps (0.30-0.50%) on
+  EXTREME names where gap-down stops are common.
+- **Fix candidates**: (a) per-leg friction (entry vs exit) with exit
+  friction scaled to volatility; (b) explicit gap-slippage term in YAML
+  per σ-class (e.g. EXTREME 0.005 = 50 bps additional slippage); (c)
+  worst-of-day fill model in compute_dual_ev (path low instead of
+  stop_level on stop-hit days).
+- **Timing**: AFTER 26-name re-expansion (D-2026-7) shows accumulating
+  realized stop-out data. Calibrate against actual fill prices, not synth.
+
 ## Data-gated (need ~30 days of realized-outcome CSV to pick the final fix)
 
 > All four below shipped INTERIM mitigations and are waiting on Brier-score
