@@ -550,28 +550,28 @@ def compute_dual_ev(
     dip_first_days: Optional[np.ndarray] = None,
     rally_first_days: Optional[np.ndarray] = None,
     patience_window_td: Optional[int] = None,
+    swing_stop_pct: Optional[float] = None,
+    friction_per_share_direct: Optional[float] = None,
 ) -> dict:
     """PR #86 — compute EV under BOTH entry strategies on the same MC paths.
 
     Returns dict with:
-        ev_direct_per_share:  Enter at spot now. Exit at rally if touched.
-                               Else hold to T. Single-path payoff:
-                                 max(path) >= rally → rally - spot - friction
-                                 else              → terminal - spot - friction
+        ev_direct_per_share:  Enter at spot now. Exit at rally if touched,
+                               at stop if touched first, else hold to window
+                               end. Single-path payoff:
+                                 stop_first → stop_level - spot - friction
+                                 rally_first → rally - spot - friction
+                                 neither    → window_exit - spot - friction
         ev_direct_pct_of_spot: EV expressed as % of entry (spot).
-        ev_wait_per_share:    Wait for dip. If touched, enter at dip. Exit at
-                               rally if touched AFTER dip, else hold to T. If
-                               dip never touched, no entry, payoff = 0.
+        ev_wait_per_share:    Wait for dip. If touched, enter at dip. Then:
+                                 stop_first → stop_level - dip - friction
+                                 rally_first → rally - dip - friction
+                                 neither    → window_exit - dip - friction
+                               If dip never touched, no entry, payoff = 0.
         ev_wait_pct_of_dip:   EV expressed as % of entry (dip).
-        p_dip_filled:         P(dip touched at all) — the fill probability
-                               for the wait strategy. Used to gate display
-                               via min_dip_probability.
-        p_rally_hit:          P(rally touched ever) — used for direct-entry
-                               win probability display.
-        p_bag_hold:           P(dip touched, rally NEVER) — the loss case
-                               for wait strategy.
-        bag_hold_terminal_mean / median: mean / median terminal price for
-                               bag-hold paths (informational for risk display).
+        p_dip_filled / p_rally_hit / p_bag_hold / p_stopped_*:
+                              fill / stop / hit probabilities for the UI.
+        bag_hold_terminal_*:  terminal stats on the no-rally no-stop tail.
 
     Sacred decision evolution (PR #86): drops the strict round-trip
     orthodoxy. The engine now reports BOTH entry strategies and picks the
@@ -589,35 +589,82 @@ def compute_dual_ev(
     the horizon-end terminal. The window applies to BOTH entries (DIRECT
     entry = day 0; WAIT entry = the dip-touch day) so strategy selection
     isn't biased by an asymmetric exit rule.
+
+    2026-05-30 swing-stop layer: `swing_stop_pct` is the swing-trader stop
+    expressed as a fraction below entry (e.g. 0.10 = -10%). DIRECT branch
+    stop = S0 * (1 - swing_stop_pct); WAIT branch stop = dip_price *
+    (1 - swing_stop_pct). When a path hits the stop BEFORE the rally
+    barrier (and after entry for WAIT), the position exits at exactly
+    stop_level - friction (instant fill convention; slippage is in the
+    friction term). Without this stop layer the bag-hold tail at high σ
+    dominates EV by hundreds of bps — see tools/diag/decomp_ev.py for the
+    attribution sweep that motivated this. None / 0.0 = no stop (pre-2026-05-30
+    behavior preserved exactly for backward compat).
+
+    `friction_per_share_direct` lets the caller pass a separately-computed
+    friction for the DIRECT branch (entry at S0, not dip). When None,
+    falls back to `friction_per_share` for backward compatibility.
     """
     n_paths, n_days = paths.shape
     days_idx = np.arange(n_days)[None, :]
+    fric_wait = friction_per_share
+    fric_direct = (
+        friction_per_share if friction_per_share_direct is None
+        else friction_per_share_direct
+    )
+    use_stop = swing_stop_pct is not None and swing_stop_pct > 0.0
 
     # === DIRECT entry payoffs ===
     # Entry at spot (day 0). Rally credited if touched within the patience
     # window; otherwise exit at the window-end price (or terminal if no
-    # window / window past horizon).
+    # window / window past horizon). Stop-out (if configured) overrides
+    # both when its first-touch precedes the rally's first-touch.
     if patience_window_td is None:
-        rally_touched = paths.max(axis=1) >= rally_price
+        direct_window = np.ones((1, n_days), dtype=bool)
         direct_exit_price = paths[:, -1]
     else:
         direct_window = days_idx <= patience_window_td
-        rally_touched = ((paths >= rally_price) & direct_window).any(axis=1)
         direct_exit_idx = min(patience_window_td, n_days - 1)
         direct_exit_price = paths[:, direct_exit_idx]
-    payoff_direct_per_path = np.where(
-        rally_touched,
-        rally_price - S0 - friction_per_share,
-        direct_exit_price - S0 - friction_per_share,
+
+    direct_rally_mask = (paths >= rally_price) & direct_window
+    rally_touched = direct_rally_mask.any(axis=1)
+    rally_first_direct = np.where(
+        rally_touched, direct_rally_mask.argmax(axis=1), n_days,
     )
+
+    if use_stop:
+        stop_level_direct = S0 * (1.0 - swing_stop_pct)
+        direct_stop_mask = (paths <= stop_level_direct) & direct_window
+        stop_hit_direct = direct_stop_mask.any(axis=1)
+        stop_first_direct = np.where(
+            stop_hit_direct, direct_stop_mask.argmax(axis=1), n_days,
+        )
+        stopped_first_direct = stop_hit_direct & (
+            stop_first_direct < rally_first_direct
+        )
+        payoff_direct_per_path = np.where(
+            stopped_first_direct,
+            stop_level_direct - S0 - fric_direct,
+            np.where(
+                rally_touched,
+                rally_price - S0 - fric_direct,
+                direct_exit_price - S0 - fric_direct,
+            ),
+        )
+    else:
+        stopped_first_direct = np.zeros(n_paths, dtype=bool)
+        payoff_direct_per_path = np.where(
+            rally_touched,
+            rally_price - S0 - fric_direct,
+            direct_exit_price - S0 - fric_direct,
+        )
     ev_direct_per_share = float(payoff_direct_per_path.mean())
     ev_direct_pct_of_spot = ev_direct_per_share / S0 if S0 > 0 else 0.0
 
     # === WAIT-FOR-DIP entry payoffs ===
     # Find first dip touch per path. If never touched, payoff = 0 (no fill).
-    # If touched, then check rally AFTER dip:
-    #   touched after dip → payoff = rally - dip - friction
-    #   not touched after → payoff = terminal - dip - friction (bag hold)
+    # If touched, then check rally / stop AFTER dip; first-touch wins.
     if dip_first_days is None:
         dip_touched_mask = paths <= dip_price
         dip_any = dip_touched_mask.any(axis=1)
@@ -628,39 +675,67 @@ def compute_dual_ev(
 
     after_dip_mask = days_idx >= dip_first[:, None]
     if patience_window_td is None:
-        rally_after_dip = ((paths >= rally_price) & after_dip_mask).any(axis=1)
+        within_window = after_dip_mask
         wait_exit_price = paths[:, -1]
     else:
         within_window = after_dip_mask & (
             days_idx <= (dip_first[:, None] + patience_window_td)
         )
-        rally_after_dip = ((paths >= rally_price) & within_window).any(axis=1)
-        # Time-stop exit at entry+window (clamped to horizon). No-fill rows
-        # (dip_first == n_days) clamp to the terminal but are masked out below.
         wait_exit_idx = np.minimum(
             dip_first + patience_window_td, n_days - 1
         ).astype(int)
         wait_exit_price = paths[np.arange(n_paths), wait_exit_idx]
 
-    rt_payoff = rally_price - dip_price - friction_per_share
-    bag_payoff_per_path = wait_exit_price - dip_price - friction_per_share
-
-    payoff_wait_per_path = np.where(
-        ~dip_any,
-        0.0,  # no fill → no payoff
-        np.where(
-            rally_after_dip,
-            rt_payoff,
-            bag_payoff_per_path,
-        ),
+    wait_rally_mask = (paths >= rally_price) & within_window
+    rally_after_dip = wait_rally_mask.any(axis=1)
+    rally_first_wait = np.where(
+        rally_after_dip, wait_rally_mask.argmax(axis=1), n_days,
     )
+
+    rt_payoff = rally_price - dip_price - fric_wait
+    bag_payoff_per_path = wait_exit_price - dip_price - fric_wait
+
+    if use_stop:
+        stop_level_wait = dip_price * (1.0 - swing_stop_pct)
+        wait_stop_mask = (paths <= stop_level_wait) & within_window
+        stop_hit_wait = wait_stop_mask.any(axis=1)
+        stop_first_wait = np.where(
+            stop_hit_wait, wait_stop_mask.argmax(axis=1), n_days,
+        )
+        stopped_first_wait = stop_hit_wait & (
+            stop_first_wait < rally_first_wait
+        )
+        stop_payoff_wait = stop_level_wait - dip_price - fric_wait
+        payoff_wait_per_path = np.where(
+            ~dip_any,
+            0.0,
+            np.where(
+                stopped_first_wait,
+                stop_payoff_wait,
+                np.where(rally_after_dip, rt_payoff, bag_payoff_per_path),
+            ),
+        )
+    else:
+        stopped_first_wait = np.zeros(n_paths, dtype=bool)
+        payoff_wait_per_path = np.where(
+            ~dip_any,
+            0.0,
+            np.where(
+                rally_after_dip,
+                rt_payoff,
+                bag_payoff_per_path,
+            ),
+        )
     ev_wait_per_share = float(payoff_wait_per_path.mean())
     ev_wait_pct_of_dip = (
         ev_wait_per_share / dip_price if dip_price > 0 else 0.0
     )
 
-    # Bag-hold statistics for risk display
-    bag_hold_mask = dip_any & ~rally_after_dip
+    # Bag-hold statistics for risk display. Bag-hold = entered (dip touched)
+    # but exited without rally AND without stop — the residual no-stop
+    # tail. When the stop layer is active most of the old bag-hold mass
+    # moves into the stopped bucket, leaving only the slow-bleed tail here.
+    bag_hold_mask = dip_any & ~rally_after_dip & ~stopped_first_wait
     if bag_hold_mask.any():
         bag_terminal_prices = paths[bag_hold_mask][:, -1]
         bag_terminal_mean = float(bag_terminal_prices.mean())
@@ -677,6 +752,8 @@ def compute_dual_ev(
         "p_dip_filled": float(dip_any.mean()),
         "p_rally_hit": float(rally_touched.mean()),
         "p_bag_hold": float(bag_hold_mask.mean()),
+        "p_stopped_direct": float(stopped_first_direct.mean()),
+        "p_stopped_wait": float(stopped_first_wait.mean()),
         "bag_terminal_mean": bag_terminal_mean,
         "bag_terminal_median": bag_terminal_median,
         "p_round_trip_strict": float((dip_any & rally_after_dip).mean()),

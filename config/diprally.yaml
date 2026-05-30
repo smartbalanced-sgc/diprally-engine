@@ -257,6 +257,7 @@ sigma_classes:
     # Lower hurdle for HIGH/EXTREME reflects this. MID stays at original 50 bps.
     ev_hurdle_bps: 25                      # was global 50 — adjusted for high-σ regime
     parabola_mom_30d_threshold: 2.00       # PR #89: raised 1.00 → 2.00. Calibrated for AI-cycle EXTREME-class continuation (MRAM/LWLG/VELO/INOD repeatedly hit 100-180% mom_30d during the AI bull market without parabolic-reversal). Only flag TRUE doubling-in-month (+200%+) as overheated.
+    swing_stop_pct: 0.10                   # 2026-05-30: swing-trader stop -10% below entry. Synth decomp showed EV swings +500bps (+5.00%) with this stop at σ=1.30; without it the bag-hold tail dominates. Tunable per sacred #17.
     grid:
       # PR #86 — grids retuned for 20d horizon (was 60d). Scale factor
       # √(20/60) = 0.577. Smaller ranges keep targets within
@@ -277,6 +278,7 @@ sigma_classes:
       rally_conditional: 0.65              # was 0.75 — strict 75% unachievable at σ 60-100%
     ev_hurdle_bps: 25                      # was global 50 — active-management alpha
     parabola_mom_30d_threshold: 1.50       # PR #89: raised 0.80 → 1.50. HIGH-class AI/semi names (MU, ARM, NBIS, INTC, MRVL) routinely hit 80-100% mom_30d during the secular bull cycle without mean-reverting. Only flag REAL blowoffs (+150%/30d) as overheated.
+    swing_stop_pct: 0.07                   # 2026-05-30: -7% below entry. HIGH σ ~80-100%, 7% ≈ 1 daily σ, gives normal noise room.
     grid:
       dip_step_pct: 0.0075
       rally_step_pct: 0.0075
@@ -294,6 +296,7 @@ sigma_classes:
       rally_conditional: 0.70              # unchanged
     ev_hurdle_bps: 50                      # unchanged — low-σ names have tight EV distributions
     parabola_mom_30d_threshold: 0.80       # PR #89: raised 0.50 → 0.80. MID-class large-caps (AMAT, LRCX, MOG-A, GHM) generally don't rally >50% in 30 days, but during AI cycle they have (LRCX +60% in past). Calibrate to +80% as true exceptional.
+    swing_stop_pct: 0.05                   # 2026-05-30: -5% below entry. MID σ ~30-50%, tight stop sufficient.
     grid:
       dip_step_pct: 0.005
       rally_step_pct: 0.005

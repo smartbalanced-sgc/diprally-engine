@@ -129,6 +129,11 @@ class SigmaClassThresholdConfig(_StrictModel):
     # updated. Always present in the shipped config.
     ev_hurdle_bps: Optional[float] = Field(default=None, ge=0.0)
     parabola_mom_30d_threshold: Optional[float] = Field(default=None, ge=0.0)
+    # 2026-05-30 swing-stop layer: fraction below entry at which the swing
+    # trader cuts a stale / inverted position. Distinct from panic_floor_pct
+    # (catastrophic survival floor). None / unset = no stop (legacy
+    # "hold-to-terminal" EV math, restored for backward compatibility).
+    swing_stop_pct: Optional[float] = Field(default=None, gt=0.0, lt=1.0)
 
 
 class HorizonConfig(_StrictModel):

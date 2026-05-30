@@ -471,11 +471,17 @@ def scan_dip_rally_grid(
 
             # PR #23: round-trip friction proportional to average leg
             # notional. Two legs at their respective prices; bps_rt
-            # spread across the trip.
-            friction_per_share = (
+            # spread across the trip. WAIT entry leg is at dip; DIRECT
+            # entry leg is at S0 — 2026-05-30 fix: each branch now sees
+            # its own friction so the DIRECT EV isn't penalized for
+            # transacting at a leg it never touches.
+            friction_per_share_wait = (
                 (float(dip) + float(rally)) / 2.0 * friction_bps_rt / 10000.0
             )
-            gain_per_share = float(rally) - float(dip) - friction_per_share
+            friction_per_share_direct = (
+                (S0 + float(rally)) / 2.0 * friction_bps_rt / 10000.0
+            )
+            gain_per_share = float(rally) - float(dip) - friction_per_share_wait
             bag_hold_loss_per_share = float(dip) - result["bag_hold_terminal_median"]
 
             # PR #86 — DUAL-EV. Compute EV under BOTH entry strategies on the
@@ -483,12 +489,18 @@ def scan_dip_rally_grid(
             # the engine used pre-PR-#86. The direct-entry EV adds the value
             # of entering at spot and exiting at the rally target if it gets
             # touched (the previously-discarded "rally first" paths now
-            # contribute positively).
+            # contribute positively). 2026-05-30: swing_stop_pct from the
+            # σ-class entry adds a stop-out layer to both branches.
+            class_swing_stop = getattr(
+                SIGMA_CLASSES[sigma_class], "swing_stop_pct", None
+            )
             dual = compute_dual_ev(
-                paths, S0, float(dip), float(rally), friction_per_share,
+                paths, S0, float(dip), float(rally), friction_per_share_wait,
                 dip_first_days=dip_first_days_all[:, i],
                 rally_first_days=rally_first_days_all[:, j],
                 patience_window_td=PATIENCE_WINDOW_TD,
+                swing_stop_pct=class_swing_stop,
+                friction_per_share_direct=friction_per_share_direct,
             )
 
             # Apply min_dip_probability gate — if the wait strategy has too
