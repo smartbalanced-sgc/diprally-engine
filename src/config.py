@@ -306,8 +306,14 @@ class BayesianConfig(_StrictModel):
 
 
 class MeanReversionConfig(_StrictModel):
-    """D-W2-7: mean-reversion anchor position when MR enabled via CLI."""
-    anchor_pct_below_spot: float = Field(ge=0.0, lt=1.0)
+    """D-W2-7 + 2026-05-30 re-aim. Anchor position is the mean-reversion
+    target relative to spot; positive = above spot, negative = below.
+    default_strength: k coefficient applied per-step in run_mc_joint_conditional;
+    when 0.0 the layer is inert. anchor_pct_above_spot replaces the old
+    anchor_pct_below_spot (sign-inverted; the rename forces a YAML migration
+    rather than silently flipping behavior on existing configs)."""
+    anchor_pct_above_spot: float = Field(ge=-0.50, le=0.50)
+    default_strength: float = Field(ge=0.0, le=20.0)
 
 
 class Pass2PromptConfig(_StrictModel):
@@ -789,8 +795,9 @@ def _rebind_module_constants() -> None:
     g["BAYESIAN_STD_FLOOR"] = _CONFIG.bayesian.std_floor
     g["BAYESIAN_DEFAULT_TODAY_STD"] = _CONFIG.bayesian.default_today_std_when_blend_fails
 
-    # Mean reversion + Pass 2 prompt (D-W2-7)
-    g["MEAN_REVERSION_ANCHOR_PCT_BELOW_SPOT"] = _CONFIG.mean_reversion.anchor_pct_below_spot
+    # Mean reversion + Pass 2 prompt (D-W2-7 + 2026-05-30 re-aim)
+    g["MEAN_REVERSION_ANCHOR_PCT_ABOVE_SPOT"] = _CONFIG.mean_reversion.anchor_pct_above_spot
+    g["MEAN_REVERSION_DEFAULT_STRENGTH"] = _CONFIG.mean_reversion.default_strength
     g["PASS2_CLOSED_FORM_BRACKET_PCT"] = _CONFIG.pass2_prompt.closed_form_bracket_pct
 
     # Sensitivity scenarios (D-W2-7) — list of dicts for downstream consumers

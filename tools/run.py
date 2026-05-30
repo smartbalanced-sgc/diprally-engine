@@ -34,8 +34,13 @@ def main():
                    help="Conditional P(rally|dip) threshold. When omitted, uses "
                         "the σ-class default from config/diprally.yaml's "
                         "sigma_classes table (EXTREME/HIGH 0.75, MID 0.70).")
-    p.add_argument("--mean-reversion", type=float, default=0.0,
-                   help="Mean-reversion strength (default 0.0 = OFF; try 0.05/0.10/0.20 for sensitivity)")
+    p.add_argument("--mean-reversion", type=float, default=None,
+                   help="Mean-reversion strength k. When omitted, uses the YAML "
+                        "mean_reversion.default_strength (default 2.0, ON as of "
+                        "2026-05-30 re-aim). Explicit 0.0 disables. Try 5.0/10.0 "
+                        "for stronger reversion; values above ~5 risk false-"
+                        "positive BUYs on impaired-thesis names — see "
+                        "tools/diag/mr_anchor_probe.py.")
     p.add_argument("--no-ai", action="store_true",
                    help="Skip all AI calls (math + backtest only). Equivalent to --tier T0.")
     p.add_argument("--tier", choices=("T0", "T1", "T2", "T3"), default="T3",

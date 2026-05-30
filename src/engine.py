@@ -47,7 +47,8 @@ from src.config import (
     EV_HURDLE_BPS_OF_DIP,
     GARCH_FALLBACK_SIGMA,
     GRID_PREFILTER_LOOSENESS,
-    MEAN_REVERSION_ANCHOR_PCT_BELOW_SPOT,
+    MEAN_REVERSION_ANCHOR_PCT_ABOVE_SPOT,
+    MEAN_REVERSION_DEFAULT_STRENGTH,
     MIN_DIP_PROBABILITY,
     PASS2_CLOSED_FORM_BRACKET_PCT,
     PATIENCE_WINDOW_TD,
@@ -1789,8 +1790,26 @@ def run_pipeline(args) -> int:
         horizon_days=horizon_days,
         n_paths=DEFAULT_MC_PATHS,
         vol_schedule=vol_schedule,
-        mean_reversion_strength=args.mean_reversion,
-        mean_reversion_anchor=spot * (1.0 - MEAN_REVERSION_ANCHOR_PCT_BELOW_SPOT) if args.mean_reversion > 0 else None,
+        # 2026-05-30 mean-reversion re-aim. CLI --mean-reversion overrides
+        # YAML when explicitly set (treated as opt-in override); when the
+        # CLI flag is at the sentinel None, the YAML mean_reversion block
+        # supplies default_strength (default 2.0, ON) and the anchor sits
+        # at S0 * (1 + anchor_pct_above_spot). Sign-inverted from the old
+        # MEAN_REVERSION_ANCHOR_PCT_BELOW_SPOT key — wrong-direction default
+        # pulled paths DOWN from spot (amplified bag-hold tail). At-spot
+        # anchor (0.0) gives vol-drag suppression; positive value gives
+        # rally bias; negative reproduces the legacy "below" behavior.
+        mean_reversion_strength=(
+            args.mean_reversion if args.mean_reversion is not None
+            else MEAN_REVERSION_DEFAULT_STRENGTH
+        ),
+        mean_reversion_anchor=(
+            spot * (1.0 + MEAN_REVERSION_ANCHOR_PCT_ABOVE_SPOT)
+            if (
+                args.mean_reversion if args.mean_reversion is not None
+                else MEAN_REVERSION_DEFAULT_STRENGTH
+            ) > 0 else None
+        ),
         distribution=mc_dist,
         df=mc_df,
     )

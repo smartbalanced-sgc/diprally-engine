@@ -107,7 +107,7 @@ def main():
     print(" MEAN-REVERSION-ANCHOR PROBE — fixing the 2nd binding gate (μ vs vol drag)")
     print("=" * 88)
     print(f" horizon={H}td  paths={DEFAULT_MC_PATHS}  stop layer ACTIVE")
-    print(f" current YAML: mean_reversion.anchor_pct_below_spot = 0.05 (5% BELOW spot)")
+    print(f" post-2026-05-30 YAML: mean_reversion.anchor_pct_above_spot = 0.0 (at-spot), default_strength = 2.0 (ON)")
     print(f" probe sweep: anchor_pct_above_spot ∈ [-5%, 0%, +5%, +10%]")
     print(f"              strength k ∈ [0, 1, 2, 5, 10]")
     print()

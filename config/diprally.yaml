@@ -580,10 +580,30 @@ bayesian:
   std_floor: 0.05                         # min std anywhere in the smoothing
   default_today_std_when_blend_fails: 0.25  # used when blend_with_uncertainty returns None
 
-# Mean reversion anchor (engine MC). Disabled by default (--mean-reversion 0.0).
-# When enabled, anchor is positioned anchor_pct_below_spot below current spot.
+# Mean reversion anchor (engine MC). Re-aimed 2026-05-30.
+#
+# Pre-2026-05-30: anchor sat 5% BELOW spot and the layer was disabled
+# (--mean-reversion 0.0 default). With anchor below spot, the layer pulled
+# paths DOWN from current spot — wrong direction for a dip-rally thesis,
+# AMPLIFYING the vol-drag bag-hold tail when ever turned on.
+#
+# 2026-05-30: anchor moved to AT-spot with default strength k=2.0,
+# enabled by default for all σ-classes. At-spot anchor provides vol-drag
+# suppression (path drifts back toward spot from extremes in either
+# direction) without an editorial direction bias. Diagnostic sweep at
+# tools/diag/mr_anchor_probe.py shows this calibration lifts the chosen
+# EV by ~12-25 bps (0.12-0.25%) on the live LWLG/MU/RKLB/ARM/AMAT cohort
+# while keeping a -30%/yr impaired-thesis falling-knife setup REFUSED at
+# -16 bps (no spurious BUY). Sacred #14 (mom_30d < -25% trend filter)
+# remains the operational gate against catalyst-blind extreme dips.
+#
+# Tunable per sacred #17. To DISABLE: set default_strength: 0.0 (anchor
+# is then unused). To re-aim above spot (rally bias): set
+# anchor_pct_above_spot > 0 (e.g. 0.05 = 5% above spot). To re-aim
+# below spot (the old wrong-direction default): use negative value.
 mean_reversion:
-  anchor_pct_below_spot: 0.05
+  anchor_pct_above_spot: 0.0       # at-spot. Was: anchor_pct_below_spot: 0.05
+  default_strength: 2.0            # was: 0.0 via --mean-reversion CLI default
 
 # Pass 2 prompt closed-form bracket — frames the math context Pass 2 sees.
 # Currently ±10% from spot. Researchers may tune this to investigate
