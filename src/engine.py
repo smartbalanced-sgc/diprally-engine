@@ -201,6 +201,15 @@ class AIPassOutput:
     # would normally refuse.
     parabola_override_raw: Optional[dict] = None       # raw AI response (for audit)
     parabola_override_valid: bool = False              # post-validation flag
+    # AI thesis surfacing (2026-05-31). Pass 2 produces a 5-level
+    # qualitative read on whether the math's verdict is well-supported:
+    # STRONG_SUPPORT / SUPPORT / NEUTRAL / CAUTION / STRONG_CAUTION.
+    # Informational only — does NOT override the math verdict. Surfaces
+    # in operator-facing report next to the headline so AI-vs-math
+    # disagreement is visible. Pass 1 default = NEUTRAL (only Pass 2
+    # produces this signal).
+    verdict_alignment_signal: str = "NEUTRAL"
+    verdict_alignment_reasoning: str = ""
 
 
 @dataclass
@@ -871,6 +880,11 @@ CSV_COLUMNS = [
     "p_profitable", "payoff_std_pct",
     "ai_drift_pass1", "ai_drift_pass2", "ai_vol_regime",
     "narrative_score", "catalyst_proximity_drift",
+    # AI thesis surfacing (2026-05-31). Pass 2 qualitative read on
+    # whether math's verdict is well-supported. INFORMATIONAL — does NOT
+    # override math. Levels: STRONG_SUPPORT/SUPPORT/NEUTRAL/CAUTION/
+    # STRONG_CAUTION. Reporter renders alongside headline.
+    "verdict_alignment_signal", "verdict_alignment_reasoning",
     "garch_alpha_plus_beta", "horizon_days",
     "method_agreement_flags", "ai_cost_total", "data_source",
     "ai_tier", "ambiguity_score",
@@ -1583,10 +1597,10 @@ def run_pipeline(args) -> int:
         p1_raw = cache_payload.get("pass1_raw")
         p1_sources = int(cache_payload.get("pass1_sources", 0))
         if p1_raw:
-            pass1 = parse_ai_pass1(p1_raw, p1_sources, 0.0)  # $0 incremental
+            pass1 = parse_ai_pass1(p1_raw, p1_sources, 0.0, today=today_d)  # $0 incremental
         p2_raw = cache_payload.get("pass2_raw")
         if p2_raw and pass1:
-            pass2 = parse_ai_pass2(p2_raw, pass1, 0.0)
+            pass2 = parse_ai_pass2(p2_raw, pass1, 0.0, today=today_d)
         cached_stress_results = cache_payload.get("stress_results") or []
     elif not tier.runs_ai:
         print(f"AI Pass 1 skipped (tier {tier.name})")
@@ -1631,7 +1645,7 @@ def run_pipeline(args) -> int:
             pass1_prompt, max_tokens=tier.pass1_max_tokens, pass_label="Pass 1",
             model=tier.pass1_model, web_search_max_uses=tier.pass1_web_search_max,
         )
-        pass1 = parse_ai_pass1(pass1_raw, pass1_sources, pass1_cost) if pass1_raw else None
+        pass1 = parse_ai_pass1(pass1_raw, pass1_sources, pass1_cost, today=today_d) if pass1_raw else None
         pass1_cost_charged = pass1_cost
         pass1_raw_for_cache = pass1_raw
         pass1_sources_for_cache = pass1_sources
@@ -1695,7 +1709,7 @@ def run_pipeline(args) -> int:
         pass2_cost_charged = pass2_cost
         pass2_raw_for_cache = pass2_raw
         if pass2_raw:
-            pass2 = parse_ai_pass2(pass2_raw, pass1, pass2_cost)
+            pass2 = parse_ai_pass2(pass2_raw, pass1, pass2_cost, today=today_d)
     else:
         pass2_raw_for_cache = None
 
@@ -2257,6 +2271,12 @@ def run_pipeline(args) -> int:
         "ai_vol_regime": effective_ai.vol_regime if effective_ai else "",
         "narrative_score": effective_ai.narrative_score if effective_ai else "",
         "catalyst_proximity_drift": f"{catalyst_mu:.4f}",
+        "verdict_alignment_signal": (
+            pass2.verdict_alignment_signal if pass2 else ""
+        ),
+        "verdict_alignment_reasoning": (
+            pass2.verdict_alignment_reasoning if pass2 else ""
+        ),
         "garch_alpha_plus_beta": f"{vol_profile.garch_alpha_plus_beta:.4f}",
         "horizon_days": str(horizon_days),
         "method_agreement_flags": ";".join(method_check["flags"]),

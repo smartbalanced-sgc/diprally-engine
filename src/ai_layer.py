@@ -10,7 +10,57 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import date, datetime
 from typing import Optional
+
+
+_VALID_VERDICT_ALIGNMENT = (
+    "STRONG_SUPPORT", "SUPPORT", "NEUTRAL", "CAUTION", "STRONG_CAUTION",
+)
+
+
+def _parse_source_date(value) -> Optional[date]:
+    """Parse an ISO YYYY-MM-DD source date string from AI output. Returns
+    None on any failure (missing, null, malformed) so downstream can
+    render 'UNKNOWN' freshness without crashing on stray AI strings."""
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        return datetime.strptime(value.strip()[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+
+
+def _freshness_label(source_date: Optional[date], today: date) -> tuple[str, Optional[int]]:
+    """(label, age_days). FRESH ≤7d, AGING 8-30d, STALE >30d, UNKNOWN
+    when AI couldn't surface a date. Deterministic on parser side so the
+    AI cannot lie about staleness — given a real date, age is computed
+    here. Future-dated sources (event dates ahead of today) labeled
+    FUTURE — useful for upcoming earnings."""
+    if source_date is None:
+        return ("UNKNOWN", None)
+    age = (today - source_date).days
+    if age < 0:
+        return ("FUTURE", age)
+    if age <= 7:
+        return ("FRESH", age)
+    if age <= 30:
+        return ("AGING", age)
+    return ("STALE", age)
+
+
+def _enrich_catalyst_with_freshness(catalyst: dict, today: date) -> dict:
+    """Compute source_age_days + freshness deterministically and attach.
+    Mutates and returns the catalyst dict for chained writes. AI's
+    'source_date' is the input; everything else is computed here so AI
+    can't game the freshness signal."""
+    if not isinstance(catalyst, dict):
+        return catalyst
+    src_date = _parse_source_date(catalyst.get("source_date"))
+    label, age = _freshness_label(src_date, today)
+    catalyst["source_age_days"] = age
+    catalyst["freshness"] = label
+    return catalyst
 
 from src.config import (
     MODEL_HAIKU,
@@ -143,7 +193,7 @@ OUTPUT — single JSON object. NO PROSE BEFORE OR AFTER. NO MARKDOWN FENCES. STR
 "vol_regime": "MEDIUM",
 "narrative_score": "neutral",
 "narrative_evidence": [{{"claim": "short", "source": "publisher"}}],
-"catalysts": [{{"name": "short name", "type": "earnings", "date_or_window": "YYYY-MM-DD", "magnitude": "med", "direction_risk": "two-sided", "sources": ["src1", "src2"]}}],
+"catalysts": [{{"name": "short name", "type": "earnings", "date_or_window": "YYYY-MM-DD", "magnitude": "med", "direction_risk": "two-sided", "sources": ["src1", "src2"], "source_date": "YYYY-MM-DD", "source_url": "https://..."}}],
 "bull_factors": [{{"factor": "concise factor", "weight": "med", "sources": ["src1", "src2"]}}],
 "bear_factors": [{{"factor": "concise factor", "weight": "med", "sources": ["src1", "src2"]}}],
 "key_risks": ["short risk 1", "short risk 2"]
@@ -156,6 +206,22 @@ RULES:
 - bull_factors and bear_factors: each list 2-4 items, concise (<200 chars).
 - key_risks: 2-3 risks, one short sentence each.
 - Return ONLY the JSON object. No preamble. No explanation. No markdown.
+
+SOURCE-DATE DISCIPLINE (operator-facing staleness signal):
+- For EVERY catalyst, populate "source_date" with the publication date of the
+  FRESHEST citable source you found supporting it (ISO YYYY-MM-DD). If the
+  catalyst is built on a bundle field that itself has a date (e.g.
+  facts_bundle.pt_revisions_90d[0].date), use that date. If you cannot
+  determine the source's publication date, set source_date to null.
+- Populate "source_url" with the most-citable single URL (or bundle field
+  reference like "facts_bundle.pt_revisions_90d[0]"). Null is allowed when
+  the source is the structured bundle and there is no URL.
+- The downstream reporter computes freshness (FRESH ≤7d / AGING 8-30d /
+  STALE >30d) relative to today's analysis date — you do NOT need to compute
+  age yourself, just provide the source_date.
+- This is NOT optional. Operator uses freshness flags to spot when a
+  catalyst is being supported by stale news that may no longer represent
+  the current narrative.
 
 SOURCE-QUALITY DISCIPLINE (PR #50 — institutional anchor sources only):
 - High-magnitude catalysts ("high" or "med") REQUIRE at least one
@@ -285,9 +351,37 @@ and catalysts REPLACE Pass 1's in the downstream blend and MC. Return JSON:
   "revised_narrative_score": "strong" | "neutral" | "weak",
   "narrative_reasoning": "Why this score ('strong' only if ≥2 sources defend a structural multi-quarter story)",
 
-  "revised_catalysts": [{{"name": "...", "type": "earnings|guidance|macro|...", "date_or_window": "YYYY-MM-DD or YYYY-MM/YYYY-MM", "magnitude": "high|med|low", "direction_risk": "bullish|bearish|two-sided", "sources": ["src1", "src2"]}}],
-  "catalysts_reasoning": "Why this revised set differs from Pass 1's (or why kept as-is)"
+  "revised_catalysts": [{{"name": "...", "type": "earnings|guidance|macro|...", "date_or_window": "YYYY-MM-DD or YYYY-MM/YYYY-MM", "magnitude": "high|med|low", "direction_risk": "bullish|bearish|two-sided", "sources": ["src1", "src2"], "source_date": "YYYY-MM-DD", "source_url": "https://..."}}],
+  "catalysts_reasoning": "Why this revised set differs from Pass 1's (or why kept as-is)",
+
+  "verdict_alignment_signal": "STRONG_SUPPORT" | "SUPPORT" | "NEUTRAL" | "CAUTION" | "STRONG_CAUTION",
+  "verdict_alignment_reasoning": "One concise sentence (<200 chars) — why this signal level"
 }}
+
+VERDICT-ALIGNMENT SIGNAL — your qualitative read on the math's verdict:
+This is INFORMATIONAL — does not override the math; surfaces to the operator
+alongside the headline so they can spot AI-vs-math disagreement. Pick the
+single level that best captures your read AFTER reviewing revised drift +
+catalysts + math layer's probability bracket:
+- STRONG_SUPPORT: ≥2 validated bullish catalysts in horizon AND narrative
+  coherent AND no near-horizon binary risk AND your revised drift agrees
+  with math's optimism.
+- SUPPORT: math's verdict OK but with caveats worth flagging (e.g. one
+  source aging, one minor bearish catalyst). Operator should glance at
+  caveats before acting.
+- NEUTRAL: no strong signal either way. Math drives the verdict; AI has
+  no additional information.
+- CAUTION: you found bearish signals or aging-narrative concerns that the
+  math underweights — operator should weight more carefully before acting.
+- STRONG_CAUTION: a near-horizon binary catalyst (earnings inside horizon,
+  FDA decision, court ruling) OR contradiction between catalysts and the
+  math's direction. Operator should very seriously reconsider.
+Default to NEUTRAL when uncertain — do NOT use STRONG signals as filler.
+
+SOURCE-DATE DISCIPLINE (same as Pass 1):
+- Every catalyst in revised_catalysts MUST include source_date (ISO
+  YYYY-MM-DD or null if undeterminable). Bundle-field-derived catalysts
+  inherit the bundle field's date.
 
 REVIEW POSTURE — bidirectional, not contrarian:
 - If Pass 1 is well-calibrated (drift supported by catalysts + math + sources),
@@ -836,8 +930,11 @@ def apply_catalyst_verification(catalysts: list, verifications: list) -> list:
 # its other engine-side users; we resolve circularity by deferring the import.
 # =============================================================================
 
-def parse_ai_pass1(raw, sources_count, cost):
-    """Convert Pass 1 JSON to AIPassOutput."""
+def parse_ai_pass1(raw, sources_count, cost, today: Optional[date] = None):
+    """Convert Pass 1 JSON to AIPassOutput. `today` is the analysis date
+    used to compute catalyst source freshness deterministically (FRESH
+    ≤7d / AGING 8-30d / STALE >30d / UNKNOWN missing date). Defaults to
+    the system date when unset."""
     from src.engine import AIPassOutput
     drift_range = raw.get("drift_range_low_high", [0.0, 0.0])
     # 2026-05-24 audit fix: narrative_evidence was prompted for but never
@@ -845,6 +942,12 @@ def parse_ai_pass1(raw, sources_count, cost):
     narrative_evidence = raw.get("narrative_evidence", []) or []
     if not isinstance(narrative_evidence, list):
         narrative_evidence = []
+    catalysts = raw.get("catalysts", []) or []
+    if today is None:
+        today = date.today()
+    # Deterministic freshness enrichment — AI provides source_date, we
+    # compute age + label here so AI cannot fudge staleness.
+    enriched = [_enrich_catalyst_with_freshness(c, today) for c in catalysts]
     return AIPassOutput(
         pass_number=1,
         drift_estimate=float(raw.get("drift_estimate_annualized", 0.0)),
@@ -852,7 +955,7 @@ def parse_ai_pass1(raw, sources_count, cost):
         confidence=str(raw.get("confidence", "LOW")).upper(),
         vol_regime=str(raw.get("vol_regime", "MEDIUM")).upper(),
         narrative_score=str(raw.get("narrative_score", "neutral")).lower(),
-        catalysts=raw.get("catalysts", []) or [],
+        catalysts=enriched,
         bull_factors=raw.get("bull_factors", []) or [],
         bear_factors=raw.get("bear_factors", []) or [],
         key_risks=raw.get("key_risks", []) or [],
@@ -863,15 +966,20 @@ def parse_ai_pass1(raw, sources_count, cost):
     )
 
 
-def parse_ai_pass2(raw, pass1, cost):
+def parse_ai_pass2(raw, pass1, cost, today: Optional[date] = None):
     """Convert Pass 2 JSON to AIPassOutput. Pass 2's outputs replace Pass 1
     in the downstream blend / MC (sacred decision #7).
 
     Pass 2 expanded scope: revises drift, vol_regime, narrative_score, AND
     the full catalysts list. When Pass 2 omits a revised_* field, we fall
     back to Pass 1's value (Pass 2 implicitly concurred).
+
+    `today` parameter (default = system date) drives deterministic
+    freshness computation on revised catalysts (same as Pass 1 parser).
     """
     from src.engine import AIPassOutput
+    if today is None:
+        today = date.today()
     pass1_drift = pass1.drift_estimate
     revised = float(raw.get("revised_drift_estimate", pass1_drift))
 
@@ -900,6 +1008,23 @@ def parse_ai_pass2(raw, pass1, cost):
         for e in extras:
             if isinstance(e, dict) and e not in revised_catalysts:
                 revised_catalysts.append(e)
+    # Deterministic freshness enrichment (mirrors Pass 1). Recompute on
+    # ALL revised catalysts — Pass 1 enrichment doesn't carry over because
+    # Pass 2 may have re-written source_date and we want the recomputed age
+    # to reflect Pass 2's claim.
+    revised_catalysts = [
+        _enrich_catalyst_with_freshness(c, today) for c in revised_catalysts
+    ]
+
+    # Verdict alignment signal — Pass 2's qualitative read on whether the
+    # math's verdict is well-supported. Informational only (not gating).
+    raw_signal = str(raw.get("verdict_alignment_signal", "NEUTRAL")).upper()
+    if raw_signal not in _VALID_VERDICT_ALIGNMENT:
+        raw_signal = "NEUTRAL"  # don't fabricate a level on bad output
+    verdict_alignment_reasoning = ""
+    raw_reasoning = raw.get("verdict_alignment_reasoning", "")
+    if isinstance(raw_reasoning, str):
+        verdict_alignment_reasoning = raw_reasoning.strip()[:250]
 
     # 2026-05-24 audit fix: capture Pass 2 reasoning fields. The prompt
     # requests these 5 fields + agreement_with_pass1, the parser
@@ -956,4 +1081,6 @@ def parse_ai_pass2(raw, pass1, cost):
         parabola_override_valid=validate_parabola_override(
             raw.get("parabola_override")
         ),
+        verdict_alignment_signal=raw_signal,
+        verdict_alignment_reasoning=verdict_alignment_reasoning,
     )

@@ -19,10 +19,37 @@ def hr(title: str = "") -> str:
     return f"\n{line}\n{title}\n{line}" if title else line
 
 
+_AI_ALIGNMENT_BADGES = {
+    "STRONG_SUPPORT":  "AI: ✅ STRONG SUPPORT",
+    "SUPPORT":         "AI: ✓  SUPPORT",
+    "NEUTRAL":         "AI: ◯  NEUTRAL",
+    "CAUTION":         "AI: ⚠  CAUTION",
+    "STRONG_CAUTION":  "AI: 🛑 STRONG CAUTION",
+}
+
+
+def _ai_alignment_suffix(pass2) -> str:
+    """Render the Pass-2 verdict_alignment_signal as a one-segment
+    headline suffix. Returns '' when pass2 is None or signal is
+    NEUTRAL with no reasoning (don't add noise to the headline)."""
+    if pass2 is None:
+        return ""
+    signal = getattr(pass2, "verdict_alignment_signal", "NEUTRAL")
+    badge = _AI_ALIGNMENT_BADGES.get(signal, "")
+    if not badge:
+        return ""
+    reasoning = getattr(pass2, "verdict_alignment_reasoning", "")
+    if signal == "NEUTRAL" and not reasoning:
+        return ""
+    if reasoning:
+        return f"  ·  [{badge} — {reasoning[:80]}]"
+    return f"  ·  [{badge}]"
+
+
 def _headline_card(ticker, spot, horizon_days, best, ev_pct_of_dip,
                     met_threshold_strict, method_check,
                     parabola_filter_refused, trend_filter_refused,
-                    ev_hurdle_refused, snapshot) -> str:
+                    ev_hurdle_refused, snapshot, pass2=None) -> str:
     """PR #56 — trader headline card. Single-line verdict at the top
     of every report. Mirrors the headline-section verdict tree below
     so traders see the bottom-line at-a-glance without scrolling.
@@ -83,7 +110,138 @@ def _headline_card(ticker, spot, horizon_days, best, ev_pct_of_dip,
         f"  {bar} {ticker} — ✅ BUY ${best.dip_price:,.2f} → SELL ${best.rally_price:,.2f} · "
         f"P(RT) {best.p_round_trip*100:.0f}% · EV {best.ev_pct_of_dip*10000:+.1f}bps · "
         f"{horizon_days}d horizon"
+        f"{_ai_alignment_suffix(pass2)}"
     )
+
+
+_DIRECTION_BADGES = {
+    "bullish":   "⬆ BULL",
+    "bearish":   "⬇ BEAR",
+    "two-sided": "↔ 2-SIDED",
+}
+
+_FRESHNESS_BADGES = {
+    "FRESH":   "FRESH",
+    "AGING":   "⚠ AGING",
+    "STALE":   "🛑 STALE",
+    "FUTURE":  "FUTURE",  # event dates ahead of today (e.g. upcoming earnings)
+    "UNKNOWN": "? source-date-unknown",
+}
+
+
+def _ai_thesis_block(pass1, pass2) -> list[str]:
+    """Operator-facing AI thesis surfacing — renders Pass 2's catalyst
+    list with direction/magnitude/source freshness, narrative score,
+    drift breakdown, and the verdict-alignment reasoning. The reasoning
+    that the AI already produced (and you've already paid for) becomes
+    visible at-a-glance so the operator's gut-check on a BUY is
+    'sanity-check the AI's already-done work' rather than 're-derive
+    qualitative analysis from the price tape'.
+
+    Returns empty list when no AI ran (T0 math-only) so silent on those
+    rows. When Pass 1 ran but Pass 2 didn't (DEGRADED tier), renders
+    Pass 1's catalysts only and notes the absent Pass 2 signal.
+    """
+    # Pick the effective AI source — Pass 2 wins (sacred #7) when present.
+    eff = pass2 or pass1
+    if eff is None:
+        return []
+    out = []
+    out.append("")  # blank line break before block
+    out.append(hr("AI THESIS (operator-facing)"))
+
+    # Verdict-alignment signal — only Pass 2 produces this.
+    if pass2 is not None:
+        signal = getattr(pass2, "verdict_alignment_signal", "NEUTRAL")
+        reasoning = getattr(pass2, "verdict_alignment_reasoning", "")
+        badge = _AI_ALIGNMENT_BADGES.get(signal, signal)
+        out.append(f"  Alignment with math verdict: [{badge}]")
+        if reasoning:
+            out.append(f"    ↳ {reasoning}")
+    else:
+        out.append(
+            "  Alignment with math verdict: (Pass 2 absent — signal unavailable)"
+        )
+
+    # Drift breakdown — Pass 1 → Pass 2 → posterior. Shows where the AI's
+    # arithmetic lands relative to where it started.
+    p1_drift = pass1.drift_estimate if pass1 else None
+    p2_drift = pass2.drift_estimate if pass2 else None
+    drift_segments = []
+    if p1_drift is not None:
+        drift_segments.append(f"Pass 1 {p1_drift:+.1%}")
+    if p2_drift is not None and pass2 is not None:
+        delta = (p2_drift - p1_drift) if p1_drift is not None else None
+        if delta is not None:
+            drift_segments.append(f"Pass 2 {p2_drift:+.1%} (Δ {delta:+.1%})")
+        else:
+            drift_segments.append(f"Pass 2 {p2_drift:+.1%}")
+    if drift_segments:
+        out.append(f"  Drift refinement: {' → '.join(drift_segments)}")
+
+    # Narrative score + agreement (Pass 2 critique).
+    narrative = getattr(eff, "narrative_score", "")
+    agreement = getattr(pass2, "agreement_with_pass1", "") if pass2 else ""
+    line = f"  Narrative score: {narrative}"
+    if agreement:
+        line += f"  |  Pass 2 agreement: {agreement}"
+    out.append(line)
+
+    # Catalyst list with freshness flags. The mission-critical surface.
+    catalysts = getattr(eff, "catalysts", []) or []
+    if catalysts:
+        out.append(f"  Catalysts ({len(catalysts)}):")
+        for c in catalysts:
+            if not isinstance(c, dict):
+                out.append(f"    [unparsed] {str(c)[:120]}")
+                continue
+            name = c.get("name", "?")
+            direction = (c.get("direction_risk") or "").lower()
+            mag = (c.get("magnitude") or "").upper()
+            event_date = c.get("date_or_window") or ""
+            dir_badge = _DIRECTION_BADGES.get(direction, direction or "?")
+            mag_str = f"mag {mag}" if mag else ""
+            head_bits = [dir_badge, mag_str]
+            if event_date:
+                head_bits.append(f"event {event_date}")
+            out.append(
+                f"    [{' · '.join(b for b in head_bits if b)}]  {name}"
+            )
+            # Freshness + source URL — the operator-visible staleness signal.
+            freshness = (c.get("freshness") or "UNKNOWN").upper()
+            age = c.get("source_age_days")
+            src_date = c.get("source_date") or ""
+            src_url = c.get("source_url") or ""
+            fresh_badge = _FRESHNESS_BADGES.get(freshness, freshness)
+            age_str = ""
+            if isinstance(age, int):
+                if age >= 0:
+                    age_str = f" ({age}d old)"
+                else:
+                    age_str = f" ({-age}d ahead)"
+            src_bits = [f"  source: {src_date or 'unknown'}{age_str} [{fresh_badge}]"]
+            if src_url:
+                src_bits.append(f"  url: {src_url[:80]}")
+            out.append("  " + " ".join(src_bits))
+            # Pass 2 verification verdict (when present from catalyst-verification step)
+            verify = c.get("verification_verdict") or ""
+            if verify:
+                vbits = f"verification: {verify}"
+                vr = c.get("verification_reasoning") or ""
+                if vr:
+                    vbits += f" — {vr[:120]}"
+                out.append(f"      {vbits}")
+    else:
+        out.append("  Catalysts: (none surfaced)")
+
+    # Pass 2 was absent → flag explicitly so operator knows the
+    # qualitative critique didn't run for this ticker.
+    if pass2 is None and pass1 is not None:
+        out.append(
+            "  (Pass 2 absent — alignment signal + critique unavailable. "
+            "Math verdict drives without qualitative cross-check.)"
+        )
+    return out
 
 
 def _reliability_warnings_line(*, vol_profile, base_signals,
@@ -263,6 +421,7 @@ def format_report(
         ev_pct_of_dip=ev_pct_of_dip,
         met_threshold_strict=met_threshold_strict,
         method_check=method_check,
+        pass2=pass2,
         parabola_filter_refused=parabola_filter_refused,
         trend_filter_refused=trend_filter_refused,
         ev_hurdle_refused=ev_hurdle_refused,
@@ -281,6 +440,15 @@ def format_report(
     )
     if reliability_line:
         lines.append(reliability_line)
+
+    # AI thesis block (2026-05-31) — surfaces the qualitative work AI
+    # was already doing but the operator couldn't see. Catalysts with
+    # source dates / freshness flags, narrative score, drift refinement
+    # Pass 1 → Pass 2, Pass 2's alignment signal w/ reasoning. The
+    # operator's BUY/SKIP gut-check now consumes AI-produced rationale
+    # instead of re-deriving it.
+    for line in _ai_thesis_block(pass1, pass2):
+        lines.append(line)
 
     lines.append(f"  Ticker: {snapshot.ticker}")
     lines.append(f"  Spot: ${snapshot.spot:.2f}   Market cap: ${snapshot.market_cap/1e9:.1f}B")
