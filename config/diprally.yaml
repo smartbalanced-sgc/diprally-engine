@@ -774,149 +774,45 @@ bag_hold_terminal_assumption: "median_terminal_dip_paths"
 # FMP's accepted form and Yahoo Finance's industry-standard form.
 # =============================================================================
 tickers:
-  # ---- EXTREME class (σ > 100% typical; small caps, narrative-driven) ----
+  # 2026-05-30 — culled from 26 → 5 representative names per operator direction.
+  # Iteration cohort while the EV/stop fix is driven into the engine; the 21
+  # sidelined names sit in `tickers_scratch:` below with full peer + σ-class
+  # metadata, so re-promotion is a YAML move (sacred #17). Expand back to the
+  # full universe once 0-BUY is reproducibly cleared on these 5.
+  # σ-class coverage: 2 EXTREME (LWLG, ARM), 2 HIGH (RKLB, MU), 1 MID (AMAT).
+  # Themes: photonics narrative (LWLG), AI-semi-IP (ARM), aerospace/space
+  # (RKLB), memory-semi (MU, HIGH-override probe), semi-equipment (AMAT).
+
+  # ---- EXTREME class ----
   LWLG:
     sigma_class: EXTREME
     sector_expected: "Technology / Communication Equipment"
     stock_peers: []            # no comparable photonics-only public names
     etf_peer: "SOXX"           # iShares Semi ETF — closest cyclical anchor
-  MRAM:
-    sigma_class: EXTREME
-    sector_expected: "Technology / Semiconductors"
-    stock_peers: []
-    etf_peer: "SOXX"
-  ENGN:
-    sigma_class: EXTREME
-    sector_expected: "Healthcare / Biotechnology"
-    stock_peers: []
-    etf_peer: "XBI"            # SPDR S&P Biotech ETF (per CLAUDE.md hint)
-  # VELO3D delisted Aug 2024 (then-symbol VLD), relisted Aug 2025 as VELO
-  # after restructuring. Registry now tracks the current ticker.
-  # Keep EXTREME tentatively; first daily cycle on VELO will re-validate
-  # via the auto-detector (PR #62 advisor will flag mismatch if it sees
-  # ≥5 consecutive runs disagreeing).
-  VELO:
-    sigma_class: EXTREME
-    sector_expected: "Industrials / Aerospace & Defense"
-    stock_peers: []
-    etf_peer: "PPA"            # Invesco Aerospace & Defense ETF
-  # 2026-05-24 universe expansion — added per operator direction. Initial
-  # σ-class guesses below; sacred #1 (data wins) → PR #62 advisor will
-  # surface mismatches after ~5 cycles per name.
-  SNDK:
-    sigma_class: EXTREME
-    sector_expected: "Technology / Semiconductors"
-    stock_peers: ["MU", "STX", "WDC"]
-    etf_peer: "SOXX"           # post-Feb-2025 WDC Flash spinoff — limited history
   ARM:
     sigma_class: EXTREME
     sector_expected: "Technology / Semiconductors"
     stock_peers: ["AVGO"]      # IP-heavy semi peer (not in universe; price-series peer)
     etf_peer: "SOXX"
-  CRWV:
-    sigma_class: EXTREME
-    sector_expected: "Technology / Software-Infrastructure"
-    stock_peers: ["NBIS"]      # GPU cloud peer
-    etf_peer: "IGV"            # iShares Software ETF (AI infra adjacent)
-  NBIS:
-    sigma_class: EXTREME
-    sector_expected: "Technology / Software-Infrastructure"
-    stock_peers: ["CRWV"]
-    etf_peer: "IGV"
-  INOD:
-    sigma_class: EXTREME
-    sector_expected: "Technology / Information Technology Services"
-    stock_peers: []            # small-cap AI data services — no clean stock peer
-    etf_peer: "IGV"
-  CRDO:
-    sigma_class: EXTREME
-    sector_expected: "Technology / Semiconductors"
-    stock_peers: ["MRVL", "AVGO"]
-    etf_peer: "SOXX"
-  ANAB:
-    sigma_class: EXTREME
-    sector_expected: "Healthcare / Biotechnology"
-    stock_peers: []            # sister to ENGN in catalyst-binary biotech bucket
-    etf_peer: "XBI"            # SPDR S&P Biotech ETF
 
-  # ---- HIGH class (σ 60-100% typical; mid-caps, momentum / space / defense) ----
-  ASTS:
-    sigma_class: HIGH
-    sector_expected: "Communication Services / Telecom"
-    stock_peers: ["RKLB", "IRDM"]
-    etf_peer: ""
+  # ---- HIGH class ----
   RKLB:
     sigma_class: HIGH
     sector_expected: "Industrials / Aerospace & Defense"
     stock_peers: ["ASTS", "LMT"]
-    etf_peer: ""
-  PL:
-    sigma_class: HIGH
-    sector_expected: "Technology / Software"
-    stock_peers: ["MAXR", "SPIR"]
-    etf_peer: ""
-  SATS:
-    sigma_class: HIGH
-    sector_expected: "Communication Services / Telecom"
-    stock_peers: ["IRDM", "VSAT"]
-    etf_peer: ""
-  GHM:
-    sigma_class: HIGH
-    sector_expected: "Industrials / Specialty Industrial Machinery"
-    stock_peers: ["ROP", "WTS"]
-    etf_peer: ""
-  MRVL:
-    sigma_class: HIGH
-    sector_expected: "Technology / Semiconductors"
-    stock_peers: ["AVGO", "MU"]
-    etf_peer: "SOXX"
-
-  # ---- MID class (σ 30-60% typical; large caps, mature) ----
-  INTC:
-    sigma_class: MID
-    sector_expected: "Technology / Semiconductors"
-    stock_peers: ["AMD", "AVGO"]
-    etf_peer: ""
-  IPGP:
-    sigma_class: MID
-    sector_expected: "Technology / Communication Equipment"
-    stock_peers: ["LITE", "COHR"]
-    etf_peer: ""
-  LITE:
-    sigma_class: MID
-    sector_expected: "Technology / Communication Equipment"
-    stock_peers: ["IPGP", "COHR"]
     etf_peer: ""
   MU:
     sigma_class: HIGH                 # PR #92: was MID — auto-detector flags HIGH (σ ~88%) every run; AI-memory regime moved MU structurally into HIGH
     sector_expected: "Technology / Semiconductors"
     stock_peers: ["SNDK", "WDC", "STX"]
     etf_peer: ""
-  STX:
-    sigma_class: MID
-    sector_expected: "Technology / Computer Hardware"
-    stock_peers: ["MU", "SNDK", "WDC"]
-    etf_peer: ""
+
+  # ---- MID class ----
   AMAT:
     sigma_class: MID
     sector_expected: "Technology / Semiconductor Equipment"
     stock_peers: ["LRCX", "KLAC"]
     etf_peer: ""
-  MOG-A:
-    sigma_class: MID
-    sector_expected: "Industrials / Aerospace & Defense"
-    stock_peers: ["HEI", "TDG", "CW"]
-    etf_peer: ""
-  GLW:
-    sigma_class: MID
-    sector_expected: "Technology / Communication Equipment"
-    stock_peers: ["AAOI", "CIEN"]
-    etf_peer: ""
-  LRCX:
-    sigma_class: MID
-    sector_expected: "Technology / Semiconductor Equipment"
-    stock_peers: ["AMAT", "KLAC"]
-    etf_peer: "SOXX"
 
 # =============================================================================
 # Ad-hoc / temporary cohort tickers.
@@ -962,6 +858,124 @@ tickers_scratch:
     sigma_class: MID
     sector_expected: "Technology / Semiconductors"
     stock_peers: ["MU", "NXPI"]
+    etf_peer: "SOXX"
+
+  # 2026-05-30 — sidelined from `tickers:` during the 5-name iteration cohort.
+  # All metadata preserved; re-promote into `tickers:` once 0-BUY is cleared.
+  # ---- EXTREME (sidelined) ----
+  MRAM:
+    sigma_class: EXTREME
+    sector_expected: "Technology / Semiconductors"
+    stock_peers: []
+    etf_peer: "SOXX"
+  ENGN:
+    sigma_class: EXTREME
+    sector_expected: "Healthcare / Biotechnology"
+    stock_peers: []
+    etf_peer: "XBI"            # SPDR S&P Biotech ETF (per CLAUDE.md hint)
+  # VELO3D delisted Aug 2024 (then-symbol VLD), relisted Aug 2025 as VELO
+  # after restructuring. Registry now tracks the current ticker.
+  # Keep EXTREME tentatively; first daily cycle on VELO will re-validate
+  # via the auto-detector (PR #62 advisor will flag mismatch if it sees
+  # ≥5 consecutive runs disagreeing).
+  VELO:
+    sigma_class: EXTREME
+    sector_expected: "Industrials / Aerospace & Defense"
+    stock_peers: []
+    etf_peer: "PPA"            # Invesco Aerospace & Defense ETF
+  SNDK:
+    sigma_class: EXTREME
+    sector_expected: "Technology / Semiconductors"
+    stock_peers: ["MU", "STX", "WDC"]
+    etf_peer: "SOXX"           # post-Feb-2025 WDC Flash spinoff — limited history
+  CRWV:
+    sigma_class: EXTREME
+    sector_expected: "Technology / Software-Infrastructure"
+    stock_peers: ["NBIS"]      # GPU cloud peer
+    etf_peer: "IGV"            # iShares Software ETF (AI infra adjacent)
+  NBIS:
+    sigma_class: EXTREME
+    sector_expected: "Technology / Software-Infrastructure"
+    stock_peers: ["CRWV"]
+    etf_peer: "IGV"
+  INOD:
+    sigma_class: EXTREME
+    sector_expected: "Technology / Information Technology Services"
+    stock_peers: []            # small-cap AI data services — no clean stock peer
+    etf_peer: "IGV"
+  CRDO:
+    sigma_class: EXTREME
+    sector_expected: "Technology / Semiconductors"
+    stock_peers: ["MRVL", "AVGO"]
+    etf_peer: "SOXX"
+  ANAB:
+    sigma_class: EXTREME
+    sector_expected: "Healthcare / Biotechnology"
+    stock_peers: []            # sister to ENGN in catalyst-binary biotech bucket
+    etf_peer: "XBI"            # SPDR S&P Biotech ETF
+
+  # ---- HIGH (sidelined) ----
+  ASTS:
+    sigma_class: HIGH
+    sector_expected: "Communication Services / Telecom"
+    stock_peers: ["RKLB", "IRDM"]
+    etf_peer: ""
+  PL:
+    sigma_class: HIGH
+    sector_expected: "Technology / Software"
+    stock_peers: ["MAXR", "SPIR"]
+    etf_peer: ""
+  SATS:
+    sigma_class: HIGH
+    sector_expected: "Communication Services / Telecom"
+    stock_peers: ["IRDM", "VSAT"]
+    etf_peer: ""
+  GHM:
+    sigma_class: HIGH
+    sector_expected: "Industrials / Specialty Industrial Machinery"
+    stock_peers: ["ROP", "WTS"]
+    etf_peer: ""
+  MRVL:
+    sigma_class: HIGH
+    sector_expected: "Technology / Semiconductors"
+    stock_peers: ["AVGO", "MU"]
+    etf_peer: "SOXX"
+
+  # ---- MID (sidelined) ----
+  INTC:
+    sigma_class: MID
+    sector_expected: "Technology / Semiconductors"
+    stock_peers: ["AMD", "AVGO"]
+    etf_peer: ""
+  IPGP:
+    sigma_class: MID
+    sector_expected: "Technology / Communication Equipment"
+    stock_peers: ["LITE", "COHR"]
+    etf_peer: ""
+  LITE:
+    sigma_class: MID
+    sector_expected: "Technology / Communication Equipment"
+    stock_peers: ["IPGP", "COHR"]
+    etf_peer: ""
+  STX:
+    sigma_class: MID
+    sector_expected: "Technology / Computer Hardware"
+    stock_peers: ["MU", "SNDK", "WDC"]
+    etf_peer: ""
+  MOG-A:
+    sigma_class: MID
+    sector_expected: "Industrials / Aerospace & Defense"
+    stock_peers: ["HEI", "TDG", "CW"]
+    etf_peer: ""
+  GLW:
+    sigma_class: MID
+    sector_expected: "Technology / Communication Equipment"
+    stock_peers: ["AAOI", "CIEN"]
+    etf_peer: ""
+  LRCX:
+    sigma_class: MID
+    sector_expected: "Technology / Semiconductor Equipment"
+    stock_peers: ["AMAT", "KLAC"]
     etf_peer: "SOXX"
 
 # -----------------------------------------------------------
