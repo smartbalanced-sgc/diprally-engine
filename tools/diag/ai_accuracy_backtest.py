@@ -71,6 +71,45 @@ import pandas as pd  # noqa: F401  (used by truncation)
 
 _DEFAULT_LOOKBACK_TD = 60     # trading days to consider as candidate as-of dates
 _DEFAULT_FORWARD_TD = 20      # ground-truth horizon (matches engine HORIZON)
+_TODAY_ANCHORED_BUNDLE_FIELDS = (
+    # 2026-05-31 audit (Defect 3) — these fields are TODAY's values
+    # in the FMP fetch but the bundle is silent about that. Production AI
+    # on as_of_date would have seen as-of-date values for each. Leaving
+    # them in the as-of bundle leaks future state into the AI's view
+    # (e.g. today's bullish analyst consensus surfaces for a Feb 3
+    # backtest). Strip them entirely — AI sees the field absent rather
+    # than misleading, which is the honest backtest contract.
+    "analyst_consensus", "analyst_coverage",
+    "macro",
+    "options_iv",
+    "sector_perf",
+    "short_interest",
+    "fundamentals",
+    # Defect 2 — recent_news_30d is filtered by date in the existing
+    # path, but the underlying fetch is FMP's "last N" endpoint which
+    # has no date-range control. For old as-of dates the filter empties
+    # the list anyway. Strip explicitly so AI doesn't see an empty
+    # "recent_news_30d_count: 0" that could be misread as "no news that
+    # period" — a different (and false) signal than "we don't know what
+    # news existed". Documented limitation: backtest AI has no news
+    # input. Production AI has 30 days of news.
+    "recent_news_30d", "recent_news_30d_count",
+)
+
+
+def strip_today_anchored_fields(bundle: dict) -> dict:
+    """Return a copy of bundle with today-anchored fields removed (see
+    Defect 3). Bundle is then defensibly as-of: only date-stamped lists
+    that were filtered by date remain. The honest signal AI gets is
+    'this field absent for this backtest event' rather than today's
+    state masquerading as as-of state."""
+    import copy
+    out = copy.deepcopy(bundle)
+    for field in _TODAY_ANCHORED_BUNDLE_FIELDS:
+        out.pop(field, None)
+    return out
+
+
 _MIN_FORWARD_PRICES = 20      # need at least 20 forward trading days for scoring
 
 
@@ -162,6 +201,34 @@ def reconstruct_partial_base_signals(
         signal_from_revision_momentum,
     )
     from src.math_utils import enrichment_drift
+    from src.engine import DriftSignal
+
+    # 2026-05-31 audit (Defect 1) — signal_from_* return dicts; the
+    # Pass 1 prompt builder reads `.name` / `.mu_annual` / `.confidence`
+    # attributes off DriftSignal objects. Wrap each dict in a DriftSignal
+    # so the prompt formats correctly instead of crashing AttributeError
+    # on every event.
+    _PRETTY_NAMES = {
+        "historical": "Historical (GARCH + enrichment)",
+        "pt_revision": "Analyst PT revision (90d, decay-wtd magnitude)",
+        "revision_momentum": "Analyst revision momentum (90d, time-decayed)",
+    }
+
+    def _wrap_as_drift_signal(signal_dict: dict, signal_key: str) -> Optional[DriftSignal]:
+        """Convert raw signal-builder dict → DriftSignal. None-safe."""
+        if not isinstance(signal_dict, dict):
+            return None
+        drift_val = signal_dict.get("drift")
+        if drift_val is None:
+            return None
+        return DriftSignal(
+            name=_PRETTY_NAMES.get(signal_key, signal_key),
+            mu_annual=float(drift_val),
+            confidence=str(signal_dict.get("confidence", "LOW")).upper(),
+            source_quality=str(signal_dict.get("source_quality", "PRIMARY")),
+            weight=0.0,  # not used by prompt builder; only displayed
+            rationale=str(signal_dict.get("notes", "")),
+        )
 
     closes = history_df["close"].values.astype(float)
     # Rough mu from price drift over the truncated window.
@@ -177,10 +244,12 @@ def reconstruct_partial_base_signals(
     mom_5d = (closes[-1] / closes[-6] - 1.0) if len(closes) > 6 else 0.0
     mu_capped = enrichment_drift(rsi, mom_5d) + mu_hist  # PR-#26 ish
 
-    signals = []
+    signals: list[DriftSignal] = []
     try:
-        s = signal_from_historical(mu_capped, mu_hist, sigma_blended)
-        signals.append(s)
+        raw = signal_from_historical(mu_capped, mu_hist, sigma_blended)
+        wrapped = _wrap_as_drift_signal(raw, "historical")
+        if wrapped is not None:
+            signals.append(wrapped)
     except Exception:
         pass
     try:
@@ -198,9 +267,13 @@ def reconstruct_partial_base_signals(
         ]
         # signal_from_pt_revision wants raw FMP shape. Use the today=as_of
         # override so its internal decay clock anchors on the as-of date.
-        s = signal_from_pt_revision(pt_news_compat,
-                                      today=datetime.combine(as_of_date, datetime.min.time()))
-        signals.append(s)
+        raw = signal_from_pt_revision(
+            pt_news_compat,
+            today=datetime.combine(as_of_date, datetime.min.time()),
+        )
+        wrapped = _wrap_as_drift_signal(raw, "pt_revision")
+        if wrapped is not None:
+            signals.append(wrapped)
     except Exception:
         pass
     try:
@@ -215,11 +288,13 @@ def reconstruct_partial_base_signals(
             }
             for g in grade_changes if isinstance(g, dict)
         ]
-        s = signal_from_revision_momentum(
+        raw = signal_from_revision_momentum(
             grades_compat,
             today=datetime.combine(as_of_date, datetime.min.time()),
         )
-        signals.append(s)
+        wrapped = _wrap_as_drift_signal(raw, "revision_momentum")
+        if wrapped is not None:
+            signals.append(wrapped)
     except Exception:
         pass
     return signals
@@ -576,11 +651,15 @@ def run_backtest_event(
     from src.facts_bundle import bundle_to_prompt_block
 
     as_of_str = as_of_date.isoformat()
-    # 2026-05-31 fidelity upgrade — bump cache suffix so previous-
-    # generation results (without earnings date / base_signals / MC
-    # anchors) don't replay and mask the new behavior. Bump again on
-    # future fidelity changes.
-    cache_path = (cache_dir / f"{ticker}_{as_of_str}_v2.json") if cache_dir else None
+    # Cache version suffix — bump whenever AI input shape changes so
+    # stale cached results don't replay and mask the new behavior.
+    #   v1: bundle-only, no base_signals / earnings / MC anchors
+    #   v2: + earnings calendar, peers, base_signals (broken — dict shape),
+    #       MC marginal anchors with zero-drift baseline
+    #   v3: 2026-05-31 audit fixes — base_signals wrapped in DriftSignal
+    #       objects (was crashing), today-anchored bundle fields stripped
+    #       (was leaking future state)
+    cache_path = (cache_dir / f"{ticker}_{as_of_str}_v3.json") if cache_dir else None
     if cache_path and cache_path.exists():
         cached = json.loads(cache_path.read_text())
         return cached
@@ -589,7 +668,14 @@ def run_backtest_event(
     spot = state["spot"]
 
     # As-of-filtered facts bundle.
-    as_of_bundle = filter_bundle_lists_to_as_of(base_bundle, as_of_date)
+    # 2026-05-31 audit (Defect 3) — strip TODAY-anchored fields BEFORE
+    # date-list filtering. These fields carry today's analyst consensus,
+    # macro state, IV, sector perf, etc. Leaving them in leaks future
+    # information into the AI's view of as-of-X state. Filter the
+    # date-stamped lists (PT revisions, grades) on the cleaned bundle.
+    as_of_bundle = filter_bundle_lists_to_as_of(
+        strip_today_anchored_fields(base_bundle), as_of_date,
+    )
     as_of_bundle.update({
         "spot": round(spot, 4),
         "sigma_blended_annual_pct": round(state["sigma_blended"] * 100, 2),

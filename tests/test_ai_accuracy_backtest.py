@@ -319,6 +319,91 @@ def test_aggregate_results_hit_rate_and_bias():
     assert agg["overshoot_median_ratio"] == pytest.approx(2.75, rel=1e-6)
 
 
+# =============================================================================
+# 2026-05-31 audit fixes — regression tests for the three defects identified
+# in the pre-re-run code review. These lock the harness against silent
+# regression of: (1) base_signals object shape, (2) recent_news leakage,
+# (3) today-anchored bundle fields leakage.
+# =============================================================================
+
+def test_reconstruct_base_signals_returns_drift_signal_objects():
+    """Defect 1 regression — the Pass 1 prompt builder reads `.name` /
+    `.mu_annual` / `.confidence` ATTRIBUTES off each signal. Returning
+    raw dicts (which was the pre-fix bug) makes the prompt builder
+    crash AttributeError on every backtest event. Lock the contract."""
+    from tools.diag.ai_accuracy_backtest import reconstruct_partial_base_signals
+    from src.engine import DriftSignal
+
+    df = _synth_history(date(2026, 1, 5), 120, drift_annual=0.20, sigma_annual=0.3)
+    out = reconstruct_partial_base_signals(
+        history_df=df, as_of_date=date(2026, 5, 1),
+        pt_revisions=[], grade_changes=[], sigma_blended=0.30,
+    )
+    assert isinstance(out, list)
+    for s in out:
+        assert isinstance(s, DriftSignal), (
+            f"reconstructed signal is {type(s).__name__}, expected DriftSignal "
+            f"— Pass 1 prompt builder requires .name / .mu_annual / .confidence "
+            f"attributes (Defect 1)"
+        )
+        # Spot-check the attributes the prompt builder reads
+        assert hasattr(s, "name") and isinstance(s.name, str)
+        assert hasattr(s, "mu_annual") and isinstance(s.mu_annual, float)
+        assert hasattr(s, "confidence") and isinstance(s.confidence, str)
+
+
+def test_strip_today_anchored_fields_removes_future_leakage():
+    """Defect 3 regression — today-anchored fields (analyst_consensus,
+    macro, options_iv, sector_perf, fundamentals, short_interest) carry
+    TODAY's state in the FMP fetch. Leaving them in the as-of bundle
+    leaks future information into the AI's view of as-of-X state.
+    Strip them entirely so AI sees the field absent rather than
+    misleading."""
+    from tools.diag.ai_accuracy_backtest import strip_today_anchored_fields
+    bundle = {
+        "ticker": "MU",
+        "spot": 970.0,
+        "rsi_14": 70.0,
+        # These should all be stripped:
+        "analyst_consensus": {"targetMean": 1100, "targetHigh": 1500},
+        "analyst_coverage": {"last_month_analyst_count": 25},
+        "macro": {"vix": 15.2, "spy_trend_pct": 8.4},
+        "options_iv": {"iv_annual_pct": 95.0, "dte": 18},
+        "sector_perf": {"cum_return_pct": 12.5, "sector": "Technology"},
+        "fundamentals": {"ttm_fcf_usd": 8e9},
+        "short_interest": {"pct_of_float": 1.8},
+        "recent_news_30d": [{"date": "2026-05-30", "title": "MU $1T cap"}],
+        "recent_news_30d_count": 1,
+        # These date-stamped lists should SURVIVE (filtered separately by
+        # filter_bundle_lists_to_as_of based on actual entry dates):
+        "pt_revisions_90d": [{"date": "2026-05-28", "firm": "DA Davidson"}],
+        "grade_changes_90d": [{"date": "2026-05-20", "firm": "BofA"}],
+    }
+    out = strip_today_anchored_fields(bundle)
+    for stripped in ("analyst_consensus", "analyst_coverage", "macro",
+                       "options_iv", "sector_perf", "fundamentals",
+                       "short_interest", "recent_news_30d",
+                       "recent_news_30d_count"):
+        assert stripped not in out, (
+            f"{stripped} survived the strip — leaks today's state into "
+            f"backtest AI's view of as-of state (Defect 3)"
+        )
+    # Date-stamped lists must survive (they're filtered separately).
+    assert "pt_revisions_90d" in out
+    assert "grade_changes_90d" in out
+    # Identity check — original bundle UNMUTATED.
+    assert "analyst_consensus" in bundle
+
+
+def test_strip_today_anchored_fields_handles_missing_keys():
+    """Strip operation must be idempotent and forgiving — bundle may
+    not have all today-anchored keys (e.g. profile fetch failed)."""
+    from tools.diag.ai_accuracy_backtest import strip_today_anchored_fields
+    sparse = {"ticker": "MU", "spot": 970.0}
+    out = strip_today_anchored_fields(sparse)
+    assert out == sparse  # nothing to strip
+
+
 def test_aggregate_results_excludes_truncated_forwards():
     """Events whose forward window was truncated below the 20-trading-day
     minimum must not contribute to summary stats — they're unscored."""
