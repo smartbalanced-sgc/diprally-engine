@@ -428,11 +428,10 @@ def run_backtest_event(
 
     self_earnings_dt: Optional[datetime] = None  # not reconstructed retroactively
 
-    # The prompt builders take rich engine objects. For the backtest we
-    # call them with the minimal stand-ins above + an empty base-signal
-    # summary string. AI Pass 1's bundle_block IS the substantive input.
-    base_signal_summary = "(backtest mode — math-layer signal blend not reconstructed)"
-
+    # The prompt builders take rich engine objects. Backtest passes the
+    # minimal stand-ins above + an empty base_signals list (math-layer
+    # signal blend not reconstructed retroactively). AI Pass 1's
+    # bundle_block IS the substantive input being tested.
     if dry_run:
         return {
             "ticker": ticker, "as_of_date": as_of_str,
@@ -444,13 +443,13 @@ def run_backtest_event(
 
     pass1_prompt = build_ai_pass1_prompt(
         ticker=ticker, snapshot=snap, vol_profile=vp,
-        base_signal_summary=base_signal_summary,
         horizon_days=horizon_days,
-        peer_tickers=peer_tickers,
+        base_signals=[],  # math-layer signal blend not reconstructed retroactively
         self_earnings_date=self_earnings_dt,
+        peer_tickers=peer_tickers,
         facts_bundle_json=bundle_block,
     )
-    p1_raw, p1_sources, p1_cost = call_ai_pass(
+    p1_raw, p1_cost, p1_sources, p1_status = call_ai_pass(
         prompt=pass1_prompt, max_tokens=3000, pass_label="Backtest Pass 1",
         model=pass1_model, web_search_max_uses=web_search_max_uses,
     )
@@ -460,7 +459,7 @@ def run_backtest_event(
             "spot_at_as_of": spot,
             "predicted_drift": None,
             "ai_cost": p1_cost or 0.0,
-            "error": "Pass 1 returned no parseable JSON",
+            "error": f"Pass 1 status={p1_status}",
         }
     pass1 = parse_ai_pass1(p1_raw, p1_sources, p1_cost, today=as_of_date)
 
@@ -479,7 +478,7 @@ def run_backtest_event(
         prior_posterior_drift=None,
         facts_bundle_json=bundle_block,
     )
-    p2_raw, _, p2_cost = call_ai_pass(
+    p2_raw, p2_cost, _, p2_status = call_ai_pass(
         prompt=pass2_prompt, max_tokens=3000, pass_label="Backtest Pass 2",
         model=pass2_model, web_search_max_uses=0,
     )
@@ -617,7 +616,7 @@ def print_summary(agg: dict) -> None:
         return
     print(f"  Events scored: {agg.get('n_scored', 0)} / {agg['n_events']} attempted")
     if agg.get("n_scored", 0) == 0:
-        print(f"  Note: {agg.get('note', '(none with full 20d forward history)')}")
+        print(f"  Note: {agg.get('note', 'no events with both AI prediction and full 20d forward history')}")
         return
     hr = agg.get("directional_hit_rate")
     if hr is not None:
