@@ -74,6 +74,29 @@ _DEFAULT_FORWARD_TD = 20      # ground-truth horizon (matches engine HORIZON)
 _MIN_FORWARD_PRICES = 20      # need at least 20 forward trading days for scoring
 
 
+def _normalize_history_columns(df):
+    """FMP returns Date/Close (capitalized); yfinance is mixed. Harness
+    contract uses lowercase date/close/high/low. Normalize on ingest so
+    downstream helpers see a stable column shape regardless of provider.
+
+    'date' is coerced to string YYYY-MM-DD for stable date filtering.
+    """
+    out = df.copy()
+    # Case-insensitive column rename
+    lower_map = {c: c.lower() for c in out.columns}
+    out = out.rename(columns=lower_map)
+    if "date" not in out.columns:
+        raise ValueError(
+            f"history DataFrame missing 'date' column after lowercase; "
+            f"available: {sorted(out.columns.tolist())}"
+        )
+    # Stringify date for consistent comparison (.dt.date downstream works
+    # on both string and datetime inputs via pd.to_datetime).
+    if not pd.api.types.is_string_dtype(out["date"]):
+        out["date"] = pd.to_datetime(out["date"]).dt.strftime("%Y-%m-%d")
+    return out
+
+
 # =============================================================================
 # As-of filtering — what the AI would have seen on day X
 # =============================================================================
@@ -668,7 +691,7 @@ def main():
     from src.facts_bundle import build_facts_bundle
 
     # Cache fetched data to avoid re-fetching across runs.
-    history = fetch_history(ticker, api_key, lookback_days=400)
+    history = _normalize_history_columns(fetch_history(ticker, api_key, lookback_days=400))
     profile = fetch_company_profile(ticker, api_key)
     analyst_targets = fetch_analyst_targets(ticker, api_key)
     analyst_summary = fetch_analyst_summary(ticker, api_key)
