@@ -355,7 +355,7 @@ and catalysts REPLACE Pass 1's in the downstream blend and MC. Return JSON:
   "catalysts_reasoning": "Why this revised set differs from Pass 1's (or why kept as-is)",
 
   "verdict_alignment_signal": "STRONG_SUPPORT" | "SUPPORT" | "NEUTRAL" | "CAUTION" | "STRONG_CAUTION",
-  "verdict_alignment_reasoning": "One concise sentence (<200 chars) — why this signal level"
+  "verdict_alignment_reasoning": "ONE COMPLETE SENTENCE, ≤140 chars, ending in a period. Must read cleanly on a single terminal headline line — no internal em-dashes that suggest continuation, no trailing clauses that would be lost to truncation."
 }}
 
 VERDICT-ALIGNMENT SIGNAL — your qualitative read on the math's verdict:
@@ -1024,7 +1024,25 @@ def parse_ai_pass2(raw, pass1, cost, today: Optional[date] = None):
     verdict_alignment_reasoning = ""
     raw_reasoning = raw.get("verdict_alignment_reasoning", "")
     if isinstance(raw_reasoning, str):
-        verdict_alignment_reasoning = raw_reasoning.strip()[:250]
+        cleaned = raw_reasoning.strip()
+        # Single-line discipline — AI sometimes embeds newlines that
+        # would break the headline render. Replace with a space.
+        cleaned = " ".join(cleaned.split())
+        # Cap at 140 chars on a WORD boundary so it reads as complete
+        # rather than truncated mid-word. If the AI obeyed the prompt
+        # and produced ≤140 chars, no change. If it overshot, take
+        # everything up to the last space before the cap and add a
+        # period to signal sentence completion.
+        if len(cleaned) <= 140:
+            verdict_alignment_reasoning = cleaned
+        else:
+            cut = cleaned[:140].rsplit(" ", 1)[0]
+            # If the cut already ends with terminal punctuation, leave
+            # it; otherwise append a period so the headline reads as a
+            # complete (if abbreviated) thought.
+            if cut and cut[-1] not in ".!?":
+                cut = cut.rstrip(",;:—-") + "."
+            verdict_alignment_reasoning = cut
 
     # 2026-05-24 audit fix: capture Pass 2 reasoning fields. The prompt
     # requests these 5 fields + agreement_with_pass1, the parser

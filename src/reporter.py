@@ -42,7 +42,9 @@ def _ai_alignment_suffix(pass2) -> str:
     if signal == "NEUTRAL" and not reasoning:
         return ""
     if reasoning:
-        return f"  ·  [{badge} — {reasoning[:80]}]"
+        # No truncation — parser caps reasoning at 140 chars at the
+        # word boundary so it always reads as a complete sentence.
+        return f"  ·  [{badge} — {reasoning}]"
     return f"  ·  [{badge}]"
 
 
@@ -719,7 +721,10 @@ def format_report(
     # AI SYNTHESIS
     lines.append(hr("AI TWO-PASS SYNTHESIS (Pass 1: Opus 4.7 · Pass 2: Sonnet 4.6 · Stress: Haiku 4.5)"))
     if pass1:
-        lines.append(f"  PASS 1: drift={pass1.drift_estimate:+.1%}/yr  conf={pass1.confidence}  vol_regime={pass1.vol_regime}  narrative={pass1.narrative_score}  sources={pass1.raw_sources_cited}  cost=${pass1.cost_usd:.2f}")
+        # 2026-05-31 audit (Jesse) — surface drift_range. Wide range = AI is
+        # signaling its own uncertainty on direction; previously dropped.
+        p1_lo, p1_hi = pass1.drift_range
+        lines.append(f"  PASS 1: drift={pass1.drift_estimate:+.1%}/yr  range=[{p1_lo:+.1%}, {p1_hi:+.1%}]  conf={pass1.confidence}  vol_regime={pass1.vol_regime}  narrative={pass1.narrative_score}  sources={pass1.raw_sources_cited}  cost=${pass1.cost_usd:.2f}")
         lines.append(f"    Catalysts identified: {len(pass1.catalysts)}")
         for c in pass1.catalysts[:5]:
             if isinstance(c, dict):
@@ -734,8 +739,28 @@ def format_report(
                     lines.append(f"          ↳ verify: {v_reason[:160]}")
             else:
                 lines.append(f"      • {c}")
-        lines.append(f"    Bull factors HIGH-weight: {sum(1 for f in pass1.bull_factors if _factor_weight(f) == 'high')}")
-        lines.append(f"    Bear factors HIGH-weight: {sum(1 for f in pass1.bear_factors if _factor_weight(f) == 'high')}")
+        # 2026-05-31 audit (Jesse) — was only showing COUNT of HIGH-weight
+        # bull/bear factors. Tokens were paid for the factor TEXT; surface it.
+        high_bulls = [f for f in pass1.bull_factors if _factor_weight(f) == "high"]
+        med_bulls = [f for f in pass1.bull_factors if _factor_weight(f) == "med"]
+        high_bears = [f for f in pass1.bear_factors if _factor_weight(f) == "high"]
+        med_bears = [f for f in pass1.bear_factors if _factor_weight(f) == "med"]
+        if high_bulls or med_bulls:
+            lines.append(f"    Bull factors ({len(high_bulls)} HIGH, {len(med_bulls)} MED):")
+            for f in high_bulls[:3]:
+                txt = f.get("factor", str(f)) if isinstance(f, dict) else str(f)
+                lines.append(f"      ⬆ [HIGH] {txt[:200]}")
+            for f in med_bulls[:3]:
+                txt = f.get("factor", str(f)) if isinstance(f, dict) else str(f)
+                lines.append(f"      ⬆ [med]  {txt[:200]}")
+        if high_bears or med_bears:
+            lines.append(f"    Bear factors ({len(high_bears)} HIGH, {len(med_bears)} MED):")
+            for f in high_bears[:3]:
+                txt = f.get("factor", str(f)) if isinstance(f, dict) else str(f)
+                lines.append(f"      ⬇ [HIGH] {txt[:200]}")
+            for f in med_bears[:3]:
+                txt = f.get("factor", str(f)) if isinstance(f, dict) else str(f)
+                lines.append(f"      ⬇ [med]  {txt[:200]}")
         # 2026-05-24 audit fix: narrative_evidence captured (Pass 1 prompt requested,
         # parser previously discarded). Each {claim, source} grounds the narrative score.
         if getattr(pass1, "narrative_evidence", None):
@@ -764,32 +789,47 @@ def format_report(
                 "strong_disagree":   "STRONG DISAGREE",
             }
             agree_tag = f"  [{tag_map.get(pass2.agreement_with_pass1, pass2.agreement_with_pass1.upper())}]"
-        lines.append(f"  PASS 2: drift={pass2.drift_estimate:+.1%}/yr  conf={pass2.confidence}  {rev_str}{agree_tag}  cost=${pass2.cost_usd:.2f}")
+        # 2026-05-31 audit (Jesse) — surface Pass 2 drift_range too.
+        p2_lo, p2_hi = pass2.drift_range
+        lines.append(f"  PASS 2: drift={pass2.drift_estimate:+.1%}/yr  range=[{p2_lo:+.1%}, {p2_hi:+.1%}]  conf={pass2.confidence}  {rev_str}{agree_tag}  cost=${pass2.cost_usd:.2f}")
         # 2026-05-24 audit fix: per-revision reasoning (5 fields previously
         # discarded by parse_ai_pass2). Operator now sees WHY Pass 2 made each
         # revision instead of having to read the long primary_critique essay.
         if getattr(pass2, "revision_reasoning", ""):
             lines.append(f"    drift rationale: {pass2.revision_reasoning[:240]}")
-        # Pass 2 revisions of vol_regime / narrative / catalysts (sacred #7).
-        # Show only the deltas — concurrence is implicit.
+        # 2026-05-31 audit (Jesse) — vol_regime_reasoning / narrative_reasoning
+        # / catalysts_reasoning previously were ONLY shown when the value
+        # changed. When Pass 2 kept Pass 1's value, the reasoning string
+        # (explaining WHY Pass 2 concurred) was dropped. Always-show now —
+        # the rationale for keeping is just as operator-relevant as the
+        # rationale for changing.
         if pass1:
+            vol_reason = (getattr(pass2, "vol_regime_reasoning", "") or "").strip()
             if pass2.vol_regime != pass1.vol_regime:
-                detail = f" — {pass2.vol_regime_reasoning[:160]}" if getattr(pass2, "vol_regime_reasoning", "") else ""
+                detail = f" — {vol_reason[:240]}" if vol_reason else ""
                 lines.append(f"    vol_regime: {pass1.vol_regime} → {pass2.vol_regime}{detail}")
+            elif vol_reason:
+                lines.append(f"    vol_regime: kept {pass2.vol_regime} — {vol_reason[:240]}")
+            narr_reason = (getattr(pass2, "narrative_reasoning", "") or "").strip()
             if pass2.narrative_score != pass1.narrative_score:
-                detail = f" — {pass2.narrative_reasoning[:160]}" if getattr(pass2, "narrative_reasoning", "") else ""
+                detail = f" — {narr_reason[:240]}" if narr_reason else ""
                 lines.append(f"    narrative: {pass1.narrative_score} → {pass2.narrative_score}{detail}")
+            elif narr_reason:
+                lines.append(f"    narrative: kept {pass2.narrative_score} — {narr_reason[:240]}")
             p1_names = {(c.get('name') if isinstance(c, dict) else str(c)) for c in pass1.catalysts}
             p2_names = {(c.get('name') if isinstance(c, dict) else str(c)) for c in pass2.catalysts}
             added = p2_names - p1_names
             dropped = p1_names - p2_names
+            cat_reason = (getattr(pass2, "catalysts_reasoning", "") or "").strip()
             if added or dropped:
                 if added:
                     lines.append(f"    catalysts +{len(added)}: {', '.join(list(added)[:3])}")
                 if dropped:
                     lines.append(f"    catalysts -{len(dropped)}: {', '.join(list(dropped)[:3])}")
-                if getattr(pass2, "catalysts_reasoning", ""):
-                    lines.append(f"      ↳ {pass2.catalysts_reasoning[:200]}")
+                if cat_reason:
+                    lines.append(f"      ↳ {cat_reason[:240]}")
+            elif cat_reason:
+                lines.append(f"    catalysts: kept Pass 1's set — {cat_reason[:240]}")
         # 2026-05-24 audit fix (round 2): catalyst-verification verdicts are
         # applied to Pass 2's catalysts (effective_ai.catalysts), but PR #65
         # surfaced the tag on Pass 1's enumeration only — the wrong section.
@@ -1020,12 +1060,142 @@ def generate_html_dashboard(
             ) else ""
         )
 
+        # 2026-05-31 audit (Jesse) — operator-facing collapsible "AI deep
+        # thesis" block. Every Pass 1 / Pass 2 field that was prompted-
+        # for and persisted is rendered here. Default collapsed via
+        # <details> so the dashboard stays compact; expandable on demand
+        # so the full token-paid depth is one click away. Mirror of the
+        # text report's deep section; HTML gets actual collapse UI.
+        p1_lo, p1_hi = pass1.drift_range
+        p2_lo, p2_hi = pass2.drift_range
+        alignment_signal = getattr(pass2, "verdict_alignment_signal", "NEUTRAL")
+        alignment_reasoning = getattr(pass2, "verdict_alignment_reasoning", "")
+        align_color_map = {
+            "STRONG_SUPPORT":  "#166534",
+            "SUPPORT":         "#365314",
+            "NEUTRAL":         "#374151",
+            "CAUTION":         "#854d0e",
+            "STRONG_CAUTION":  "#7f1d1d",
+        }
+        align_color = align_color_map.get(alignment_signal, "#374151")
+        align_block_html = (
+            f'<div class="ai-align" style="border-left:4px solid {align_color};padding:6px 10px;margin:8px 0;background:#1f2937">'
+            f'<strong>AI alignment with math:</strong> '
+            f'<span style="color:{align_color};font-weight:600">{alignment_signal}</span><br>'
+            f'<em>{_html.escape(alignment_reasoning) if alignment_reasoning else "(no reasoning provided)"}</em>'
+            f'</div>'
+        )
+
+        def _factor_list_html(factors, label, arrow):
+            if not factors:
+                return ""
+            items = []
+            for f in factors[:6]:
+                txt = f.get("factor", str(f)) if isinstance(f, dict) else str(f)
+                weight = (f.get("weight", "?") if isinstance(f, dict) else "?").upper()
+                items.append(
+                    f'<li>{arrow} <span class="weight-{weight.lower()}">[{weight}]</span> {_html.escape(str(txt)[:300])}</li>'
+                )
+            return f'<div><strong>{label}:</strong><ul style="margin:4px 0 8px 18px">{"".join(items)}</ul></div>'
+
+        bull_html = _factor_list_html(pass1.bull_factors, "Pass 1 bull factors", "⬆")
+        bear_html = _factor_list_html(pass1.bear_factors, "Pass 1 bear factors", "⬇")
+
+        narr_ev = getattr(pass1, "narrative_evidence", []) or []
+        narr_ev_html = ""
+        if narr_ev:
+            items = []
+            for ev in narr_ev[:5]:
+                if isinstance(ev, dict):
+                    claim = _html.escape(str(ev.get("claim", ""))[:300])
+                    src = _html.escape(str(ev.get("source", "?"))[:100])
+                    items.append(f'<li>"{claim}" <span class="cat-meta">— {src}</span></li>')
+            if items:
+                narr_ev_html = f'<div><strong>Pass 1 narrative evidence:</strong><ul style="margin:4px 0 8px 18px">{"".join(items)}</ul></div>'
+
+        risk_html = ""
+        if pass1.key_risks:
+            risk_items = "".join(
+                f'<li>{_html.escape(str(r)[:300])}</li>' for r in pass1.key_risks[:5] if r
+            )
+            if risk_items:
+                risk_html = f'<div><strong>Pass 1 key risks:</strong><ul style="margin:4px 0 8px 18px">{risk_items}</ul></div>'
+
+        # Pass 2 reasoning fields — always show, even when value was
+        # kept-as-is (the rationale for keeping IS data).
+        p2_reasons = []
+        for label, attr in (
+            ("Drift rationale",       "revision_reasoning"),
+            ("Vol regime rationale",  "vol_regime_reasoning"),
+            ("Narrative rationale",   "narrative_reasoning"),
+            ("Catalysts rationale",   "catalysts_reasoning"),
+        ):
+            val = (getattr(pass2, attr, "") or "").strip()
+            if val:
+                p2_reasons.append(
+                    f'<div><strong>{label}:</strong> {_html.escape(val[:600])}</div>'
+                )
+        p2_reasons_html = "".join(p2_reasons)
+
+        # Full catalyst list with source dates + freshness + URLs.
+        freshness_color = {
+            "FRESH": "#166534", "AGING": "#854d0e", "STALE": "#7f1d1d",
+            "FUTURE": "#1e40af", "UNKNOWN": "#374151",
+        }
+        full_cat_rows = []
+        for c in pass2.catalysts:
+            if not isinstance(c, dict):
+                continue
+            name = _html.escape(str(c.get("name", "?"))[:200])
+            mag = _html.escape(str(c.get("magnitude", "?")).upper())
+            direction = _html.escape(str(c.get("direction_risk", "?")))
+            event = _html.escape(str(c.get("date_or_window", "")))
+            src_date = _html.escape(str(c.get("source_date") or "unknown"))
+            freshness = (c.get("freshness") or "UNKNOWN").upper()
+            f_color = freshness_color.get(freshness, "#374151")
+            src_url = c.get("source_url") or ""
+            url_html = ""
+            if src_url and src_url.startswith("http"):
+                url_html = f' <a href="{_html.escape(src_url)}" target="_blank" style="color:#60a5fa">[source]</a>'
+            verdict = (c.get("verification_verdict") or "").upper()
+            v_html = f' <span class="v-chip" style="background:{verdict_color.get(verdict, "#374151")}">{verdict}</span>' if verdict in verdict_color else ""
+            full_cat_rows.append(
+                f'<div class="cat-row">'
+                f'<strong>{name}</strong> '
+                f'<span class="cat-meta">(mag {mag} · {direction} · event {event})</span><br>'
+                f'<span class="cat-meta">source {src_date} '
+                f'<span style="color:{f_color};font-weight:600">[{freshness}]</span>'
+                f'{url_html}{v_html}</span>'
+                f'</div>'
+            )
+        full_cats_html = ""
+        if full_cat_rows:
+            full_cats_html = f'<div><strong>All {len(full_cat_rows)} Pass 2 catalysts (post-verification, with sources):</strong>{"".join(full_cat_rows)}</div>'
+
+        deep_thesis_html = (
+            f'<details class="ai-deep" style="margin-top:8px">'
+            f'<summary style="cursor:pointer;color:#60a5fa;padding:6px 0">'
+            f'▶ Expand AI deep thesis '
+            f'(Pass 1 drift_range / bull-bear factors / narrative evidence / risks · '
+            f'Pass 2 rationales · full catalyst list with sources + freshness)'
+            f'</summary>'
+            f'<div style="padding:8px;background:#1a1d24;border-radius:4px;margin-top:6px">'
+            f'<div><strong>Pass 1 drift range:</strong> [{p1_lo:+.1%}, {p1_hi:+.1%}] '
+            f'(±{(p1_hi-p1_lo)*50:.1f}pp half-width — wider = AI more uncertain)</div>'
+            f'<div><strong>Pass 2 drift range:</strong> [{p2_lo:+.1%}, {p2_hi:+.1%}]</div>'
+            f'{bull_html}{bear_html}{narr_ev_html}{risk_html}'
+            f'{p2_reasons_html}{full_cats_html}'
+            f'</div></details>'
+        )
+
         ai_block = f"""
     <div class="ai-block">
-      <div class="ai-pass"><strong>Pass 1:</strong> drift {pass1.drift_estimate:+.1%}/yr, conf {pass1.confidence}, narrative {pass1.narrative_score}, {len(pass1.catalysts)} catalysts, ${pass1.cost_usd:.2f}</div>
-      <div class="ai-pass"><strong>Pass 2:</strong> revised drift {pass2.drift_estimate:+.1%}/yr ({(pass2.revision_from_prior_pass or 0):+.1%} from Pass 1), conf {pass2.confidence}, ${pass2.cost_usd:.2f}{agreement_html}</div>
+      <div class="ai-pass"><strong>Pass 1:</strong> drift {pass1.drift_estimate:+.1%}/yr, range [{p1_lo:+.1%},{p1_hi:+.1%}], conf {pass1.confidence}, narrative {pass1.narrative_score}, {len(pass1.catalysts)} catalysts, ${pass1.cost_usd:.2f}</div>
+      <div class="ai-pass"><strong>Pass 2:</strong> revised drift {pass2.drift_estimate:+.1%}/yr ({(pass2.revision_from_prior_pass or 0):+.1%} from Pass 1), range [{p2_lo:+.1%},{p2_hi:+.1%}], conf {pass2.confidence}, ${pass2.cost_usd:.2f}{agreement_html}</div>
+      {align_block_html}
       {rev_reasoning_html}
       {cats_block}
+      {deep_thesis_html}
     </div>
 """
 
