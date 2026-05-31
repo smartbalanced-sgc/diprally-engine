@@ -74,6 +74,196 @@ _DEFAULT_FORWARD_TD = 20      # ground-truth horizon (matches engine HORIZON)
 _MIN_FORWARD_PRICES = 20      # need at least 20 forward trading days for scoring
 
 
+# =============================================================================
+# Fidelity upgrade (2026-05-31) — what production AI sees that the original
+# backtest didn't pass through. Critical missing inputs:
+#   - self_earnings_date (drives AI's binary-risk awareness)
+#   - peer_tickers (registry-derived)
+#   - partial base_signals (math-derived drift signals AI synthesizes against)
+#   - Pass 2 MC marginal anchors (P_up / P_down brackets AI uses to reconcile)
+# These bring backtest AI's input set closer to production. Inputs still NOT
+# reconstructed: sector_perf, macro, short_data, full base_signals (sector
+# momentum, peer_rs, sector_decoupling, fundamentals) — those need additional
+# historical fetches and are deferred. Documented limitation.
+# =============================================================================
+
+def fetch_earnings_calendar_window(ticker: str, api_key: str,
+                                     from_date: date, to_date: date) -> list[dict]:
+    """Hit FMP's earnings-calendar with a custom from/to window — the
+    standard fetch_next_earnings hardcodes today, which is wrong for
+    as-of replay. Returns list of {date, eps_estimated, ...} dicts.
+    Empty list on any failure (silent — caller treats as 'no earnings
+    info available' and proceeds without it).
+    """
+    import requests
+    from src.config import FMP_BASE
+    try:
+        r = requests.get(
+            f"{FMP_BASE}/earnings-calendar", timeout=15,
+            params={
+                "from": from_date.strftime("%Y-%m-%d"),
+                "to": to_date.strftime("%Y-%m-%d"),
+                "apikey": api_key,
+            },
+        )
+        r.raise_for_status()
+        data = r.json()
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [e for e in data if e.get("symbol") == ticker]
+
+
+def pick_next_earnings_after(events: list[dict],
+                              as_of_date: date) -> Optional[datetime]:
+    """From a list of FMP earnings events, return the first one strictly
+    after as_of_date. Returns None when no upcoming event in the data."""
+    upcoming = []
+    for e in events:
+        d_str = e.get("date") or ""
+        try:
+            d = datetime.strptime(d_str[:10], "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            continue
+        if d > as_of_date:
+            upcoming.append((d, e))
+    if not upcoming:
+        return None
+    upcoming.sort(key=lambda x: x[0])
+    return datetime.combine(upcoming[0][0], datetime.min.time())
+
+
+def reconstruct_partial_base_signals(
+    *, history_df, as_of_date: date,
+    pt_revisions: list[dict], grade_changes: list[dict],
+    sigma_blended: float,
+) -> list:
+    """Reconstruct the subset of base_signals that DON'T require additional
+    historical FMP fetches. Production AI's Pass 1 prompt formats these as
+    a `'  - {name}: mu={mu:+.1%}/yr conf={conf}'` block — giving AI
+    *something* math-derived to synthesize against (vs the blank
+    placeholder the backtest used pre-upgrade).
+
+    Reconstructed (FMP+price-derived; no AI circularity):
+      - historical  — from truncated price history
+      - pt_revision — from already-as-of-filtered pt_revisions
+      - revision_momentum — from already-as-of-filtered grade_changes
+
+    Deferred (need additional historical fetches):
+      - sector momentum, peer_rs, sector_decoupling, macro, short_interest,
+        fundamentals, analyst signal
+    These show as 'absent' from AI's view, accurately documenting the
+    fidelity gap. Production AI sees all 13; backtest sees these 3 +
+    realized vol baseline.
+    """
+    from src.signals import (
+        signal_from_historical, signal_from_pt_revision,
+        signal_from_revision_momentum,
+    )
+    from src.math_utils import enrichment_drift
+
+    closes = history_df["close"].values.astype(float)
+    # Rough mu from price drift over the truncated window.
+    if len(closes) >= 60:
+        log_returns = np.diff(np.log(closes[-60:]))
+        mu_hist = float(log_returns.mean() * 252)
+    else:
+        mu_hist = 0.0
+    # Enrichment uses RSI + mom_5d — approximate from truncated state.
+    closes_series = pd.Series(closes)
+    from src.math_utils import compute_rsi_14
+    rsi = float(compute_rsi_14(closes_series))
+    mom_5d = (closes[-1] / closes[-6] - 1.0) if len(closes) > 6 else 0.0
+    mu_capped = enrichment_drift(rsi, mom_5d) + mu_hist  # PR-#26 ish
+
+    signals = []
+    try:
+        s = signal_from_historical(mu_capped, mu_hist, sigma_blended)
+        signals.append(s)
+    except Exception:
+        pass
+    try:
+        # FMP pt_news → prompt-compatible dicts with publishedDate / title /
+        # company / priceTarget keys — the same fields signal_from_pt_revision
+        # expects in production.
+        pt_news_compat = [
+            {
+                "publishedDate": r.get("date"),
+                "title": r.get("title"),
+                "company": r.get("firm"),
+                "priceTarget": r.get("new_pt"),
+            }
+            for r in pt_revisions if isinstance(r, dict)
+        ]
+        # signal_from_pt_revision wants raw FMP shape. Use the today=as_of
+        # override so its internal decay clock anchors on the as-of date.
+        s = signal_from_pt_revision(pt_news_compat,
+                                      today=datetime.combine(as_of_date, datetime.min.time()))
+        signals.append(s)
+    except Exception:
+        pass
+    try:
+        # signal_from_revision_momentum reads gradingCompany / date / etc.
+        grades_compat = [
+            {
+                "date": g.get("date"),
+                "gradingCompany": g.get("firm"),
+                "previousGrade": g.get("from_grade"),
+                "newGrade": g.get("to_grade"),
+                "action": g.get("action"),
+            }
+            for g in grade_changes if isinstance(g, dict)
+        ]
+        s = signal_from_revision_momentum(
+            grades_compat,
+            today=datetime.combine(as_of_date, datetime.min.time()),
+        )
+        signals.append(s)
+    except Exception:
+        pass
+    return signals
+
+
+def compute_mc_marginal_summary(
+    *, spot: float, sigma_blended: float, horizon_days: int,
+    bracket_pct: float = 0.10,
+) -> dict:
+    """Production Pass 2 reads MC marginal probabilities to anchor its
+    drift revision. Backtest needs to provide the same shape so Pass 2
+    has something math-grounded to react to.
+
+    Computes P(touch +bracket_pct from spot) and P(touch -bracket_pct
+    from spot) within horizon, using zero-drift GBM as a neutral
+    baseline (no circular dependency on AI's drift estimate)."""
+    from src.math_utils import (
+        run_mc_joint_conditional, precompute_first_touch_days,
+    )
+    paths = run_mc_joint_conditional(
+        S0=spot, sigma=sigma_blended, mu=0.0,  # neutral baseline
+        horizon_days=horizon_days, n_paths=20_000,
+        distribution="student_t", df=5.0, seed=42,
+    )
+    upper = spot * (1.0 + bracket_pct)
+    lower = spot * (1.0 - bracket_pct)
+    up_first = precompute_first_touch_days(
+        paths, spot, np.array([upper]), sigma_blended, None, "up", seed=42,
+    )[:, 0]
+    down_first = precompute_first_touch_days(
+        paths, spot, np.array([lower]), sigma_blended, None, "down", seed=43,
+    )[:, 0]
+    n_days = paths.shape[1]
+    up_first_touched = up_first < n_days
+    down_first_touched = down_first < n_days
+    up_first_wins = (up_first < down_first) & up_first_touched
+    down_first_wins = (down_first < up_first) & down_first_touched
+    return {
+        "p_up": f"{float(up_first_wins.mean())*100:.1f}%",
+        "p_down": f"{float(down_first_wins.mean())*100:.1f}%",
+        "bracket_pct_str": f"{int(bracket_pct*100)}%",
+    }
+
+
 def _normalize_history_columns(df):
     """FMP returns Date/Close (capitalized); yfinance is mixed. Harness
     contract uses lowercase date/close/high/low. Normalize on ingest so
@@ -366,6 +556,10 @@ def run_backtest_event(
     web_search_max_uses: int = 0,  # DISABLED for backtest — see module docstring
     cache_dir: Optional[Path] = None,
     dry_run: bool = False,
+    # 2026-05-31 fidelity upgrade — pass-throughs from main(). These bring
+    # backtest AI input closer to production. None defaults silently degrade
+    # to bundle-only mode for backward compat.
+    earnings_events_all: Optional[list[dict]] = None,
 ) -> dict:
     """Replay a single (ticker, as_of_date) AI prediction. Returns a flat
     dict of fields suitable for CSV rows + accuracy scoring.
@@ -382,7 +576,11 @@ def run_backtest_event(
     from src.facts_bundle import bundle_to_prompt_block
 
     as_of_str = as_of_date.isoformat()
-    cache_path = (cache_dir / f"{ticker}_{as_of_str}.json") if cache_dir else None
+    # 2026-05-31 fidelity upgrade — bump cache suffix so previous-
+    # generation results (without earnings date / base_signals / MC
+    # anchors) don't replay and mask the new behavior. Bump again on
+    # future fidelity changes.
+    cache_path = (cache_dir / f"{ticker}_{as_of_str}_v2.json") if cache_dir else None
     if cache_path and cache_path.exists():
         cached = json.loads(cache_path.read_text())
         return cached
@@ -426,12 +624,27 @@ def run_backtest_event(
     vp.garch_sigma = state["sigma_blended"]
     vp.realized_vol = {30: state["sigma_blended"]}
 
-    self_earnings_dt: Optional[datetime] = None  # not reconstructed retroactively
+    # 2026-05-31 fidelity upgrade — reconstruct self_earnings_date for
+    # this as-of (first scheduled earnings strictly after as_of_date).
+    # Production AI uses this for binary-risk awareness; backtest pre-
+    # upgrade passed None, so AI was blind to earnings timing.
+    self_earnings_dt: Optional[datetime] = None
+    if earnings_events_all:
+        self_earnings_dt = pick_next_earnings_after(earnings_events_all, as_of_date)
 
-    # The prompt builders take rich engine objects. Backtest passes the
-    # minimal stand-ins above + an empty base_signals list (math-layer
-    # signal blend not reconstructed retroactively). AI Pass 1's
-    # bundle_block IS the substantive input being tested.
+    # 2026-05-31 fidelity upgrade — partial base_signals reconstruction.
+    # Production prompt formats these into a math-derived anchor block
+    # for AI to synthesize against. 3 of 13 reconstructed (historical,
+    # pt_revision, revision_momentum); the rest need additional
+    # historical fetches and are deferred.
+    base_signals = reconstruct_partial_base_signals(
+        history_df=truncate_history_to(history_df, as_of_date),
+        as_of_date=as_of_date,
+        pt_revisions=as_of_bundle.get("pt_revisions_90d", []) or [],
+        grade_changes=as_of_bundle.get("grade_changes_90d", []) or [],
+        sigma_blended=state["sigma_blended"],
+    )
+
     if dry_run:
         return {
             "ticker": ticker, "as_of_date": as_of_str,
@@ -444,8 +657,8 @@ def run_backtest_event(
     pass1_prompt = build_ai_pass1_prompt(
         ticker=ticker, snapshot=snap, vol_profile=vp,
         horizon_days=horizon_days,
-        base_signals=[],  # math-layer signal blend not reconstructed retroactively
-        self_earnings_date=self_earnings_dt,
+        base_signals=base_signals,        # 2026-05-31 fidelity upgrade
+        self_earnings_date=self_earnings_dt,  # 2026-05-31 fidelity upgrade
         peer_tickers=peer_tickers,
         facts_bundle_json=bundle_block,
     )
@@ -465,11 +678,14 @@ def run_backtest_event(
 
     pass2 = None
     p2_cost = 0.0
-    # Pass 2 requires the math layer's marginal probability summary. In
-    # backtest we don't reconstruct the full MC — we feed a placeholder
-    # so Pass 2 can still critique Pass 1's catalysts. Pass 2 drift is
-    # what we record; math-layer math agreement isn't backtested here.
-    mc_marginal = {"p_up": "n/a", "p_down": "n/a", "bracket_pct_str": "10%"}
+    # 2026-05-31 fidelity upgrade — production Pass 2 reads MC marginal
+    # P(up)/P(down) brackets to anchor its drift revision. Compute the
+    # same shape on the as-of state with zero-drift baseline (no
+    # circular dependency on AI's own drift estimate).
+    mc_marginal = compute_mc_marginal_summary(
+        spot=spot, sigma_blended=state["sigma_blended"],
+        horizon_days=horizon_days,
+    )
     sigma_tri = {"blended": state["sigma_blended"], "divergence": 0.0}
     pass2_prompt = build_ai_pass2_prompt(
         ticker=ticker, snapshot=snap, pass1=pass1,
@@ -691,6 +907,28 @@ def main():
 
     # Cache fetched data to avoid re-fetching across runs.
     history = _normalize_history_columns(fetch_history(ticker, api_key, lookback_days=400))
+
+    # 2026-05-31 fidelity upgrade — fetch a wide earnings-calendar window
+    # so we can pick the as-of next-earnings for each event. Earnings
+    # calendar is ~$0.00 (one FMP call) and dramatically lifts AI's
+    # binary-risk awareness in Pass 1.
+    earliest_as_of = pd.to_datetime(history.iloc[0]["date"]).date()
+    earnings_calendar = fetch_earnings_calendar_window(
+        ticker, api_key,
+        from_date=earliest_as_of,
+        to_date=date.today() + timedelta(days=120),
+    )
+    print(f"Earnings calendar events found: {len(earnings_calendar)}")
+
+    # 2026-05-31 fidelity upgrade — peer tickers from registry. Trivial
+    # but production AI sees them; backtest pre-upgrade passed [].
+    try:
+        from src.registry import resolve_peers
+        peer_tickers_for_ticker = resolve_peers(ticker)
+        print(f"Peers from registry: {peer_tickers_for_ticker}")
+    except Exception as e:
+        print(f"⚠ Could not resolve peers for {ticker}: {e}")
+        peer_tickers_for_ticker = []
     profile = fetch_company_profile(ticker, api_key)
     analyst_targets = fetch_analyst_targets(ticker, api_key)
     analyst_summary = fetch_analyst_summary(ticker, api_key)
@@ -748,7 +986,9 @@ def main():
         try:
             row = run_backtest_event(
                 ticker=ticker, as_of_date=d, history_df=history,
-                base_bundle=base_bundle, peer_tickers=[],
+                base_bundle=base_bundle,
+                peer_tickers=peer_tickers_for_ticker,        # fidelity upgrade
+                earnings_events_all=earnings_calendar,        # fidelity upgrade
                 horizon_days=args.forward_td,
                 cache_dir=cache_dir, dry_run=args.dry_run,
             )
