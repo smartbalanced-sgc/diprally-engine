@@ -352,6 +352,15 @@ def test_reconstruct_base_signals_returns_drift_signal_objects():
         assert hasattr(s, "confidence") and isinstance(s.confidence, str)
 
 
+def test_pick_next_earnings_after_returns_none_for_empty_events():
+    """When the earnings calendar is empty, pick_next_earnings_after
+    returns None — the harness's main() must detect this UPSTREAM and
+    abort before AI spend (regression for the 2026-05-31 audit canon:
+    'Fail-fast on degraded inputs')."""
+    from tools.diag.ai_accuracy_backtest import pick_next_earnings_after
+    assert pick_next_earnings_after([], date(2026, 5, 31)) is None
+
+
 def test_strip_today_anchored_fields_removes_future_leakage():
     """Defect 3 regression — today-anchored fields (analyst_consensus,
     macro, options_iv, sector_perf, fundamentals, short_interest) carry

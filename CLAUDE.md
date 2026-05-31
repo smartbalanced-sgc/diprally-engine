@@ -66,6 +66,34 @@ negative-EV setups.
   answer is genuinely ambiguous, say so explicitly and explain why; do not
   use false ambiguity to avoid commitment.
 
+## Fail-fast on degraded inputs (CANON — never violate)
+Operator's money is the bottleneck. Any token-costing operation
+(AI calls, API spend, cloud compute) MUST validate critical inputs
+BEFORE the first dollar spent. If a fetch returns empty / zero / null
+where the run depends on real data: **ABORT with non-zero exit code
+and a diagnostic message**. Never log a warning and proceed with
+degraded inputs — that wastes money to learn what an upfront
+validation gate would have learned for free.
+
+Specifically:
+- `"X events found: 0"` on a critical dependency is a HALT signal,
+  not a warning to scroll past.
+- Partial runs with caveats are NEVER preferable to aborted runs that
+  surface the missing dependency.
+- Before the first token spend in any script: validate every critical
+  input. Cheap fail > expensive degraded run.
+- Diagnose the data-fetch problem FIRST (per Diagnostics canon below).
+  Then re-run.
+- The validation message must name the missing field and a one-shot
+  bash command the operator can run to confirm the upstream cause.
+
+Applies to: AI tier dispatch, backtest harnesses, calibration sweeps,
+data-validation scripts, orchestrator runs, anything where the result's
+claimed output depends on the input being non-degenerate. Codified
+2026-05-31 after a backtest harness burned $2.50 on 65 events with
+silently-empty earnings_calendar inputs because the harness logged
+"events found: 0" and proceeded instead of halting.
+
 ## Always recommend (CANON — never violate)
 The operator's time is the bottleneck. Punting a decision back to him with
 "which next?", "your call", "want me to X or Y?", "let me know how you'd

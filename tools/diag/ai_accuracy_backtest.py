@@ -1004,6 +1004,32 @@ def main():
         from_date=earliest_as_of,
         to_date=date.today() + timedelta(days=120),
     )
+    # CANON (CLAUDE.md "Fail-fast on degraded inputs", 2026-05-31): a
+    # silently-empty critical dependency MUST halt before AI spend. The
+    # earnings calendar drives AI's binary-risk awareness — without it,
+    # the v3 fidelity upgrade is structurally crippled (binary catalysts
+    # invisible to AI). Continuing would spend $2-3 to produce results
+    # that don't measure what we claim to measure. Abort instead.
+    if not earnings_calendar:
+        print(
+            f"\nERROR: FMP earnings-calendar returned 0 events for {ticker} "
+            f"from {earliest_as_of} to {date.today() + timedelta(days=120)}.\n"
+            f"This is a critical dependency for backtest fidelity — "
+            f"self_earnings_date cannot be reconstructed without it.\n"
+            f"\nDiagnostic — run this from your shell to identify upstream cause:\n"
+            f"  curl -sS 'https://financialmodelingprep.com/stable/"
+            f"earnings-calendar?from=2026-05-01&to=2026-06-30&apikey=$FMP_API_KEY' "
+            f"| head -c 1000\n"
+            f"\nLikely causes:\n"
+            f"  1. FMP plan tier doesn't cover historical earnings-calendar\n"
+            f"  2. Endpoint moved (try /v3/earnings-calendar or /stable/...)\n"
+            f"  3. From/to window too wide (try narrower)\n"
+            f"  4. Symbol filter happens AFTER fetch — endpoint returns ALL "
+            f"events; check response shape\n"
+            f"\nABORTING before AI spend. Re-run after diagnosing.\n",
+            file=sys.stderr,
+        )
+        sys.exit(4)
     print(f"Earnings calendar events found: {len(earnings_calendar)}")
 
     # 2026-05-31 fidelity upgrade — peer tickers from registry. Trivial
